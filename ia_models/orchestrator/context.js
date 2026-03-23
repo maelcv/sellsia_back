@@ -5,7 +5,7 @@
 
 import { getSellsyCredentials } from "../providers/index.js";
 import { SellsyClient, fetchContextData } from "../sellsy/client.js";
-import { prisma } from "../../dashboard/backend/src/prisma.js";
+import { prisma } from "../../src/prisma.js";
 
 /**
  * Retourne une instance SellsyClient pour un utilisateur (ou null si pas de credentials).

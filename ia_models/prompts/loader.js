@@ -3,7 +3,7 @@
  * Priorité : prompt custom actif en DB > prompt par défaut.
  */
 
-import { prisma } from "../../dashboard/backend/src/prisma.js";
+import { prisma } from "../../src/prisma.js";
 import { SYSTEM_PROMPTS } from "./system/defaults.js";
 
 /**

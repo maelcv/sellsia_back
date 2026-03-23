@@ -18,17 +18,17 @@ import { z } from "zod";
 import { prisma, logAudit, logReasoningStep, linkReasoningStepsToMessage } from "../prisma.js";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
-import { getProviderForUser, getActiveProviderCode } from "../../../../ia_models/providers/index.js";
-import { orchestrate, orchestrateStream } from "../../../../ia_models/orchestrator/dispatcher.js";
-import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../../../../ia_models/orchestrator/context.js";
+import { getProviderForUser, getActiveProviderCode } from "../../ia_models/providers/index.js";
+import { orchestrate, orchestrateStream } from "../../ia_models/orchestrator/dispatcher.js";
+import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
 import {
   getOrCreateConversation,
   addMessage,
   getConversationHistory,
   getRecentConversations,
   getConversationMessages
-} from "../../../../ia_models/orchestrator/memory.js";
-import { getAvailableTools } from "../../../../ia_models/mcp/tools.js";
+} from "../../ia_models/orchestrator/memory.js";
+import { getAvailableTools } from "../../ia_models/mcp/tools.js";
 import { resolve as resolvePath, join as joinPath } from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
@@ -1113,8 +1113,8 @@ router.post("/suggestions", requireAuth, async (req, res) => {
   try {
     const sellsyData = await enrichContext(userId, pageContext);
 
-    const { SUGGESTIONS_PROMPT } = await import("../../../../ia_models/prompts/system/defaults.js");
-    const { interpolatePrompt } = await import("../../../../ia_models/prompts/loader.js");
+    const { SUGGESTIONS_PROMPT } = await import("../../ia_models/prompts/system/defaults.js");
+    const { interpolatePrompt } = await import("../../ia_models/prompts/loader.js");
 
     const prompt = interpolatePrompt(SUGGESTIONS_PROMPT, {
       context: JSON.stringify({

@@ -14,9 +14,9 @@ import { DirecteurAgent } from "../agents/directeur.js";
 import { CommercialAgent } from "../agents/commercial.js";
 import { TechnicienAgent } from "../agents/technicien.js";
 import { detectUserLanguage } from "../agents/base-agent.js";
-import { prisma, logProviderError } from "../../dashboard/backend/src/prisma.js";
-import { selectSkill } from "../../skills/router.js";
-import { formatSkillForInjection } from "../../skills/catalog.js";
+import { prisma, logProviderError } from "../../src/prisma.js";
+import { selectSkill } from "../skills/router.js";
+import { formatSkillForInjection } from "../skills/catalog.js";
 
 const AGENT_CLASSES = {
   "directeur": DirecteurAgent,

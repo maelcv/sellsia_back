@@ -3,7 +3,7 @@
  * Persiste les conversations et messages en base.
  */
 
-import { prisma } from "../../dashboard/backend/src/prisma.js";
+import { prisma } from "../../src/prisma.js";
 import crypto from "crypto";
 
 /**

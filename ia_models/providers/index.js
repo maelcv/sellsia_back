@@ -3,8 +3,8 @@
  * Lit les credentials chiffrées en base et instancie le provider approprié.
  */
 
-import { prisma } from "../../dashboard/backend/src/prisma.js";
-import { decryptSecret } from "../../dashboard/backend/src/security/secrets.js";
+import { prisma } from "../../src/prisma.js";
+import { decryptSecret } from "../../src/security/secrets.js";
 import { OpenAIProvider } from "./openai.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { MistralProvider } from "./mistral.js";

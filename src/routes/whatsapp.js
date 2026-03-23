@@ -23,14 +23,14 @@ import {
   markAsRead,
   parseWebhookPayload
 } from "../providers/whatsapp-connector.js";
-import { getProviderForUser } from "../../../../ia_models/providers/index.js";
-import { orchestrate } from "../../../../ia_models/orchestrator/dispatcher.js";
+import { getProviderForUser } from "../../ia_models/providers/index.js";
+import { orchestrate } from "../../ia_models/orchestrator/dispatcher.js";
 import {
   addMessage,
   getConversationHistory
-} from "../../../../ia_models/orchestrator/memory.js";
-import { getAvailableTools } from "../../../../ia_models/mcp/tools.js";
-import { enrichContext, loadKnowledgeContext, getSellsyClient } from "../../../../ia_models/orchestrator/context.js";
+} from "../../ia_models/orchestrator/memory.js";
+import { getAvailableTools } from "../../ia_models/mcp/tools.js";
+import { enrichContext, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
 
 const router = express.Router();
 
