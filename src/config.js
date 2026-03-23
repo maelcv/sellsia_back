@@ -36,5 +36,6 @@ export const config = {
   encryptionKey: process.env.APP_ENCRYPTION_KEY || "",
   removeDemoData: (process.env.REMOVE_DEMO_DATA || "true").toLowerCase() === "true",
   tavilyApiKey: process.env.TAVILY_API_KEY || "",
-  whatsappApiVersion: process.env.WHATSAPP_API_VERSION || "v22.0"
+  whatsappApiVersion: process.env.WHATSAPP_API_VERSION || "v22.0",
+  whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || "sellsia-whatsapp-verify-2024"
 };
