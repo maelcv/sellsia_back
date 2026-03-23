@@ -82,6 +82,11 @@ enum WhatsappDirection {
 
 enum WhatsappMessageType {
   text
+  template
+  image
+  document
+  audio
+  video
 }
 
 enum WhatsappMessageStatus {

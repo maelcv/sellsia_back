@@ -1,13 +1,16 @@
 /**
- * WhatsApp Routes — Webhook entrant Meta + API gestion.
+ * WhatsApp Routes — Webhook entrant Meta + API gestion (Graph API v22.0).
  *
- * GET  /api/whatsapp/webhook           — Vérification webhook Meta
- * POST /api/whatsapp/webhook           — Réception messages entrants
- * POST /api/whatsapp/send              — Envoi manuel de message
- * GET  /api/whatsapp/accounts          — Liste comptes WhatsApp Business
- * POST /api/whatsapp/accounts          — Ajouter un compte Business
- * DELETE /api/whatsapp/accounts/:id    — Supprimer un compte Business
- * GET  /api/whatsapp/conversations     — Liste conversations WhatsApp
+ * GET  /api/whatsapp/webhook                      — Vérification webhook Meta
+ * POST /api/whatsapp/webhook                      — Réception messages entrants
+ * POST /api/whatsapp/send                         — Envoi de message (auto-template si hors 24h)
+ * POST /api/whatsapp/send-template                — Envoi de template message
+ * GET  /api/whatsapp/accounts                     — Liste comptes WhatsApp Business
+ * POST /api/whatsapp/accounts                     — Ajouter un compte Business
+ * PUT  /api/whatsapp/accounts/:id                 — Mettre à jour un compte
+ * DELETE /api/whatsapp/accounts/:id               — Supprimer un compte Business
+ * GET  /api/whatsapp/conversations                — Liste conversations WhatsApp
+ * GET  /api/whatsapp/conversations/:id/messages   — Messages d'une conversation
  */
 
 import express from "express";
@@ -20,6 +23,7 @@ import { encryptSecret, decryptSecret } from "../security/secrets.js";
 import { validateWhatsappSignature } from "../middleware/whatsapp-signature.js";
 import {
   sendTextMessage,
+  sendTemplateMessage,
   markAsRead,
   parseWebhookPayload
 } from "../providers/whatsapp-connector.js";
@@ -49,6 +53,15 @@ const sendSchema = z.object({
   to: z.string().min(6).max(20),
   message: z.string().min(1).max(4096),
   accountId: z.string().max(128)
+});
+
+const templateSendSchema = z.object({
+  to: z.string().min(6).max(20),
+  accountId: z.string().max(128),
+  templateName: z.string().min(1).max(128),
+  languageCode: z.string().max(10).default("en_US"),
+  components: z.array(z.any()).default([]),
+  conversationId: z.string().max(128).optional()
 });
 
 // ══════════════════════════════════════════════════════
@@ -333,9 +346,23 @@ async function processIncomingMessage(event) {
 }
 
 async function sendWhatsAppReply(accessToken, businessPhoneNumberId, to, text) {
+  // Check 24h window before replying
+  const lastInbound = await prisma.whatsappMessage.findFirst({
+    where: { whatsappPhone: to, direction: "inbound" },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true }
+  });
+
+  const withinWindow = lastInbound && (Date.now() - lastInbound.createdAt.getTime()) < 24 * 60 * 60 * 1000;
+
+  if (!withinWindow) {
+    // Outside 24h window — send template to re-engage
+    console.log(`[WhatsApp] 24h window expired for ${to}, sending template`);
+    return sendTemplateMessage({ accessToken, businessPhoneNumberId, to, templateName: "hello_world", languageCode: "en_US" });
+  }
+
   // WhatsApp messages are limited to ~4096 chars. Truncate if needed.
   const truncated = text.length > 4000 ? text.slice(0, 3997) + "..." : text;
-
   return sendTextMessage({ accessToken, businessPhoneNumberId, to, text: truncated });
 }
 
@@ -381,16 +408,42 @@ router.post("/send", requireAuth, async (req, res) => {
 
   try {
     const accessToken = decryptSecret(account.accessTokenEncrypted);
-    const waResponse = await sendTextMessage({
-      accessToken,
-      businessPhoneNumberId: account.businessPhoneNumberId,
-      to,
-      text: message
+
+    // Check 24h window: find last inbound message from this number
+    const lastInbound = await prisma.whatsappMessage.findFirst({
+      where: { whatsappPhone: to, direction: "inbound" },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true }
     });
+
+    const withinWindow = lastInbound && (Date.now() - lastInbound.createdAt.getTime()) < 24 * 60 * 60 * 1000;
+
+    let waResponse;
+    let messageType = "text";
+
+    if (withinWindow) {
+      waResponse = await sendTextMessage({
+        accessToken,
+        businessPhoneNumberId: account.businessPhoneNumberId,
+        to,
+        text: message
+      });
+    } else {
+      // Outside 24h window — must use a template to initiate
+      waResponse = await sendTemplateMessage({
+        accessToken,
+        businessPhoneNumberId: account.businessPhoneNumberId,
+        to,
+        templateName: "hello_world",
+        languageCode: "en_US"
+      });
+      messageType = "template";
+      console.log(`[WhatsApp] Outside 24h window for ${to}, sent template instead`);
+    }
 
     // Save to conversation if provided
     if (conversationId) {
-      await addMessage(conversationId, { role: "assistant", content: message });
+      await addMessage(conversationId, { role: "assistant", content: messageType === "template" ? "[Template: hello_world]" : message });
 
       if (waResponse?.messages?.[0]?.id) {
         await prisma.whatsappMessage.create({
@@ -399,18 +452,75 @@ router.post("/send", requireAuth, async (req, res) => {
             whatsappMessageId: waResponse.messages[0].id,
             direction: "outbound",
             whatsappPhone: to,
-            messageType: "text",
+            messageType,
             status: "sent"
           }
         });
       }
     }
 
-    await logAudit(userId, "WHATSAPP_SEND", { to, accountId });
-    return res.json({ success: true, messageId: waResponse?.messages?.[0]?.id });
+    await logAudit(userId, "WHATSAPP_SEND", { to, accountId, messageType });
+    return res.json({ success: true, messageId: waResponse?.messages?.[0]?.id, messageType });
   } catch (err) {
     console.error("[WhatsApp] Send error:", err);
     return res.status(502).json({ error: "Failed to send WhatsApp message" });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+// POST /api/whatsapp/send-template — Envoi de template (auth required)
+// ══════════════════════════════════════════════════════
+
+router.post("/send-template", requireAuth, async (req, res) => {
+  const parse = templateSendSchema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+
+  const { to, accountId, templateName, languageCode, components, conversationId } = parse.data;
+  const userId = req.user.sub;
+
+  const account = await prisma.whatsappAccount.findFirst({
+    where: { id: accountId, userId, status: "active" }
+  });
+
+  if (!account) {
+    return res.status(404).json({ error: "WhatsApp account not found" });
+  }
+
+  try {
+    const accessToken = decryptSecret(account.accessTokenEncrypted);
+    const waResponse = await sendTemplateMessage({
+      accessToken,
+      businessPhoneNumberId: account.businessPhoneNumberId,
+      to,
+      templateName,
+      languageCode,
+      components
+    });
+
+    if (conversationId) {
+      await addMessage(conversationId, { role: "assistant", content: `[Template: ${templateName}]` });
+
+      if (waResponse?.messages?.[0]?.id) {
+        await prisma.whatsappMessage.create({
+          data: {
+            conversationId,
+            whatsappMessageId: waResponse.messages[0].id,
+            direction: "outbound",
+            whatsappPhone: to,
+            messageType: "template",
+            status: "sent"
+          }
+        });
+      }
+    }
+
+    await logAudit(userId, "WHATSAPP_SEND_TEMPLATE", { to, accountId, templateName });
+    return res.json({ success: true, messageId: waResponse?.messages?.[0]?.id });
+  } catch (err) {
+    console.error("[WhatsApp] Template send error:", err);
+    return res.status(502).json({ error: "Failed to send WhatsApp template" });
   }
 });
 
@@ -597,6 +707,57 @@ router.get("/conversations", requireAuth, async (req, res) => {
     LIMIT ${limit}`;
 
   return res.json({ conversations });
+});
+
+// ══════════════════════════════════════════════════════
+// GET /api/whatsapp/conversations/:id/messages — Messages d'une conversation
+// ══════════════════════════════════════════════════════
+
+router.get("/conversations/:id/messages", requireAuth, async (req, res) => {
+  const userId = req.user.sub;
+  const conversationId = req.params.id;
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+  // Verify ownership
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: conversationId, userId, channel: "whatsapp" },
+    select: { id: true, channelPhoneFrom: true, title: true }
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  const messages = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: "asc" },
+    skip: offset,
+    take: limit,
+    select: {
+      id: true,
+      role: true,
+      content: true,
+      agentId: true,
+      provider: true,
+      model: true,
+      createdAt: true
+    }
+  });
+
+  const total = await prisma.message.count({ where: { conversationId } });
+
+  return res.json({
+    conversation: {
+      id: conversation.id,
+      phone: conversation.channelPhoneFrom,
+      title: conversation.title
+    },
+    messages,
+    total,
+    limit,
+    offset
+  });
 });
 
 export default router;

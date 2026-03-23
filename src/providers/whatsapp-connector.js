@@ -46,6 +46,28 @@ export async function sendMediaMessage({ accessToken, businessPhoneNumberId, to,
   return res.json();
 }
 
+export async function sendTemplateMessage({ accessToken, businessPhoneNumberId, to, templateName, languageCode = "en_US", components = [] }) {
+  const url = `${BASE_URL}/${businessPhoneNumberId}/messages`;
+  const template = { name: templateName, language: { code: languageCode } };
+  if (components.length > 0) template.components = components;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`WhatsApp template send error: ${err?.error?.message || `HTTP ${res.status}`}`);
+  }
+  return res.json();
+}
+
 export async function markAsRead({ accessToken, businessPhoneNumberId, messageId }) {
   const url = `${BASE_URL}/${businessPhoneNumberId}/messages`;
   await fetch(url, {
