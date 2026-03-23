@@ -1,0 +1,542 @@
+// ─────────────────────────────────────────────────────────────
+// Sellsia - Prisma Schema (PostgreSQL)
+// Generated from the SQLite schema in dashboard/src/db.js
+// ─────────────────────────────────────────────────────────────
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ── Enums ────────────────────────────────────────────────────
+
+enum UserRole {
+  admin
+  client
+  collaborator
+}
+
+enum AccessStatus {
+  granted
+  revoked
+}
+
+enum RequestStatus {
+  pending
+  approved
+  rejected
+}
+
+/// DB values: "crm", "ia-cloud", "ia-local", "other"
+enum ServiceCategory {
+  crm
+  ia_cloud // maps to "ia-cloud" in DB
+  ia_local // maps to "ia-local" in DB
+  other
+}
+
+enum ServiceLinkStatus {
+  active
+  inactive
+}
+
+enum DocType {
+  text
+  faq
+  process
+  config
+  api_doc
+}
+
+/// DB values: "single-agent", "multi-agent"
+enum RoutingMode {
+  single_agent // maps to "single-agent" in DB
+  multi_agent  // maps to "multi-agent" in DB
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+}
+
+enum FeedbackRating {
+  positive
+  negative
+}
+
+enum WhatsappAccountStatus {
+  active
+  inactive
+  revoked
+}
+
+enum WhatsappDirection {
+  inbound
+  outbound
+}
+
+enum WhatsappMessageType {
+  text
+}
+
+enum WhatsappMessageStatus {
+  sending
+  sent
+  delivered
+  read
+  failed
+}
+
+enum ConversationChannel {
+  chrome
+  whatsapp
+}
+
+enum PlanConnectionStatus {
+  active
+  inactive
+}
+
+enum CollaboratorStatus {
+  active
+  invited
+  disabled
+}
+
+/// DB values: "local", "mistral-remote"
+enum AgentType {
+  local
+  mistral_remote // maps to "mistral-remote" in DB
+}
+
+enum ProviderErrorType {
+  auth_failed
+  insufficient_credits
+  quota_exceeded
+  rate_limited
+  api_error
+  network_error
+  unknown
+}
+
+enum FeedbackCategory {
+  incorrect
+  incomplete
+  format
+  tool_not_used
+  irrelevant
+  other
+}
+
+enum ReviewStatus {
+  pending
+  reviewed
+}
+
+// ── Models ───────────────────────────────────────────────────
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole
+  companyName  String?  @map("company_name")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  userAgentAccess    UserAgentAccess[]
+  accessRequests     AccessRequest[]     @relation("AccessRequestUser")
+  reviewedRequests   AccessRequest[]     @relation("AccessRequestReviewer")
+  auditLogs          AuditLog[]
+  clientPlan         ClientPlan?
+  collaborators      Collaborator[]
+  clientServiceLinks ClientServiceLink[]
+  conversations      Conversation[]
+  agentPrompts       AgentPrompt[]
+  knowledgeDocs      KnowledgeDocument[]
+  orchestrationLogs  OrchestrationLog[]
+  messageFeedback    MessageFeedback[]
+  tokenUsage         TokenUsage[]
+  providerErrors     ProviderError[]
+  whatsappAccounts   WhatsappAccount[]
+  channelContacts    ChannelContact[]
+
+  @@map("users")
+}
+
+model Agent {
+  id             String    @id
+  name           String
+  description    String
+  isActive       Boolean   @default(true) @map("is_active")
+  agentType      AgentType @default(local) @map("agent_type")
+  mistralAgentId String?   @map("mistral_agent_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  userAgentAccess UserAgentAccess[]
+  accessRequests  AccessRequest[]
+  conversations   Conversation[]
+  messages        Message[]
+  agentPrompts    AgentPrompt[]
+  knowledgeDocs   KnowledgeDocument[]
+  reasoningSteps  ReasoningStep[]
+  tokenUsage      TokenUsage[]
+  providerErrors  ProviderError[]
+
+  @@map("agents")
+}
+
+model UserAgentAccess {
+  id        Int          @id @default(autoincrement())
+  userId    Int          @map("user_id")
+  agentId   String       @map("agent_id")
+  status    AccessStatus
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @default(now()) @map("updated_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, agentId])
+  @@map("user_agent_access")
+}
+
+model AccessRequest {
+  id           Int           @id @default(autoincrement())
+  userId       Int           @map("user_id")
+  agentId      String        @map("agent_id")
+  reason       String
+  status       RequestStatus @default(pending)
+  reviewedBy   Int?          @map("reviewed_by")
+  reviewerNote String?       @map("reviewer_note")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @default(now()) @map("updated_at")
+
+  user     User  @relation("AccessRequestUser", fields: [userId], references: [id], onDelete: Cascade)
+  agent    Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  reviewer User? @relation("AccessRequestReviewer", fields: [reviewedBy], references: [id])
+
+  @@map("access_requests")
+}
+
+model AuditLog {
+  id          Int      @id @default(autoincrement())
+  actorUserId Int?     @map("actor_user_id")
+  action      String
+  details     String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  actorUser User? @relation(fields: [actorUserId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model Plan {
+  id               Int      @id @default(autoincrement())
+  name             String   @unique
+  monthlyTokenLimit Int     @map("monthly_token_limit")
+  collaboratorLimit Int     @map("collaborator_limit")
+  priceEurMonth    Float    @map("price_eur_month")
+  featuresJson     String   @map("features_json")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  clientPlans ClientPlan[]
+
+  @@map("plans")
+}
+
+model ClientPlan {
+  userId                 Int                  @id @map("user_id")
+  planId                 Int                  @map("plan_id")
+  tokenUsed              Int                  @default(0) @map("token_used")
+  tokenReceived          Int                  @default(0) @map("token_received")
+  tokenProcessed         Int                  @default(0) @map("token_processed")
+  tokenSent              Int                  @default(0) @map("token_sent")
+  tokenReturned          Int                  @default(0) @map("token_returned")
+  sellsyConnectionStatus PlanConnectionStatus @default(inactive) @map("sellsy_connection_status")
+  updatedAt              DateTime             @default(now()) @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+
+  @@map("client_plans")
+}
+
+model Collaborator {
+  id          Int                @id @default(autoincrement())
+  ownerUserId Int                @map("owner_user_id")
+  name        String
+  email       String
+  roleLabel   String             @map("role_label")
+  status      CollaboratorStatus @default(active)
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@map("collaborators")
+}
+
+model ExternalService {
+  id            Int             @id @default(autoincrement())
+  code          String          @unique
+  name          String
+  category      ServiceCategory
+  isActive      Boolean         @default(true) @map("is_active")
+  defaultConfig String          @default("{}") @map("default_config")
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  clientServiceLinks ClientServiceLink[]
+
+  @@map("external_services")
+}
+
+model ClientServiceLink {
+  id                Int               @id @default(autoincrement())
+  ownerUserId       Int               @map("owner_user_id")
+  serviceId         Int               @map("service_id")
+  label             String
+  apiKeyMasked      String            @default("") @map("api_key_masked")
+  apiSecretMasked   String            @default("") @map("api_secret_masked")
+  apiKeyEncrypted   String?           @map("api_key_encrypted")
+  apiSecretEncrypted String?          @map("api_secret_encrypted")
+  status            ServiceLinkStatus @default(inactive)
+  configJson        String            @map("config_json")
+  updatedAt         DateTime          @default(now()) @map("updated_at")
+
+  owner   User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  service ExternalService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerUserId, serviceId])
+  @@map("client_service_links")
+}
+
+model Conversation {
+  id              String             @id
+  userId          Int                @map("user_id")
+  agentId         String?            @map("agent_id")
+  title           String?
+  contextType     String?            @map("context_type")
+  contextEntityId String?            @map("context_entity_id")
+  contextUrl      String?            @map("context_url")
+  channel         ConversationChannel @default(chrome)
+  channelPhoneFrom String?           @map("channel_phone_from")
+  startedAt       DateTime           @default(now()) @map("started_at")
+  updatedAt       DateTime           @default(now()) @map("updated_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  messages          Message[]
+  orchestrationLogs OrchestrationLog[]
+  reasoningSteps    ReasoningStep[]
+  tokenUsage        TokenUsage[]
+  providerErrors    ProviderError[]
+  whatsappMessages  WhatsappMessage[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             Int         @id @default(autoincrement())
+  conversationId String      @map("conversation_id")
+  role           MessageRole
+  content        String
+  agentId        String?     @map("agent_id")
+  tokensInput    Int         @default(0) @map("tokens_input")
+  tokensOutput   Int         @default(0) @map("tokens_output")
+  provider       String?
+  model          String?
+  sourcesJson    String?     @map("sources_json")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  feedback       MessageFeedback[]
+  reasoningSteps ReasoningStep[]
+
+  @@map("messages")
+}
+
+model AgentPrompt {
+  id           Int      @id @default(autoincrement())
+  agentId      String   @map("agent_id")
+  clientId     Int?     @map("client_id")
+  version      Int      @default(1)
+  systemPrompt String   @map("system_prompt")
+  description  String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  agent  Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  client User? @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("agent_prompts")
+}
+
+model KnowledgeDocument {
+  id           Int      @id @default(autoincrement())
+  clientId     Int?     @map("client_id")
+  agentId      String?  @map("agent_id")
+  title        String
+  content      String
+  docType      DocType  @default(text) @map("doc_type")
+  metadataJson String   @default("{}") @map("metadata_json")
+  isActive     Boolean  @default(true) @map("is_active")
+  scope        String   @default("agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @map("updated_at")
+
+  client User?  @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  agent  Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@map("knowledge_documents")
+}
+
+model OrchestrationLog {
+  id                Int          @id @default(autoincrement())
+  conversationId    String?      @map("conversation_id")
+  userId            Int          @map("user_id")
+  userMessage       String       @map("user_message")
+  detectedIntent    String?      @map("detected_intent")
+  routingMode       RoutingMode? @map("routing_mode")
+  agentsCalled      String?      @map("agents_called")
+  contextType       String?      @map("context_type")
+  contextEntityId   String?      @map("context_entity_id")
+  sellsyDataFetched Boolean      @default(false) @map("sellsy_data_fetched")
+  tokensTotal       Int          @default(0) @map("tokens_total")
+  responseTimeMs    Int          @default(0) @map("response_time_ms")
+  error             String?
+  createdAt         DateTime     @default(now()) @map("created_at")
+
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("orchestration_logs")
+}
+
+model MessageFeedback {
+  id           Int               @id @default(autoincrement())
+  messageId    Int               @map("message_id")
+  userId       Int               @map("user_id")
+  rating       FeedbackRating
+  category     FeedbackCategory?
+  comment      String?
+  reviewStatus ReviewStatus      @default(pending) @map("review_status")
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("message_feedback")
+}
+
+/// step_type is a plain String (no enum) - the CHECK constraint was removed via migration
+model ReasoningStep {
+  id             Int      @id @default(autoincrement())
+  conversationId String   @map("conversation_id")
+  messageId      Int?     @map("message_id")
+  stepType       String   @map("step_type")
+  agentId        String?  @map("agent_id")
+  dataJson       String   @default("{}") @map("data_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message?     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@map("reasoning_steps")
+}
+
+model TokenUsage {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @map("user_id")
+  agentId        String?  @map("agent_id")
+  providerCode   String?  @map("provider_code")
+  subAgentType   String?  @map("sub_agent_type")
+  conversationId String?  @map("conversation_id")
+  tokensInput    Int      @default(0) @map("tokens_input")
+  tokensOutput   Int      @default(0) @map("tokens_output")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent        Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@map("token_usage")
+}
+
+model ProviderError {
+  id             Int               @id @default(autoincrement())
+  providerCode   String            @map("provider_code")
+  errorType      ProviderErrorType @map("error_type")
+  httpStatus     Int?              @map("http_status")
+  errorMessage   String            @map("error_message")
+  conversationId String?           @map("conversation_id")
+  agentId        String?           @map("agent_id")
+  userId         Int               @map("user_id")
+  rawErrorJson   String?           @map("raw_error_json")
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  agent        Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("provider_errors")
+}
+
+model WhatsappAccount {
+  id                    String                @id
+  userId                Int                   @map("user_id")
+  businessPhoneNumberId String                @map("business_phone_number_id")
+  phoneNumber           String                @map("phone_number")
+  displayName           String?               @map("display_name")
+  accessTokenEncrypted  String                @map("access_token_encrypted")
+  appSecretEncrypted    String                @map("app_secret_encrypted")
+  webhookVerifyToken    String                @map("webhook_verify_token")
+  status                WhatsappAccountStatus @default(active)
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @default(now()) @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_accounts")
+}
+
+model ChannelContact {
+  id                  String   @id
+  userId              Int      @map("user_id")
+  sellsyContactId     String?  @map("sellsy_contact_id")
+  whatsappPhone       String   @map("whatsapp_phone")
+  whatsappProfileName String?  @map("whatsapp_profile_name")
+  lastInteraction     String?  @map("last_interaction")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, whatsappPhone])
+  @@map("channel_contacts")
+}
+
+model WhatsappMessage {
+  id                Int                   @id @default(autoincrement())
+  conversationId    String                @map("conversation_id")
+  whatsappMessageId String?               @unique @map("whatsapp_message_id")
+  direction         WhatsappDirection
+  whatsappPhone     String?               @map("whatsapp_phone")
+  messageType       String                @default("text") @map("message_type")
+  status            WhatsappMessageStatus @default(sent)
+  errorDetails      String?               @map("error_details")
+  createdAt         DateTime              @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_messages")
+}
