@@ -31,7 +31,7 @@ export const config = {
   port: Number(process.env.PORT || 4000),
   jwtSecret: process.env.JWT_SECRET || DEV_JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "8h",
-  corsOrigin: process.env.CORS_ORIGIN || "http://localhost:4000,http://localhost:5173,https://www.sellsy.com,https://sellsy.com,https://sellsia-front-jt37do6jn-mcv-dev.vercel.app",
+  corsOrigin: process.env.CORS_ORIGIN || "http://localhost:4000,http://localhost:5173,https://www.sellsy.com,https://sellsy.com,https://sellsia-front.vercel.app,https://sellsia-front-jt37do6jn-mcv-dev.vercel.app",
   databaseUrl: process.env.DATABASE_URL || "postgresql://localhost:5432/sellsia",
   encryptionKey: process.env.APP_ENCRYPTION_KEY || "",
   removeDemoData: (process.env.REMOVE_DEMO_DATA || "true").toLowerCase() === "true",

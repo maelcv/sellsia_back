@@ -26,6 +26,9 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Trust proxy (for Railway/Vercel reverse proxies)
+app.set('trust proxy', 1);
+
 app.disable("x-powered-by");
 
 app.use(
