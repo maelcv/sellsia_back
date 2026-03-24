@@ -41,6 +41,11 @@ import { enrichContext, loadKnowledgeContext, getSellsyClient } from "../../ia_m
 
 const router = express.Router();
 
+function normalizePhone(phone) {
+  if (!phone) return "";
+  return phone.replace(/^whatsapp:/i, "").replace(/^\+/, "").trim();
+}
+
 // ── Schemas ──
 
 const accountSchema = z.object({
@@ -199,8 +204,16 @@ async function processIncomingMessage(event) {
   // 1. Identify the user by their WhatsApp phone number
   let userId = account.userId; // Default: account owner
   
-  const mappedUser = await prisma.user.findUnique({
-    where: { whatsappPhone: from }
+  const normalizedFrom = normalizePhone(from);
+  console.log(`[WhatsApp] Normalized incoming phone: ${normalizedFrom} (original: ${from})`);
+
+  const mappedUser = await prisma.user.findFirst({
+    where: { 
+      OR: [
+        { whatsappPhone: normalizedFrom },
+        { whatsappPhone: from }
+      ]
+    }
   });
 
   if (mappedUser) {
@@ -425,6 +438,8 @@ async function sendWhatsAppReply(account, to, text) {
     const accountSid = decryptSecret(account.appSecretEncrypted);
     const authToken = decryptSecret(account.accessTokenEncrypted);
     
+    console.log(`[Twilio WhatsApp] Attempting reply. SID: ${accountSid.slice(0, 4)}...${accountSid.slice(-2)}, Token: ${authToken.slice(0, 2)}...${authToken.slice(-2)}`);
+
     if (!withinWindow) {
       console.log(`[Twilio WhatsApp] 24h window expired for ${to}, sending fallback template`);
       return sendTwilioTemplateMessage({ accountSid, authToken, from: account.businessPhoneNumberId, to, templateName: "hello_world" });
@@ -812,7 +827,7 @@ router.delete("/accounts/:id", requireAuth, requireRole("admin"), async (req, re
 
   const account = await prisma.whatsappAccount.findUnique({
     where: { id: accountId },
-    select: { id: true }
+    select: { id: true, status: true }
   });
   if (!account) {
     return res.status(404).json({ error: "Account not found" });
