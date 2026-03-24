@@ -57,7 +57,7 @@ router.post("/onboard", authRateLimit, async (req, res) => {
 
   return res.json({
     token,
-    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName }
+    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone }
   });
 });
 
@@ -74,7 +74,7 @@ router.post("/login", authRateLimit, async (req, res) => {
 
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { id: true, email: true, passwordHash: true, role: true, companyName: true }
+    select: { id: true, email: true, passwordHash: true, role: true, companyName: true, whatsappPhone: true }
   });
 
   const hashToCheck = user ? user.passwordHash : DUMMY_HASH;
@@ -93,7 +93,7 @@ router.post("/login", authRateLimit, async (req, res) => {
 
   return res.json({
     token,
-    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName }
+    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone }
   });
 });
 
