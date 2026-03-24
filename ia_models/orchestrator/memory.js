@@ -117,7 +117,7 @@ export async function getConversationHistory(conversationId, limit = 20) {
  */
 export async function getRecentConversations(userId, limit = 10) {
   const rows = await prisma.$queryRaw`
-    SELECT c.id, c.title, c.context_type as "contextType", c.agent_id as "agentId",
+    SELECT c.id, c.title as "topic", c.context_type as "contextType", c.agent_id as "agentId",
             a.name as "agentName",
             c.started_at as "startedAt", c.updated_at as "updatedAt",
             (SELECT COUNT(*)::int FROM messages m WHERE m.conversation_id = c.id) as "messageCount",
