@@ -135,7 +135,7 @@ async function syncSellsyConnectionStatus(userId) {
   });
 }
 
-router.get("/client/me", requireAuth, requireRole("client"), async (req, res) => {
+router.get("/client/me", requireAuth, requireRole("client", "admin"), async (req, res) => {
   const userId = req.user.sub;
 
   // Ensure Sellsy is always configurable by clients, even without prior admin setup.
@@ -196,7 +196,7 @@ router.get("/client/me", requireAuth, requireRole("client"), async (req, res) =>
   });
 });
 
-router.post("/client/collaborators", requireAuth, requireRole("client"), async (req, res) => {
+router.post("/client/collaborators", requireAuth, requireRole("client", "admin"), async (req, res) => {
   const parse = collaboratorSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
@@ -231,7 +231,7 @@ router.post("/client/collaborators", requireAuth, requireRole("client"), async (
   return res.status(201).json({ message: "Collaborator created" });
 });
 
-router.delete("/client/collaborators/:id", requireAuth, requireRole("client"), async (req, res) => {
+router.delete("/client/collaborators/:id", requireAuth, requireRole("client", "admin"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid collaborator id" });
@@ -249,7 +249,7 @@ router.delete("/client/collaborators/:id", requireAuth, requireRole("client"), a
   return res.json({ message: "Collaborator deleted" });
 });
 
-router.put("/client/services/:id", requireAuth, requireRole("client"), async (req, res) => {
+router.put("/client/services/:id", requireAuth, requireRole("client", "admin"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid service link id" });
@@ -311,7 +311,7 @@ router.put("/client/services/:id", requireAuth, requireRole("client"), async (re
   return res.json({ message: "Service updated" });
 });
 
-router.post("/client/services/:id/test", requireAuth, requireRole("client"), async (req, res) => {
+router.post("/client/services/:id/test", requireAuth, requireRole("client", "admin"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid service link id" });
