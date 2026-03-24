@@ -22,7 +22,7 @@ export async function createConversation(userId, agentId, pageContext = {}) {
       userId,
       agentId: agentId || null,
       title: null,
-      contextType: pageContext?.type || "generic",
+      contextType: pageContext?.type || (pageContext?.channel === "whatsapp" ? "whatsapp" : pageContext?.channel === "dashboard" ? "dashboard" : "generic"),
       contextEntityId: pageContext?.entityId || null,
       contextUrl: pageContext?.url || null
     }

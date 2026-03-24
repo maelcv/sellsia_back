@@ -392,12 +392,28 @@ export async function orchestrate({
 }
 
 /**
- * Generates a short conversation title from the first user message.
+ * Generates a short smart conversation title from the first user message using the LLM.
  */
-function _generateConversationTitle(userMessage) {
+async function _generateSmartConversationTitle(userMessage, provider) {
+  try {
+    const prompt = `Génère un titre très court (3 à 6 mots maximum) résumant cette demande. Renvoie uniquement le titre brut, sans ponctuation finale ni guillemets.\n\nDemande : "${userMessage}"`;
+    const result = await provider.chat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      maxTokens: 15
+    });
+    let title = (result.content || "").replace(/["']/g, "").trim();
+    title = title.replace(/\.$/, ""); // remove trailing dot
+    
+    // Check reasonable length / sanity
+    if (title && title.length < 80) return title;
+  } catch (error) {
+    console.warn("[Dispatcher] Smart title generation failed:", error.message);
+  }
+
+  // Fallback
   const cleaned = (userMessage || "").trim().replace(/[^\w\s\u00C0-\u017F\-?!.,]/g, "").trim();
-  if (cleaned.length <= 50) return cleaned;
-  // Truncate at last word boundary before 50 chars
+  if (cleaned.length <= 50) return cleaned || "Nouvelle discussion IA";
   const truncated = cleaned.slice(0, 50);
   const lastSpace = truncated.lastIndexOf(" ");
   return lastSpace > 20 ? truncated.slice(0, lastSpace) + "…" : truncated + "…";
@@ -426,7 +442,7 @@ export async function* orchestrateStream({
 }) {
   // Step 1: Emit conversation title on first message
   if (isFirstMessage) {
-    const title = _generateConversationTitle(userMessage);
+    const title = await _generateSmartConversationTitle(userMessage, provider);
     if (title) {
       yield { type: "conversation_title", title };
     }

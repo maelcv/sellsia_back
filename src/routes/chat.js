@@ -1034,6 +1034,37 @@ router.get("/conversation/:id", requireAuth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+// PUT /api/chat/conversation/:id/title — Renommer manuellement une conversation
+// ══════════════════════════════════════════════════════
+
+router.put("/conversation/:id/title", requireAuth, async (req, res) => {
+  const userId = req.user.sub || req.user.id;
+  const { title } = req.body;
+  if (!title || typeof title !== "string") {
+    return res.status(400).json({ error: "Titre invalide" });
+  }
+
+  try {
+    const conv = await prisma.conversation.findFirst({
+      where: { id: req.params.id, userId }
+    });
+    
+    if (!conv) {
+      return res.status(404).json({ error: "Conversation introuvable" });
+    }
+
+    await prisma.conversation.update({
+      where: { id: req.params.id },
+      data: { title }
+    });
+    return res.json({ success: true, title });
+  } catch (err) {
+    console.error(`[Chat] Error updating title for conversation ${req.params.id}:`, err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ══════════════════════════════════════════════════════
 // POST /api/chat/feedback — Feedback sur un message
 // ══════════════════════════════════════════════════════
 
