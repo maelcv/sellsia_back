@@ -293,10 +293,13 @@ async function processIncomingMessage(event) {
       thinkingMode: "low"
     });
 
+    // Ensure we have a valid answer to send back to the message author
+    const answer = result.answer || result.content || "Désolé, je n'ai pas pu générer de réponse.";
+
     // Save assistant message
     await addMessage(conversationId, {
       role: "assistant",
-      content: result.answer,
+      content: answer,
       agentId: result.agentId,
       tokensInput: result.tokensInput || 0,
       tokensOutput: result.tokensOutput || 0,
@@ -321,8 +324,8 @@ async function processIncomingMessage(event) {
       } catch { /* ignore */ }
     }
 
-    // 7. Send reply via WhatsApp
-    const waResponse = await sendWhatsAppReply(accessToken, phoneNumberId, from, result.answer);
+    // 7. Send reply back to the original message author (from)
+    const waResponse = await sendWhatsAppReply(accessToken, phoneNumberId, from, answer);
 
     // Save outbound WhatsApp message metadata
     if (waResponse?.messages?.[0]?.id) {
@@ -352,6 +355,15 @@ async function processIncomingMessage(event) {
 }
 
 async function sendWhatsAppReply(accessToken, businessPhoneNumberId, to, text) {
+  if (!to) {
+    console.error("[WhatsApp] Cannot send reply: no recipient phone number");
+    return null;
+  }
+  if (!text) {
+    console.warn("[WhatsApp] Empty reply text, using fallback");
+    text = "Désolé, je n'ai pas pu générer de réponse.";
+  }
+
   // Check 24h window before replying
   const lastInbound = await prisma.whatsappMessage.findFirst({
     where: { whatsappPhone: to, direction: "inbound" },
