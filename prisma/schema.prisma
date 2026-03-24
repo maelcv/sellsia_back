@@ -151,6 +151,7 @@ model User {
   passwordHash String   @map("password_hash")
   role         UserRole
   companyName  String?  @map("company_name")
+  whatsappPhone String? @unique @map("whatsapp_phone")
   createdAt    DateTime @default(now()) @map("created_at")
 
   // Relations

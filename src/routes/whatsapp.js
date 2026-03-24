@@ -196,7 +196,20 @@ async function processIncomingMessage(event) {
     return;
   }
 
-  const userId = account.userId;
+  // 1. Identify the user by their WhatsApp phone number
+  let userId = account.userId; // Default: account owner
+  
+  const mappedUser = await prisma.user.findUnique({
+    where: { whatsappPhone: from }
+  });
+
+  if (mappedUser) {
+    userId = mappedUser.id;
+    console.log(`[WhatsApp] Identified user ${mappedUser.email} from phone ${from}`);
+  } else {
+    console.log(`[WhatsApp] Unknown phone ${from}, falling back to account owner (userId: ${userId})`);
+  }
+
   const accessToken = decryptSecret(account.accessTokenEncrypted);
 
   // 2. Mark as read

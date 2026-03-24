@@ -144,7 +144,7 @@ router.get("/client/me", requireAuth, requireRole("client", "admin"), async (req
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, companyName: true, createdAt: true }
+    select: { id: true, email: true, role: true, companyName: true, whatsappPhone: true, createdAt: true }
   });
 
   const clientPlan = await prisma.clientPlan.findUnique({
@@ -896,6 +896,36 @@ router.delete("/admin/external-services/:id", requireAuth, requireRole("admin"),
 
   await logAudit(req.user.sub, "EXTERNAL_SERVICE_DELETED", { serviceId: id });
   return res.json({ message: "External service deleted" });
+});
+
+// ── Update user profile (client/admin) ──
+router.put("/api/users/profile", requireAuth, async (req, res) => {
+  const userId = req.user.sub;
+  const parse = z.object({
+    whatsappPhone: z.string().min(6).max(20).nullable().optional()
+  }).safeParse(req.body);
+
+  if (!parse.success) {
+    return res.status(400).json({ error: "Invalid request payload" });
+  }
+
+  try {
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        whatsappPhone: parse.data.whatsappPhone || null
+      }
+    });
+    
+    await logAudit(userId, "USER_PROFILE_UPDATED", { whatsappPhone: parse.data.whatsappPhone });
+    return res.json({ message: "Profile updated successfully" });
+  } catch (err) {
+    if (err.code === "P2002") {
+      return res.status(409).json({ error: "Ce numéro WhatsApp est déjà utilisé par un autre compte." });
+    }
+    console.error(err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 export default router;
