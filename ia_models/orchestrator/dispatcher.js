@@ -353,6 +353,9 @@ export async function orchestrate({
     };
   }
 
+  // Enrichit le toolContext avec l'agentId courant (utilisé par le tool schedule_reminder)
+  const enrichedToolContext = toolContext ? { ...toolContext, agentId } : { agentId };
+
   const result = await agent.execute({
     userMessage,
     conversationHistory,
@@ -360,7 +363,7 @@ export async function orchestrate({
     pageContext,
     knowledgeContext,
     tools,
-    toolContext,
+    toolContext: enrichedToolContext,
     thinkingMode,
     clientId,
     conversationId,
@@ -505,6 +508,9 @@ export async function* orchestrateStream({
     skillRouting: skillResult ? { chosen_skill: skillResult.chosen_skill, confidence: skillResult.confidence, reason: skillResult.reason } : null
   };
 
+  // Enrichit le toolContext avec l'agentId courant (utilisé par le tool schedule_reminder)
+  const enrichedToolContext = toolContext ? { ...toolContext, agentId } : { agentId };
+
   // Step 6: Stream from the agent (which internally manages sub-agents)
   for await (const event of agent.executeStream({
     userMessage,
@@ -513,7 +519,7 @@ export async function* orchestrateStream({
     pageContext,
     knowledgeContext,
     tools,
-    toolContext,
+    toolContext: enrichedToolContext,
     thinkingMode,
     clientId,
     conversationId,

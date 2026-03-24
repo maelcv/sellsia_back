@@ -325,6 +325,7 @@ async function processIncomingMessage(event) {
     // Build tool context
     const sellsyClient = await getSellsyClient(userId);
     const toolContext = {
+      userId,           // Nécessaire pour le tool schedule_reminder
       sellsyClient,
       tavilyApiKey: config.tavilyApiKey || null,
       uploadedFiles: [],

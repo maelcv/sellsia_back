@@ -251,6 +251,7 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}) {
     : referenceSitesByTopic.generic;
 
   const context = {
+    userId,           // Nécessaire pour le tool schedule_reminder
     sellsyClient,
     tavilyApiKey: config.tavilyApiKey || null,
     uploadedFiles: uploadedFiles || [],

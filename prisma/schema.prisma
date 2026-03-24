@@ -129,6 +129,20 @@ enum ProviderErrorType {
   unknown
 }
 
+/// Statut d'un rappel planifié
+enum ReminderStatus {
+  PENDING    // En attente d'exécution
+  SENT       // Envoyé avec succès
+  FAILED     // Échec d'envoi (voir errorMessage)
+  CANCELLED  // Annulé manuellement par l'utilisateur
+}
+
+/// Canal de livraison du rappel
+enum ReminderChannel {
+  chat      // Push SSE dans l'interface de la plateforme
+  whatsapp  // Message WhatsApp via l'API Meta
+}
+
 enum FeedbackCategory {
   incorrect
   incomplete
@@ -171,6 +185,7 @@ model User {
   providerErrors     ProviderError[]
   whatsappAccounts   WhatsappAccount[]
   channelContacts    ChannelContact[]
+  reminders          Reminder[]
 
   @@map("users")
 }
@@ -194,6 +209,7 @@ model Agent {
   reasoningSteps  ReasoningStep[]
   tokenUsage      TokenUsage[]
   providerErrors  ProviderError[]
+  reminders       Reminder[]
 
   @@map("agents")
 }
@@ -530,6 +546,32 @@ model ChannelContact {
 
   @@unique([userId, whatsappPhone])
   @@map("channel_contacts")
+}
+
+/// Rappel planifié par un agent IA ou manuellement par l'utilisateur.
+/// scheduledAt est TOUJOURS stocké en UTC. Le champ timezone sert uniquement à l'affichage.
+model Reminder {
+  id              Int             @id @default(autoincrement())
+  userId          Int             @map("user_id")
+  agentId         String?         @map("agent_id")
+  taskDescription String          @map("task_description")
+  scheduledAt     DateTime        @map("scheduled_at")
+  timezone        String          @default("Europe/Paris")
+  status          ReminderStatus  @default(PENDING)
+  channel         ReminderChannel @default(chat)
+  /// Numéro WhatsApp cible au format E.164 (requis si channel=whatsapp)
+  targetPhone     String?         @map("target_phone")
+  sentAt          DateTime?       @map("sent_at")
+  errorMessage    String?         @map("error_message")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  // Index composite pour les requêtes du cron worker (status + scheduledAt)
+  @@index([status, scheduledAt])
+  @@map("reminders")
 }
 
 model WhatsappMessage {

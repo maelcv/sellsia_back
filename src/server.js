@@ -20,7 +20,9 @@ import orchestrationRoutes from "./routes/orchestration.js";
 import feedbackRoutes from "./routes/feedback.js";
 import usageRoutes from "./routes/usage.js";
 import whatsappRoutes from "./routes/whatsapp.js";
+import remindersRoutes from "./routes/reminders.js";
 import { requireAuth } from "./middleware/auth.js";
+import { startReminderWorker, stopReminderWorker } from "../ia_models/reminders/reminder-service.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -112,6 +114,7 @@ app.use("/api/orchestration", orchestrationRoutes);
 app.use("/api/feedback", feedbackRoutes);
 app.use("/api/usage", usageRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
+app.use("/api/reminders", remindersRoutes);
 
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
@@ -132,10 +135,13 @@ process.on("unhandledRejection", (err) => {
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   console.log("[Server] SIGTERM received, disconnecting Prisma...");
+  stopReminderWorker();
   await prisma.$disconnect();
   process.exit(0);
 });
 
 app.listen(config.port, () => {
   console.log(`Sellsia dashboard API listening on http://localhost:${config.port}`);
+  // Démarre le worker de rappels après que le serveur est prêt
+  startReminderWorker();
 });

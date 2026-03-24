@@ -769,6 +769,152 @@ const parse_word = {
   }
 };
 
+// ── Reminder Tool ────────────────────────────────────
+
+/**
+ * Tool permettant aux agents IA de planifier un rappel pour l'utilisateur.
+ *
+ * L'agent doit :
+ *   RÈGLE CRITIQUE (même pattern que sellsy_update_opportunity) :
+ *   1. Appeler ce tool SANS `confirmed: true` pour générer un récapitulatif à soumettre à l'utilisateur.
+ *   2. Appeler ce tool avec `confirmed: true` UNIQUEMENT après confirmation explicite de l'utilisateur.
+ *   3. Convertir la date du fuseau horaire de l'utilisateur en UTC avant d'appeler ce tool.
+ *
+ * Ce tool a besoin de context.userId (injecté par le dispatcher via toolContext).
+ */
+const schedule_reminder = {
+  name: "schedule_reminder",
+  description:
+    "Planifie un rappel ou une tâche pour l'utilisateur à une date et heure précises. " +
+    "RÈGLE CRITIQUE : appelle d'abord ce tool SANS `confirmed: true` pour présenter un récapitulatif " +
+    "à l'utilisateur (date, heure, action, canal). Appelle-le ensuite avec `confirmed: true` " +
+    "UNIQUEMENT après confirmation explicite de l'utilisateur. " +
+    "IMPORTANT : convertis toujours la date exprimée dans le fuseau horaire de l'utilisateur en UTC.",
+  parameters: {
+    type: "object",
+    properties: {
+      task_description: {
+        type: "string",
+        description: "Description claire du rappel ou de la tâche (ex: 'Relancer le client Dupont pour le devis')"
+      },
+      scheduled_at: {
+        type: "string",
+        description: "Date et heure en UTC, format ISO 8601 (ex: '2025-03-25T09:00:00Z')"
+      },
+      channel: {
+        type: "string",
+        enum: ["chat", "whatsapp"],
+        description: "Canal de livraison : 'chat' (notification dans la plateforme) ou 'whatsapp' (message WhatsApp)"
+      },
+      target_phone: {
+        type: "string",
+        description: "Numéro WhatsApp au format E.164 (ex: '+33612345678'). Requis seulement si channel='whatsapp'."
+      },
+      timezone: {
+        type: "string",
+        description: "Fuseau horaire de l'utilisateur (ex: 'Europe/Paris'). Utilisé pour l'affichage dans le récapitulatif."
+      },
+      confirmed: {
+        type: "boolean",
+        description: "Mettre à true UNIQUEMENT après confirmation explicite de l'utilisateur. Ne pas inclure ou laisser false pour le premier appel (récapitulatif)."
+      }
+    },
+    required: ["task_description", "scheduled_at"]
+  },
+  async execute(params, context) {
+    const userId = context.userId;
+    if (!userId) {
+      return { error: "Impossible de planifier le rappel : userId manquant dans le contexte" };
+    }
+
+    // Validation de la date (commune aux deux phases)
+    const scheduledDate = new Date(params.scheduled_at);
+    if (isNaN(scheduledDate.getTime())) {
+      return { error: "Format de date invalide. Utilisez le format ISO 8601 UTC (ex: '2025-03-25T09:00:00Z')" };
+    }
+
+    if (scheduledDate < new Date(Date.now() - 60_000)) {
+      return { error: "La date de rappel ne peut pas être dans le passé" };
+    }
+
+    const channel = params.channel || "chat";
+    if (channel === "whatsapp" && !params.target_phone) {
+      return { error: "target_phone est requis pour le canal whatsapp" };
+    }
+
+    const timezone = params.timezone || "Europe/Paris";
+
+    // Formate la date dans le fuseau horaire de l'utilisateur pour l'affichage
+    const formattedDate = scheduledDate.toLocaleString("fr-FR", {
+      timeZone: timezone,
+      dateStyle: "full",
+      timeStyle: "short",
+    });
+
+    const channelLabel = channel === "whatsapp"
+      ? `WhatsApp (${params.target_phone})`
+      : "notification dans la plateforme";
+
+    // ── Phase 1 : Récapitulatif + demande de confirmation via ask_user ─
+    // Premier appel (sans confirmed: true) → on demande à l'agent d'appeler
+    // ask_user avec les suggestions "Valider", "Modifier", "Annuler".
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "schedule_reminder",
+        task_description: params.task_description,
+        scheduled_at: params.scheduled_at,
+        formatted_date: formattedDate,
+        channel,
+        target_phone: params.target_phone || null,
+        // L'instruction indique à l'agent d'enchaîner immédiatement avec ask_user
+        message:
+          `Récapitulatif du rappel à planifier :\n` +
+          `- 📋 Tâche : ${params.task_description}\n` +
+          `- 📅 Date / heure : ${formattedDate}\n` +
+          `- 📣 Canal : ${channelLabel}\n\n` +
+          `INSTRUCTION : Appelle immédiatement le tool ask_user avec :\n` +
+          `  question: "Souhaitez-vous confirmer la planification de ce rappel ?"\n` +
+          `  suggestions: ["Valider", "Modifier", "Annuler"]\n` +
+          `  context: "Rappel prévu le ${formattedDate} — ${params.task_description}"\n` +
+          `N'écris PAS de réponse texte avant d'avoir appelé ask_user. ` +
+          `Si l'utilisateur répond "Valider", rappelle schedule_reminder avec confirmed=true. ` +
+          `Si "Modifier", demande ce qu'il souhaite changer puis rappelle schedule_reminder sans confirmed. ` +
+          `Si "Annuler", confirme l'annulation sans créer le rappel.`
+      };
+    }
+
+    // ── Phase 2 : Création en base après confirmation ───────────────
+    try {
+      const { prisma } = await import("../../src/prisma.js");
+
+      const reminder = await prisma.reminder.create({
+        data: {
+          userId,
+          agentId: context.agentId || null,
+          taskDescription: params.task_description,
+          scheduledAt: scheduledDate,
+          timezone,
+          status: "PENDING",
+          channel,
+          targetPhone: params.target_phone || null,
+        },
+      });
+
+      return {
+        status: "scheduled",
+        reminderId: reminder.id,
+        scheduledAt: reminder.scheduledAt,
+        channel: reminder.channel,
+        message: `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Réf. #${reminder.id})`
+      };
+    } catch (err) {
+      console.error("[schedule_reminder tool] Erreur:", err);
+      return { error: `Erreur lors de la création du rappel : ${err.message}` };
+    }
+  }
+};
+
 // ── Report Generation Tool ────────────────────────────
 
 const generate_report = {
@@ -862,7 +1008,9 @@ export const ALL_TOOLS = [
   parse_excel,
   parse_word,
   // Report generation
-  generate_report
+  generate_report,
+  // Reminders — planification de rappels par les agents IA
+  schedule_reminder
 ];
 
 /**
@@ -912,6 +1060,12 @@ export function getAvailableTools(context = {}, options = {}) {
   // Report generation — always available
   tools.push(generate_report);
 
+  // Reminder tool — disponible si un userId est dans le contexte
+  // (permet aux agents de planifier des rappels pour l'utilisateur)
+  if (context.userId) {
+    tools.push(schedule_reminder);
+  }
+
   // Low thinking mode keeps a constrained tool surface.
   if (thinkingMode === "low") {
     return tools.filter((tool) => {
@@ -921,6 +1075,7 @@ export function getAvailableTools(context = {}, options = {}) {
       if (tool.name === "web_scrape") return true;
       if (tool.name.startsWith("sellsy_")) return true;
       if (tool.name.startsWith("parse_")) return true;
+      if (tool.name === "schedule_reminder") return true;
       return false;
     });
   }
