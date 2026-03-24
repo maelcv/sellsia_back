@@ -506,6 +506,7 @@ model WhatsappAccount {
   accessTokenEncrypted  String                @map("access_token_encrypted")
   appSecretEncrypted    String                @map("app_secret_encrypted")
   webhookVerifyToken    String                @map("webhook_verify_token")
+  provider              String                @default("meta")
   status                WhatsappAccountStatus @default(active)
   createdAt             DateTime              @default(now()) @map("created_at")
   updatedAt             DateTime              @default(now()) @map("updated_at")

@@ -25,7 +25,10 @@ import {
   sendTextMessage,
   sendTemplateMessage,
   markAsRead,
-  parseWebhookPayload
+  parseWebhookPayload,
+  sendTwilioTextMessage,
+  sendTwilioTemplateMessage,
+  parseTwilioWebhookPayload
 } from "../providers/whatsapp-connector.js";
 import { getProviderForUser } from "../../ia_models/providers/index.js";
 import { orchestrate } from "../../ia_models/orchestrator/dispatcher.js";
@@ -45,7 +48,8 @@ const accountSchema = z.object({
   accessToken: z.string().min(10).max(512),
   phoneNumber: z.string().min(6).max(20),
   displayName: z.string().max(128).optional(),
-  appSecret: z.string().min(10).max(256)
+  appSecret: z.string().min(10).max(256),
+  provider: z.enum(["meta", "twilio"]).optional().default("meta")
 });
 
 const sendSchema = z.object({
@@ -148,6 +152,35 @@ router.post("/webhook", async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════
+// POST /api/whatsapp/twilio-webhook — Messages entrants Twilio
+// ══════════════════════════════════════════════════════
+
+router.post("/twilio-webhook", express.urlencoded({ extended: true }), async (req, res) => {
+  // Twilio expects a TwiML XML response. 200 OK with empty Response is valid.
+  res.set('Content-Type', 'text/xml');
+  res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+
+  try {
+    const events = parseTwilioWebhookPayload(req.body);
+
+    for (const event of events) {
+      if (event.type === "status") {
+        handleStatusUpdate(event);
+        continue;
+      }
+
+      if (event.type === "message") {
+        processIncomingMessage(event).catch((err) => {
+          console.error("[Twilio WhatsApp] Error processing message:", err);
+        });
+      }
+    }
+  } catch (err) {
+    console.error("[Twilio WhatsApp] Webhook processing error:", err);
+  }
+});
+
 // ── Process an incoming WhatsApp message ──
 
 async function processIncomingMessage(event) {
@@ -238,7 +271,7 @@ async function processIncomingMessage(event) {
   // 6. Get provider and orchestrate AI response
   const provider = await getProviderForUser(userId);
   if (!provider) {
-    await sendWhatsAppReply(accessToken, phoneNumberId, from,
+    await sendWhatsAppReply(account, from,
       "Aucun fournisseur IA configure. Connectez un service IA dans votre dashboard Sellsia.");
     return;
   }
@@ -250,7 +283,7 @@ async function processIncomingMessage(event) {
     WHERE uaa.user_id = ${userId} AND uaa.status = 'granted' AND a.is_active = true`;
 
   if (agentRows.length === 0) {
-    await sendWhatsAppReply(accessToken, phoneNumberId, from,
+    await sendWhatsAppReply(account, from,
       "Aucun agent IA active. Activez un agent depuis le dashboard Sellsia.");
     return;
   }
@@ -325,7 +358,7 @@ async function processIncomingMessage(event) {
     }
 
     // 7. Send reply back to the original message author (from)
-    const waResponse = await sendWhatsAppReply(accessToken, phoneNumberId, from, answer);
+    const waResponse = await sendWhatsAppReply(account, from, answer);
 
     // Save outbound WhatsApp message metadata
     if (waResponse?.messages?.[0]?.id) {
@@ -349,12 +382,12 @@ async function processIncomingMessage(event) {
     });
   } catch (err) {
     console.error("[WhatsApp] AI orchestration error:", err);
-    await sendWhatsAppReply(accessToken, phoneNumberId, from,
+    await sendWhatsAppReply(account, from,
       "Desole, une erreur s'est produite lors du traitement de votre message. Veuillez reessayer.");
   }
 }
 
-async function sendWhatsAppReply(accessToken, businessPhoneNumberId, to, text) {
+async function sendWhatsAppReply(account, to, text) {
   if (!to) {
     console.error("[WhatsApp] Cannot send reply: no recipient phone number");
     return null;
@@ -372,16 +405,29 @@ async function sendWhatsAppReply(accessToken, businessPhoneNumberId, to, text) {
   });
 
   const withinWindow = lastInbound && (Date.now() - lastInbound.createdAt.getTime()) < 24 * 60 * 60 * 1000;
-
-  if (!withinWindow) {
-    // Outside 24h window — send template to re-engage
-    console.log(`[WhatsApp] 24h window expired for ${to}, sending template`);
-    return sendTemplateMessage({ accessToken, businessPhoneNumberId, to, templateName: "hello_world", languageCode: "en_US" });
-  }
-
   // WhatsApp messages are limited to ~4096 chars. Truncate if needed.
   const truncated = text.length > 4000 ? text.slice(0, 3997) + "..." : text;
-  return sendTextMessage({ accessToken, businessPhoneNumberId, to, text: truncated });
+
+  if (account.provider === "twilio") {
+    const accountSid = decryptSecret(account.appSecretEncrypted);
+    const authToken = decryptSecret(account.accessTokenEncrypted);
+    
+    if (!withinWindow) {
+      console.log(`[Twilio WhatsApp] 24h window expired for ${to}, sending fallback template`);
+      return sendTwilioTemplateMessage({ accountSid, authToken, from: account.businessPhoneNumberId, to, templateName: "hello_world" });
+    }
+    return sendTwilioTextMessage({ accountSid, authToken, from: account.businessPhoneNumberId, to, text: truncated });
+  } else {
+    const accessToken = decryptSecret(account.accessTokenEncrypted);
+    const businessPhoneNumberId = account.businessPhoneNumberId;
+
+    if (!withinWindow) {
+      // Outside 24h window — send template to re-engage
+      console.log(`[WhatsApp] 24h window expired for ${to}, sending template`);
+      return sendTemplateMessage({ accessToken, businessPhoneNumberId, to, templateName: "hello_world", languageCode: "en_US" });
+    }
+    return sendTextMessage({ accessToken, businessPhoneNumberId, to, text: truncated });
+  }
 }
 
 // ── Handle delivery status updates ──
@@ -439,24 +485,51 @@ router.post("/send", requireAuth, async (req, res) => {
     let waResponse;
     let messageType = "text";
 
-    if (withinWindow) {
-      waResponse = await sendTextMessage({
-        accessToken,
-        businessPhoneNumberId: account.businessPhoneNumberId,
-        to,
-        text: message
-      });
+    if (account.provider === "twilio") {
+      const accountSid = decryptSecret(account.appSecretEncrypted);
+      const authToken = decryptSecret(account.accessTokenEncrypted);
+
+      if (withinWindow) {
+        waResponse = await sendTwilioTextMessage({
+          accountSid,
+          authToken,
+          from: account.businessPhoneNumberId,
+          to,
+          text: message
+        });
+      } else {
+        waResponse = await sendTwilioTemplateMessage({
+          accountSid,
+          authToken,
+          from: account.businessPhoneNumberId,
+          to,
+          templateName: "hello_world"
+        });
+        messageType = "template";
+        console.log(`[Twilio WhatsApp] Outside 24h window for ${to}, sent template instead`);
+      }
     } else {
-      // Outside 24h window — must use a template to initiate
-      waResponse = await sendTemplateMessage({
-        accessToken,
-        businessPhoneNumberId: account.businessPhoneNumberId,
-        to,
-        templateName: "hello_world",
-        languageCode: "en_US"
-      });
-      messageType = "template";
-      console.log(`[WhatsApp] Outside 24h window for ${to}, sent template instead`);
+      const accessToken = decryptSecret(account.accessTokenEncrypted);
+
+      if (withinWindow) {
+        waResponse = await sendTextMessage({
+          accessToken,
+          businessPhoneNumberId: account.businessPhoneNumberId,
+          to,
+          text: message
+        });
+      } else {
+        // Outside 24h window — must use a template to initiate
+        waResponse = await sendTemplateMessage({
+          accessToken,
+          businessPhoneNumberId: account.businessPhoneNumberId,
+          to,
+          templateName: "hello_world",
+          languageCode: "en_US"
+        });
+        messageType = "template";
+        console.log(`[WhatsApp] Outside 24h window for ${to}, sent template instead`);
+      }
     }
 
     // Save to conversation if provided
@@ -507,15 +580,30 @@ router.post("/send-template", requireAuth, async (req, res) => {
   }
 
   try {
-    const accessToken = decryptSecret(account.accessTokenEncrypted);
-    const waResponse = await sendTemplateMessage({
-      accessToken,
-      businessPhoneNumberId: account.businessPhoneNumberId,
-      to,
-      templateName,
-      languageCode,
-      components
-    });
+    let waResponse;
+
+    if (account.provider === "twilio") {
+      const accountSid = decryptSecret(account.appSecretEncrypted);
+      const authToken = decryptSecret(account.accessTokenEncrypted);
+      waResponse = await sendTwilioTemplateMessage({
+        accountSid,
+        authToken,
+        from: account.businessPhoneNumberId,
+        to,
+        templateName,
+        components
+      });
+    } else {
+      const accessToken = decryptSecret(account.accessTokenEncrypted);
+      waResponse = await sendTemplateMessage({
+        accessToken,
+        businessPhoneNumberId: account.businessPhoneNumberId,
+        to,
+        templateName,
+        languageCode,
+        components
+      });
+    }
 
     if (conversationId) {
       await addMessage(conversationId, { role: "assistant", content: `[Template: ${templateName}]` });
@@ -561,6 +649,7 @@ router.get("/accounts", requireAuth, async (req, res) => {
     businessPhoneNumberId: row.businessPhoneNumberId,
     phoneNumber: row.phoneNumber,
     displayName: row.displayName,
+    provider: row.provider,
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
@@ -579,7 +668,7 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
     return res.status(400).json({ error: "Invalid account payload" });
   }
 
-  const { businessPhoneNumberId, accessToken, phoneNumber, displayName, appSecret } = parse.data;
+  const { businessPhoneNumberId, accessToken, phoneNumber, displayName, appSecret, provider } = parse.data;
   const userId = req.user.sub;
 
   // Check duplicate
@@ -595,6 +684,12 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
   const id = crypto.randomUUID();
   const webhookVerifyToken = crypto.randomBytes(32).toString("hex");
 
+  // Deactivate other accounts to maintain exclusivity
+  await prisma.whatsappAccount.updateMany({
+    where: { userId, status: "active" },
+    data: { status: "inactive", updatedAt: new Date() }
+  });
+
   await prisma.whatsappAccount.create({
     data: {
       id,
@@ -605,11 +700,12 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
       accessTokenEncrypted: encryptSecret(accessToken),
       appSecretEncrypted: encryptSecret(appSecret),
       webhookVerifyToken,
+      provider,
       status: "active"
     }
   });
 
-  await logAudit(userId, "WHATSAPP_ACCOUNT_CREATED", { accountId: id, phoneNumber });
+  await logAudit(userId, "WHATSAPP_ACCOUNT_CREATED", { accountId: id, phoneNumber, provider });
 
   return res.status(201).json({
     account: {
@@ -618,6 +714,7 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
       phoneNumber,
       displayName: displayName || null,
       webhookVerifyToken,
+      provider,
       status: "active"
     }
   });
@@ -631,7 +728,8 @@ const accountUpdateSchema = z.object({
   accessToken: z.string().min(10).max(512).optional(),
   appSecret: z.string().min(10).max(256).optional(),
   displayName: z.string().max(128).optional(),
-  status: z.enum(["active", "inactive"]).optional()
+  status: z.enum(["active", "inactive"]).optional(),
+  provider: z.enum(["meta", "twilio"]).optional()
 });
 
 router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) => {
@@ -649,7 +747,7 @@ router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) 
     return res.status(404).json({ error: "Account not found" });
   }
 
-  const { accessToken, appSecret, displayName, status } = parse.data;
+  const { accessToken, appSecret, displayName, status, provider } = parse.data;
   const data = {};
 
   if (accessToken) {
@@ -664,12 +762,23 @@ router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) 
   if (status) {
     data.status = status;
   }
+  if (provider) {
+    data.provider = provider;
+  }
 
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ error: "No fields to update" });
   }
 
   data.updatedAt = new Date();
+
+  // If we are setting this account to active, deactivate all others
+  if (status === "active") {
+    await prisma.whatsappAccount.updateMany({
+      where: { userId: req.user.sub, id: { not: accountId }, status: "active" },
+      data: { status: "inactive", updatedAt: new Date() }
+    });
+  }
 
   await prisma.whatsappAccount.update({
     where: { id: accountId },
@@ -696,12 +805,21 @@ router.delete("/accounts/:id", requireAuth, requireRole("admin"), async (req, re
     return res.status(404).json({ error: "Account not found" });
   }
 
-  await prisma.whatsappAccount.update({
-    where: { id: accountId },
-    data: { status: "revoked", updatedAt: new Date() }
-  });
+  if (account.status === "revoked") {
+    // Si l'account est déjà révoqué, on le supprime définitivement
+    await prisma.whatsappAccount.delete({
+      where: { id: accountId }
+    });
+    await logAudit(userId, "WHATSAPP_ACCOUNT_DELETED_PERMANENTLY", { accountId });
+  } else {
+    // Sinon on le marque comme révoqué
+    await prisma.whatsappAccount.update({
+      where: { id: accountId },
+      data: { status: "revoked", updatedAt: new Date() }
+    });
+    await logAudit(userId, "WHATSAPP_ACCOUNT_REVOKED", { accountId });
+  }
 
-  await logAudit(userId, "WHATSAPP_ACCOUNT_REVOKED", { accountId });
   return res.json({ success: true });
 });
 

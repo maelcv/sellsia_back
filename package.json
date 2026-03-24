@@ -31,10 +31,10 @@
     "papaparse": "^5.5.3",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.18.0",
+    "twilio": "^5.13.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "prisma": "6.12.0"
   }
 }
-

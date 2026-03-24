@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import twilio from "twilio";
 
 const BASE_URL = `https://graph.facebook.com/${config.whatsappApiVersion}`;
 
@@ -129,5 +130,64 @@ export function parseWebhookPayload(body) {
       }
     }
   }
+  return events;
+}
+
+// ─── Twilio Connector ─────────────────────────────────────────────────────────
+
+export async function sendTwilioTextMessage({ accountSid, authToken, from, to, text }) {
+  const client = twilio(accountSid, authToken);
+  const formattedTo = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
+  const formattedFrom = from.startsWith('whatsapp:') ? from : `whatsapp:${from}`;
+
+  const message = await client.messages.create({
+    from: formattedFrom,
+    to: formattedTo,
+    body: text
+  });
+
+  return { messages: [{ id: message.sid }] };
+}
+
+export async function sendTwilioTemplateMessage({ accountSid, authToken, from, to, templateName, components = [] }) {
+  // mapped templates for Twilio require a contentSid. 
+  // without it, we fallback to text message
+  console.warn("[Twilio] Using text fallback for template message request because ContentSid mapping is not provided.");
+  return sendTwilioTextMessage({ accountSid, authToken, from, to, text: `[Template: ${templateName}]` });
+}
+
+export function parseTwilioWebhookPayload(body) {
+  const events = [];
+  
+  // body is already parsed by express.urlencoded
+  if (body.MessageStatus) {
+    events.push({
+      type: "status",
+      phoneNumberId: body.To.replace("whatsapp:", ""),
+      recipientId: body.To,
+      messageId: body.MessageSid,
+      status: body.MessageStatus, // queued, failed, sent, delivered, read
+      timestamp: Math.floor(Date.now() / 1000).toString(),
+      errorCode: body.ErrorCode || null,
+      errorTitle: body.ErrorMessage || null
+    });
+  } else if (body.Body !== undefined) {
+    events.push({
+      type: "message",
+      phoneNumberId: body.To.replace("whatsapp:", ""),
+      from: body.From.replace("whatsapp:", ""),
+      messageId: body.MessageSid,
+      timestamp: Math.floor(Date.now() / 1000).toString(),
+      messageType: body.MediaUrl0 ? "image" : "text", // naive media check
+      text: body.Body || null,
+      mediaId: body.MediaUrl0 || null, // Not a true ID but URL
+      mediaMimeType: body.MediaContentType0 || null,
+      contact: { 
+        wa_id: body.From.replace("whatsapp:", ""),
+        profile: { name: body.ProfileName || null }
+      }
+    });
+  }
+
   return events;
 }
