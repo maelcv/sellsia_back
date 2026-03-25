@@ -37,5 +37,8 @@ export const config = {
   removeDemoData: (process.env.REMOVE_DEMO_DATA || "true").toLowerCase() === "true",
   tavilyApiKey: process.env.TAVILY_API_KEY || "",
   whatsappApiVersion: process.env.WHATSAPP_API_VERSION || "v22.0",
-  whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || "sellsia-whatsapp-verify-2024"
+  whatsappVerifyToken: process.env.WHATSAPP_VERIFY_TOKEN || "sellsia-whatsapp-verify-2024",
+  // Timeouts pour les routes IA longue durée (en ms)
+  chatStreamTimeoutMs: Number(process.env.CHAT_STREAM_TIMEOUT_MS || 720000),
+  chatAskTimeoutMs: Number(process.env.CHAT_ASK_TIMEOUT_MS || 300000)
 };

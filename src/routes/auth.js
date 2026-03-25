@@ -74,7 +74,9 @@ router.post("/login", authRateLimit, async (req, res) => {
 
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { id: true, email: true, passwordHash: true, role: true, companyName: true, whatsappPhone: true }
+    // tenantId inclus pour l'injecter dans le JWT (évite une requête DB supplémentaire
+    // dans requireTenantContext à chaque appel API)
+    select: { id: true, email: true, passwordHash: true, role: true, companyName: true, whatsappPhone: true, tenantId: true }
   });
 
   const hashToCheck = user ? user.passwordHash : DUMMY_HASH;
@@ -86,14 +88,14 @@ router.post("/login", authRateLimit, async (req, res) => {
   }
 
   const token = jwt.sign(
-    { sub: user.id, email: user.email, role: user.role, companyName: user.companyName },
+    { sub: user.id, email: user.email, role: user.role, companyName: user.companyName, tenantId: user.tenantId },
     config.jwtSecret,
     { expiresIn: config.jwtExpiresIn }
   );
 
   return res.json({
     token,
-    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone }
+    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone, tenantId: user.tenantId }
   });
 });
 

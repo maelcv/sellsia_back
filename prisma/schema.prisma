@@ -113,10 +113,11 @@ enum CollaboratorStatus {
   disabled
 }
 
-/// DB values: "local", "mistral-remote"
+/// DB values: "local", "mistral-remote", "openai-remote"
 enum AgentType {
   local
   mistral_remote // maps to "mistral-remote" in DB
+  openai_remote  // maps to "openai-remote" in DB — agents importés depuis OpenAI Assistants
 }
 
 enum ProviderErrorType {
@@ -157,6 +158,107 @@ enum ReviewStatus {
   reviewed
 }
 
+// ── Multi-tenant root ─────────────────────────────────────────
+
+/// Tenant = workspace d'un client de la plateforme.
+/// Toutes les données métier sont isolées par tenant_id.
+/// Les admins de la plateforme (role=admin) n'appartiennent à aucun tenant (tenantId = null).
+/// Un tenant peut avoir un parent (sous-client d'un client) — profondeur max 3 niveaux.
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String                        // Ex: "SELI", "ACME"
+  slug      String   @unique              // Ex: "seli", "acme" (URL-safe, unique)
+  status    String   @default("active")   // active | suspended | deleted
+  plan      String   @default("free")     // LEGACY — conserver pendant migration, remplacé par planId
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Hiérarchie tenant (client → sous-clients)
+  parentTenantId String? @map("parent_tenant_id")
+  parent         Tenant? @relation("TenantHierarchy", fields: [parentTenantId], references: [id])
+  children       Tenant[] @relation("TenantHierarchy")
+
+  // Plan assigné au workspace (source de vérité pour les permissions)
+  planId Int?    @map("plan_id")
+  tenantPlan Plan? @relation(fields: [planId], references: [id])
+
+  // Relations inverses — toutes les entités qui appartiennent à ce tenant
+  users              User[]
+  conversations      Conversation[]
+  messages           Message[]
+  agentPrompts       AgentPrompt[]
+  clientServiceLinks ClientServiceLink[]
+  orchestrationLogs  OrchestrationLog[]
+  reasoningSteps     ReasoningStep[]
+  auditLogs          AuditLog[]
+  reminders          Reminder[]
+  roles              Role[]
+  agents             Agent[]
+  tenantAgentAccess  TenantAgentAccess[]
+
+  @@index([parentTenantId])
+  @@map("tenants")
+}
+
+// ── RBAC ─────────────────────────────────────────────────────
+
+/// Rôle métier dans un tenant (ex: "admin", "seller", "manager").
+/// Distinct de l'enum UserRole qui est le rôle plateforme (admin, client, collaborator).
+model Role {
+  id       String @id @default(cuid())
+  tenantId String @map("tenant_id")
+  name     String // "admin", "seller", "manager"
+  label    String // "Administrateur", "Commercial", "Manager"
+
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  assignments UserRoleAssignment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+/// Permission atomique sur une ressource (ex: "conversation:read").
+model Permission {
+  id       String @id @default(cuid())
+  resource String // "conversation", "reminder", "report", etc.
+  action   String // "read", "write", "delete"
+  label    String // "Voir les conversations"
+
+  roles RolePermission[]
+
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+/// Table de jointure Role ↔ Permission.
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+/// Assignation d'un rôle métier à un utilisateur (dans son tenant).
+/// Attention : ne pas confondre avec l'enum UserRole (rôle plateforme).
+model UserRoleAssignment {
+  id     String @id @default(cuid())
+  userId Int    @map("user_id")
+  roleId String @map("role_id")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_role_assignments")
+}
+
 // ── Models ───────────────────────────────────────────────────
 
 model User {
@@ -167,6 +269,10 @@ model User {
   companyName  String?  @map("company_name")
   whatsappPhone String? @unique @map("whatsapp_phone")
   createdAt    DateTime @default(now()) @map("created_at")
+
+  // Multi-tenant : null pour les super-admins plateforme (role=admin)
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
   // Relations
   userAgentAccess    UserAgentAccess[]
@@ -186,10 +292,16 @@ model User {
   whatsappAccounts   WhatsappAccount[]
   channelContacts    ChannelContact[]
   reminders          Reminder[]
+  roleAssignments    UserRoleAssignment[]
+  ownedAgents        Agent[]             @relation("OwnedAgents")
 
+  @@index([tenantId])
   @@map("users")
 }
 
+/// Agent IA.
+/// tenantId = null → agent global plateforme (accessible par tous, géré par le super admin).
+/// tenantId = set  → agent tenant-scoped (créé/importé par ce client, visible uniquement dans son workspace).
 model Agent {
   id             String    @id
   name           String
@@ -199,18 +311,28 @@ model Agent {
   mistralAgentId String?   @map("mistral_agent_id")
   createdAt      DateTime  @default(now()) @map("created_at")
 
-  // Relations
-  userAgentAccess UserAgentAccess[]
-  accessRequests  AccessRequest[]
-  conversations   Conversation[]
-  messages        Message[]
-  agentPrompts    AgentPrompt[]
-  knowledgeDocs   KnowledgeDocument[]
-  reasoningSteps  ReasoningStep[]
-  tokenUsage      TokenUsage[]
-  providerErrors  ProviderError[]
-  reminders       Reminder[]
+  // Scoping tenant : null = global, set = tenant-scoped
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
+  // Propriétaire (user qui a créé/importé l'agent)
+  ownerId Int? @map("owner_id")
+  owner   User? @relation("OwnedAgents", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  // Relations
+  userAgentAccess   UserAgentAccess[]
+  tenantAgentAccess TenantAgentAccess[]
+  accessRequests    AccessRequest[]
+  conversations     Conversation[]
+  messages          Message[]
+  agentPrompts      AgentPrompt[]
+  knowledgeDocs     KnowledgeDocument[]
+  reasoningSteps    ReasoningStep[]
+  tokenUsage        TokenUsage[]
+  providerErrors    ProviderError[]
+  reminders         Reminder[]
+
+  @@index([tenantId])
   @@map("agents")
 }
 
@@ -227,6 +349,24 @@ model UserAgentAccess {
 
   @@unique([userId, agentId])
   @@map("user_agent_access")
+}
+
+/// Accès d'un tenant à un agent (niveau workspace).
+/// Permet à un client de contrôler quels agents sont disponibles dans son workspace
+/// et de les partager avec ses sous-clients.
+model TenantAgentAccess {
+  id        Int          @id @default(autoincrement())
+  tenantId  String       @map("tenant_id")
+  agentId   String       @map("agent_id")
+  status    AccessStatus
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, agentId])
+  @@index([tenantId])
+  @@map("tenant_agent_access")
 }
 
 model AccessRequest {
@@ -254,22 +394,37 @@ model AuditLog {
   details     String?
   createdAt   DateTime @default(now()) @map("created_at")
 
+  // Multi-tenant : null pour les actions des super-admins
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   actorUser User? @relation(fields: [actorUserId], references: [id])
 
+  @@index([tenantId])
   @@map("audit_logs")
 }
 
 model Plan {
-  id               Int      @id @default(autoincrement())
-  name             String   @unique
-  monthlyTokenLimit Int     @map("monthly_token_limit")
-  collaboratorLimit Int     @map("collaborator_limit")
-  priceEurMonth    Float    @map("price_eur_month")
-  featuresJson     String   @map("features_json")
-  isActive         Boolean  @default(true) @map("is_active")
-  createdAt        DateTime @default(now()) @map("created_at")
+  id                Int      @id @default(autoincrement())
+  name              String   @unique
+  monthlyTokenLimit Int      @map("monthly_token_limit")
+  collaboratorLimit Int      @map("collaborator_limit")
+  priceEurMonth     Float    @map("price_eur_month")
+  featuresJson      String   @map("features_json")
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  // Permissions features SaaS (JSON object avec flags booléens)
+  // Ex: { "ai_provider": true, "agents_local": true, "agents_cloud": false, ... }
+  permissionsJson String @default("{}") @map("permissions_json")
+
+  // Quotas
+  maxSubClients Int @default(0)  @map("max_sub_clients") // 0 = aucun sous-client autorisé
+  maxUsers      Int @default(10) @map("max_users")
+  maxAgents     Int @default(5)  @map("max_agents")
 
   clientPlans ClientPlan[]
+  tenants     Tenant[]
 
   @@map("plans")
 }
@@ -320,37 +475,46 @@ model ExternalService {
 }
 
 model ClientServiceLink {
-  id                Int               @id @default(autoincrement())
-  ownerUserId       Int               @map("owner_user_id")
-  serviceId         Int               @map("service_id")
-  label             String
-  apiKeyMasked      String            @default("") @map("api_key_masked")
-  apiSecretMasked   String            @default("") @map("api_secret_masked")
-  apiKeyEncrypted   String?           @map("api_key_encrypted")
-  apiSecretEncrypted String?          @map("api_secret_encrypted")
-  status            ServiceLinkStatus @default(inactive)
-  configJson        String            @map("config_json")
-  updatedAt         DateTime          @default(now()) @map("updated_at")
+  id                 Int               @id @default(autoincrement())
+  ownerUserId        Int               @map("owner_user_id")
+  serviceId          Int               @map("service_id")
+  label              String
+  apiKeyMasked       String            @default("") @map("api_key_masked")
+  apiSecretMasked    String            @default("") @map("api_secret_masked")
+  apiKeyEncrypted    String?           @map("api_key_encrypted")
+  apiSecretEncrypted String?           @map("api_secret_encrypted")
+  status             ServiceLinkStatus @default(inactive)
+  configJson         String            @map("config_json")
+  updatedAt          DateTime          @default(now()) @map("updated_at")
+
+  // Multi-tenant
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
   owner   User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   service ExternalService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   @@unique([ownerUserId, serviceId])
+  @@index([tenantId])
   @@map("client_service_links")
 }
 
 model Conversation {
-  id              String             @id
-  userId          Int                @map("user_id")
-  agentId         String?            @map("agent_id")
+  id              String              @id
+  userId          Int                 @map("user_id")
+  agentId         String?             @map("agent_id")
   title           String?
-  contextType     String?            @map("context_type")
-  contextEntityId String?            @map("context_entity_id")
-  contextUrl      String?            @map("context_url")
+  contextType     String?             @map("context_type")
+  contextEntityId String?             @map("context_entity_id")
+  contextUrl      String?             @map("context_url")
   channel         ConversationChannel @default(chrome)
-  channelPhoneFrom String?           @map("channel_phone_from")
-  startedAt       DateTime           @default(now()) @map("started_at")
-  updatedAt       DateTime           @default(now()) @map("updated_at")
+  channelPhoneFrom String?            @map("channel_phone_from")
+  startedAt       DateTime            @default(now()) @map("started_at")
+  updatedAt       DateTime            @default(now()) @map("updated_at")
+
+  // Multi-tenant
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
@@ -362,6 +526,7 @@ model Conversation {
   providerErrors    ProviderError[]
   whatsappMessages  WhatsappMessage[]
 
+  @@index([tenantId])
   @@map("conversations")
 }
 
@@ -378,12 +543,17 @@ model Message {
   sourcesJson    String?     @map("sources_json")
   createdAt      DateTime    @default(now()) @map("created_at")
 
+  // Multi-tenant (déduit de la conversation, dénormalisé pour les requêtes directes)
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   feedback       MessageFeedback[]
   reasoningSteps ReasoningStep[]
 
+  @@index([tenantId])
   @@map("messages")
 }
 
@@ -397,9 +567,14 @@ model AgentPrompt {
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
 
+  // Multi-tenant : null pour les prompts globaux (admin plateforme)
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   agent  Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   client User? @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId])
   @@map("agent_prompts")
 }
 
@@ -438,9 +613,14 @@ model OrchestrationLog {
   error             String?
   createdAt         DateTime     @default(now()) @map("created_at")
 
+  // Multi-tenant
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([tenantId])
   @@map("orchestration_logs")
 }
 
@@ -470,10 +650,15 @@ model ReasoningStep {
   dataJson       String   @default("{}") @map("data_json")
   createdAt      DateTime @default(now()) @map("created_at")
 
+  // Multi-tenant
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   message      Message?     @relation(fields: [messageId], references: [id], onDelete: Cascade)
   agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
+  @@index([tenantId])
   @@map("reasoning_steps")
 }
 
@@ -566,11 +751,16 @@ model Reminder {
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
+  // Multi-tenant
+  tenantId String? @map("tenant_id")
+  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   // Index composite pour les requêtes du cron worker (status + scheduledAt)
   @@index([status, scheduledAt])
+  @@index([tenantId])
   @@map("reminders")
 }
 

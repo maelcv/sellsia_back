@@ -26,3 +26,37 @@ export function requireRole(...allowedRoles) {
     return next();
   };
 }
+
+/**
+ * Vérifie qu'un feature est activé dans le plan du tenant courant.
+ *
+ * Doit être utilisé APRÈS requireTenantContext (qui charge req.tenantPlan).
+ * Les super-admins (role="admin") bypasse toujours cette vérification.
+ *
+ * Comportement fail-open si le tenant n'a pas de plan assigné (migration progressive).
+ *
+ * @param {string} featureName - Clé du plan (ex: "ai_provider", "agents_local", ...)
+ *
+ * Exemple :
+ *   router.post("/import", requireAuth, requireTenantContext, requireFeature("agents_cloud"), ...)
+ */
+export function requireFeature(featureName) {
+  return (req, res, next) => {
+    // Super-admins : bypass total
+    if (req.user?.role === "admin") return next();
+
+    // Fail-open si pas de plan assigné (tenant en cours de migration)
+    if (!req.tenantPlan) return next();
+
+    const perms = req.tenantPlan.permissions || {};
+    if (!perms[featureName]) {
+      return res.status(403).json({
+        error: `Feature '${featureName}' non disponible sur votre plan`,
+        feature: featureName,
+        plan: req.tenantPlan.name || null
+      });
+    }
+
+    return next();
+  };
+}

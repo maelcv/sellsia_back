@@ -2,8 +2,28 @@ import express from "express";
 import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireTenantContext } from "../middleware/tenant.js";
 
 const router = express.Router();
+
+// Toutes les clés de permissions features supportées
+const PERMISSION_KEYS = [
+  "ai_provider",
+  "agents_local",
+  "agents_cloud",
+  "knowledge_base",
+  "feedback",
+  "logs",
+  "crm_services",
+  "channel_services",
+  "sub_clients",
+  "user_profiles",
+  "reminders",
+  "usage_stats",
+  "orchestration_logs"
+];
+
+const ALL_TRUE_PERMISSIONS = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true]));
 
 const changePlanSchema = z.object({
   planId: z.number().int().positive()
@@ -15,7 +35,43 @@ const upsertPlanSchema = z.object({
   collaboratorLimit: z.number().int().min(1).max(10000),
   priceEurMonth: z.number().min(0).max(1000000),
   features: z.array(z.string().min(2).max(120)).min(1).max(30),
-  isActive: z.boolean().optional().default(true)
+  isActive: z.boolean().optional().default(true),
+  // Permissions features (optionnel, défaut: toutes false)
+  permissions: z.record(z.string(), z.boolean()).optional().default({}),
+  maxSubClients: z.number().int().min(0).max(10000).optional().default(0),
+  maxUsers: z.number().int().min(1).max(100000).optional().default(10),
+  maxAgents: z.number().int().min(0).max(1000).optional().default(5)
+});
+
+/**
+ * GET /api/plans/feature-access
+ * Retourne les permissions features effectives pour le tenant courant.
+ * - Admin : toutes les features activées
+ * - Client/collaborator : permissions du plan du workspace
+ */
+router.get("/feature-access", requireAuth, requireTenantContext, async (req, res) => {
+  if (req.user.role === "admin") {
+    return res.json({
+      permissions: ALL_TRUE_PERMISSIONS,
+      isAdmin: true,
+      plan: null,
+      quotas: { maxSubClients: 9999, maxUsers: 9999, maxAgents: 9999 }
+    });
+  }
+
+  const plan = req.tenantPlan;
+  return res.json({
+    permissions: plan?.permissions || {},
+    isAdmin: false,
+    plan: plan ? { id: plan.id, name: plan.name } : null,
+    quotas: plan
+      ? {
+          maxSubClients: plan.maxSubClients,
+          maxUsers: plan.maxUsers,
+          maxAgents: plan.maxAgents
+        }
+      : { maxSubClients: 0, maxUsers: 0, maxAgents: 0 }
+  });
 });
 
 router.get("/my-plan", requireAuth, requireRole("client"), async (req, res) => {
@@ -65,7 +121,11 @@ router.get("/catalog", requireAuth, async (req, res) => {
     priceEurMonth: row.priceEurMonth,
     featuresJson: row.featuresJson,
     isActive: row.isActive,
-    features: JSON.parse(row.featuresJson)
+    features: JSON.parse(row.featuresJson),
+    permissions: (() => { try { return JSON.parse(row.permissionsJson || "{}"); } catch { return {}; } })(),
+    maxSubClients: row.maxSubClients,
+    maxUsers: row.maxUsers,
+    maxAgents: row.maxAgents
   }));
 
   if (req.user.role === "admin") {
@@ -120,7 +180,11 @@ router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
       collaboratorLimit: payload.collaboratorLimit,
       priceEurMonth: payload.priceEurMonth,
       featuresJson: JSON.stringify(payload.features),
-      isActive: payload.isActive
+      isActive: payload.isActive,
+      permissionsJson: JSON.stringify(payload.permissions || {}),
+      maxSubClients: payload.maxSubClients ?? 0,
+      maxUsers: payload.maxUsers ?? 10,
+      maxAgents: payload.maxAgents ?? 5
     }
   });
 
@@ -150,7 +214,11 @@ router.patch("/admin/:id", requireAuth, requireRole("admin"), async (req, res) =
         collaboratorLimit: payload.collaboratorLimit,
         priceEurMonth: payload.priceEurMonth,
         featuresJson: JSON.stringify(payload.features),
-        isActive: payload.isActive
+        isActive: payload.isActive,
+        permissionsJson: JSON.stringify(payload.permissions || {}),
+        maxSubClients: payload.maxSubClients ?? 0,
+        maxUsers: payload.maxUsers ?? 10,
+        maxAgents: payload.maxAgents ?? 5
       }
     });
   } catch (err) {

@@ -12,9 +12,12 @@
  */
 
 import { Router } from "express";
+import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
+import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
+import { requireTenantContext } from "../middleware/tenant.js";
 import { reminderEmitter } from "../../ia_models/reminders/reminder-events.js";
 
 const router = Router();
@@ -66,7 +69,7 @@ const createReminderSchema = z.object({
  *   targetPhone      (string E.164, requis si channel="whatsapp")
  *   agentId          (string, optionnel)
  */
-router.post("/", requireAuth, async (req, res) => {
+router.post("/", requireAuth, requireTenantContext, async (req, res) => {
   // Validation du corps de la requête
   const parsed = createReminderSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -97,7 +100,7 @@ router.post("/", requireAuth, async (req, res) => {
   try {
     const reminder = await prisma.reminder.create({
       data: {
-        userId: req.user.id,
+        userId: req.user.sub,
         agentId: agentId || null,
         taskDescription,
         scheduledAt: scheduledDate,
@@ -128,7 +131,7 @@ router.post("/", requireAuth, async (req, res) => {
  *   limit   → nombre de résultats max (défaut 50, max 200)
  *   offset  → pagination (défaut 0)
  */
-router.get("/", requireAuth, async (req, res) => {
+router.get("/", requireAuth, requireTenantContext, async (req, res) => {
   const { status, limit = "50", offset = "0" } = req.query;
 
   // Validation basique des query params
@@ -136,7 +139,7 @@ router.get("/", requireAuth, async (req, res) => {
   const offsetNum = parseInt(offset) || 0;
 
   // Construction du filtre
-  const where = { userId: req.user.id };
+  const where = { userId: req.user.sub };
   if (status) {
     const validStatuses = ["PENDING", "SENT", "FAILED", "CANCELLED"];
     if (!validStatuses.includes(status)) {
@@ -179,7 +182,7 @@ router.get("/", requireAuth, async (req, res) => {
  * Seul le propriétaire peut annuler son rappel.
  * Un rappel déjà SENT ou FAILED ne peut plus être annulé.
  */
-router.patch("/:id/cancel", requireAuth, async (req, res) => {
+router.patch("/:id/cancel", requireAuth, requireTenantContext, async (req, res) => {
   const reminderId = parseInt(req.params.id);
   if (isNaN(reminderId)) {
     return res.status(400).json({ error: "ID de rappel invalide" });
@@ -190,7 +193,7 @@ router.patch("/:id/cancel", requireAuth, async (req, res) => {
     const reminder = await prisma.reminder.findFirst({
       where: {
         id: reminderId,
-        userId: req.user.id,
+        userId: req.user.sub,
       },
     });
 
@@ -236,8 +239,19 @@ router.patch("/:id/cancel", requireAuth, async (req, res) => {
  * IMPORTANT : cette route doit être déclarée AVANT toute route avec paramètre "/:id"
  * pour éviter qu'Express la traite comme un ID de rappel.
  */
-router.get("/events", requireAuth, (req, res) => {
-  const userId = req.user.id;
+router.get("/events", (req, res) => {
+  // EventSource ne supporte pas les headers custom — accepte le token en Bearer ou ?token=
+  const token = req.headers.authorization?.split(" ")[1] || req.query.token;
+  if (!token) return res.status(401).json({ error: "Missing token" });
+
+  let payload;
+  try {
+    payload = jwt.verify(token, config.jwtSecret);
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+
+  const userId = payload.sub;
 
   // --- Configuration des headers SSE ---
   res.setHeader("Content-Type", "text/event-stream");
@@ -255,11 +269,9 @@ router.get("/events", requireAuth, (req, res) => {
     // Filtre : n'envoie l'événement qu'au bon utilisateur
     if (eventUserId !== userId) return;
 
-    const payload = JSON.stringify({
-      type: "reminder",
-      ...reminder,
-    });
-    res.write(`data: ${payload}\n\n`);
+    const payload = JSON.stringify({ reminder });
+    // Événement nommé "reminder" — permet addEventListener("reminder", ...) côté client
+    res.write(`event: reminder\ndata: ${payload}\n\n`);
   };
 
   reminderEmitter.on("reminder", onReminder);

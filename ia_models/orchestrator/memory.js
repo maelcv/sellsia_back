@@ -11,9 +11,10 @@ import crypto from "crypto";
  * @param {number} userId
  * @param {string} agentId
  * @param {Object} pageContext
+ * @param {string|null} tenantId - Tenant d'appartenance (null pour super-admin)
  * @returns {Promise<string>} - ID de la conversation
  */
-export async function createConversation(userId, agentId, pageContext = {}) {
+export async function createConversation(userId, agentId, pageContext = {}, tenantId = null) {
   const id = crypto.randomUUID();
 
   await prisma.conversation.create({
@@ -24,7 +25,8 @@ export async function createConversation(userId, agentId, pageContext = {}) {
       title: null,
       contextType: pageContext?.type || (pageContext?.channel === "whatsapp" ? "whatsapp" : pageContext?.channel === "dashboard" ? "dashboard" : "generic"),
       contextEntityId: pageContext?.entityId || null,
-      contextUrl: pageContext?.url || null
+      contextUrl: pageContext?.url || null,
+      tenantId: tenantId || null // isolation multi-tenant
     }
   });
 
@@ -35,10 +37,10 @@ export async function createConversation(userId, agentId, pageContext = {}) {
  * Récupère ou crée une conversation pour le contexte donné.
  * Réutilise une conversation existante si même utilisateur + même contexte + < 30 min.
  */
-export async function getOrCreateConversation(userId, agentId, pageContext = {}) {
+export async function getOrCreateConversation(userId, agentId, pageContext = {}, tenantId = null) {
   // Une conversation = une session de chat active.
   // Sans conversationId explicite fourni par le client, on en cree toujours une nouvelle.
-  return createConversation(userId, agentId, pageContext);
+  return createConversation(userId, agentId, pageContext, tenantId);
 }
 
 function buildConversationTitleFromUserMessage(content = "") {

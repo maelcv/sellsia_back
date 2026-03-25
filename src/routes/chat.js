@@ -18,6 +18,7 @@ import { z } from "zod";
 import { prisma, logAudit, logReasoningStep, linkReasoningStepsToMessage } from "../prisma.js";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
+import { requireTenantContext } from "../middleware/tenant.js";
 import { getProviderForUser, getActiveProviderCode } from "../../ia_models/providers/index.js";
 import { orchestrate, orchestrateStream } from "../../ia_models/orchestrator/dispatcher.js";
 import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
@@ -318,7 +319,7 @@ async function checkTokenQuota(userId) {
 // POST /api/chat/ask — Demande synchrone
 // ══════════════════════════════════════════════════════
 
-router.post("/ask", requireAuth, upload.array("files", 5), async (req, res) => {
+router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5), async (req, res) => {
   // Parse body — if multipart, fields are in req.body; files in req.files
   let bodyToParse;
   try {
@@ -387,7 +388,7 @@ router.post("/ask", requireAuth, upload.array("files", 5), async (req, res) => {
         validatedConvId = null;
       }
     }
-    const conversationId = validatedConvId || await getOrCreateConversation(userId, requestedAgentId, pageContext);
+    const conversationId = validatedConvId || await getOrCreateConversation(userId, requestedAgentId, pageContext, req.tenantId);
 
     // Sauvegarder le message utilisateur (include file info if any)
     const userMsgContent = uploadedFiles.length > 0
@@ -423,7 +424,8 @@ router.post("/ask", requireAuth, upload.array("files", 5), async (req, res) => {
       tools,
       toolContext,
       knowledgeContext,
-      thinkingMode: requestedTools?.thinking || "low"
+      thinkingMode: requestedTools?.thinking || "low",
+      tenantId: req.tenantId
     });
 
     // 8. Sauvegarder la réponse
@@ -523,7 +525,7 @@ router.post("/ask", requireAuth, upload.array("files", 5), async (req, res) => {
 // POST /api/chat/stream — Streaming SSE (with full orchestration)
 // ══════════════════════════════════════════════════════
 
-router.post("/stream", requireAuth, upload.array("files", 5), async (req, res) => {
+router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 5), async (req, res) => {
   let bodyToParse;
   try {
     bodyToParse = req.body.payload ? JSON.parse(req.body.payload) : req.body;
@@ -590,7 +592,7 @@ router.post("/stream", requireAuth, upload.array("files", 5), async (req, res) =
       }
     }
     const isNewConversation = !validatedConversationId;
-    const conversationId = validatedConversationId || await getOrCreateConversation(userId, requestedAgentId, pageContext);
+    const conversationId = validatedConversationId || await getOrCreateConversation(userId, requestedAgentId, pageContext, req.tenantId);
 
     // Bug fix: persist agent assignment across messages.
     // On follow-up messages the client may not re-send requestedAgentId, so we
@@ -670,7 +672,8 @@ router.post("/stream", requireAuth, upload.array("files", 5), async (req, res) =
       toolContext,
       thinkingMode: requestedTools?.thinking || "low",
       knowledgeContext,
-      isFirstMessage
+      isFirstMessage,
+      tenantId: req.tenantId
     })) {
       if (clientDisconnected) break;
 
@@ -1012,7 +1015,7 @@ router.post("/stream", requireAuth, upload.array("files", 5), async (req, res) =
 // GET /api/chat/history — Dernières conversations
 // ══════════════════════════════════════════════════════
 
-router.get("/history", requireAuth, async (req, res) => {
+router.get("/history", requireAuth, requireTenantContext, async (req, res) => {
   const userId = req.user.sub;
   const limit = Math.min(Number(req.query.limit) || 10, 50);
   const conversations = await getRecentConversations(userId, limit);
@@ -1023,7 +1026,7 @@ router.get("/history", requireAuth, async (req, res) => {
 // GET /api/chat/conversation/:id — Messages d'une conversation
 // ══════════════════════════════════════════════════════
 
-router.get("/conversation/:id", requireAuth, async (req, res) => {
+router.get("/conversation/:id", requireAuth, requireTenantContext, async (req, res) => {
   const userId = req.user.sub;
   const messages = await getConversationMessages(req.params.id, userId);
 
@@ -1038,7 +1041,7 @@ router.get("/conversation/:id", requireAuth, async (req, res) => {
 // PUT /api/chat/conversation/:id/title — Renommer manuellement une conversation
 // ══════════════════════════════════════════════════════
 
-router.put("/conversation/:id/title", requireAuth, async (req, res) => {
+router.put("/conversation/:id/title", requireAuth, requireTenantContext, async (req, res) => {
   const userId = req.user.sub || req.user.id;
   const { title } = req.body;
   if (!title || typeof title !== "string") {
@@ -1069,7 +1072,7 @@ router.put("/conversation/:id/title", requireAuth, async (req, res) => {
 // POST /api/chat/feedback — Feedback sur un message
 // ══════════════════════════════════════════════════════
 
-router.post("/feedback", requireAuth, async (req, res) => {
+router.post("/feedback", requireAuth, requireTenantContext, async (req, res) => {
   const parse = feedbackSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid feedback payload" });
@@ -1132,7 +1135,7 @@ router.get("/download/:fileId", requireAuth, (req, res) => {
 // POST /api/chat/suggestions — Suggestions contextuelles
 // ══════════════════════════════════════════════════════
 
-router.post("/suggestions", requireAuth, async (req, res) => {
+router.post("/suggestions", requireAuth, requireTenantContext, async (req, res) => {
   const userId = req.user.sub;
   const pageContext = req.body.pageContext || {};
 

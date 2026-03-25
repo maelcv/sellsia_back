@@ -26,7 +26,8 @@ const adminUserSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(8).max(128).optional(),
   role: z.enum(["admin", "client"]),
-  companyName: z.string().max(120).optional().default("")
+  companyName: z.string().max(120).optional().default(""),
+  tenantId: z.string().cuid().optional()
 });
 
 const changePasswordSchema = z.object({
@@ -630,7 +631,8 @@ router.post("/admin/users", requireAuth, requireRole("admin"), async (req, res) 
       email: payload.email.toLowerCase(),
       passwordHash: bcrypt.hashSync(payload.password, 12),
       role: payload.role,
-      companyName: payload.companyName || null
+      companyName: payload.companyName || null,
+      tenantId: payload.tenantId || null
     }
   });
 

@@ -19,6 +19,7 @@ import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireTenantContext } from "../middleware/tenant.js";
 import { encryptSecret, decryptSecret } from "../security/secrets.js";
 import { validateWhatsappSignature } from "../middleware/whatsapp-signature.js";
 import {
@@ -203,7 +204,7 @@ async function processIncomingMessage(event) {
 
   // 1. Identify the user by their WhatsApp phone number
   let userId = account.userId; // Default: account owner
-  
+
   const normalizedFrom = normalizePhone(from);
   console.log(`[WhatsApp] Normalized incoming phone: ${normalizedFrom} (original: ${from})`);
 
@@ -222,6 +223,13 @@ async function processIncomingMessage(event) {
   } else {
     console.log(`[WhatsApp] Unknown phone ${from}, falling back to account owner (userId: ${userId})`);
   }
+
+  // Resolve tenantId for the identified user (needed for conversation isolation)
+  const userRecord = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { tenantId: true }
+  });
+  const tenantId = userRecord?.tenantId || null;
 
   const accessToken = decryptSecret(account.accessTokenEncrypted);
 
@@ -248,8 +256,11 @@ async function processIncomingMessage(event) {
   });
 
   // 4. Find or create conversation for this WhatsApp phone
+  const convWhere = { userId, channel: "whatsapp", channelPhoneFrom: from };
+  if (tenantId) convWhere.tenantId = tenantId;
+
   let conversation = await prisma.conversation.findFirst({
-    where: { userId, channel: "whatsapp", channelPhoneFrom: from },
+    where: convWhere,
     orderBy: { updatedAt: "desc" },
     select: { id: true }
   });
@@ -272,7 +283,8 @@ async function processIncomingMessage(event) {
         title,
         contextType: "whatsapp",
         channel: "whatsapp",
-        channelPhoneFrom: from
+        channelPhoneFrom: from,
+        tenantId: tenantId || null
       }
     });
   }
@@ -326,6 +338,7 @@ async function processIncomingMessage(event) {
     const sellsyClient = await getSellsyClient(userId);
     const toolContext = {
       userId,           // Nécessaire pour le tool schedule_reminder
+      tenantId,
       sellsyClient,
       tavilyApiKey: config.tavilyApiKey || null,
       uploadedFiles: [],
@@ -350,7 +363,8 @@ async function processIncomingMessage(event) {
       tools,
       toolContext,
       knowledgeContext,
-      thinkingMode: "low"
+      thinkingMode: "low",
+      tenantId
     });
 
     // Ensure we have a valid answer to send back to the message author
@@ -481,7 +495,7 @@ async function handleStatusUpdate(event) {
 // POST /api/whatsapp/send — Envoi manuel (auth required)
 // ══════════════════════════════════════════════════════
 
-router.post("/send", requireAuth, async (req, res) => {
+router.post("/send", requireAuth, requireTenantContext, async (req, res) => {
   const parse = sendSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid payload" });
@@ -591,7 +605,7 @@ router.post("/send", requireAuth, async (req, res) => {
 // POST /api/whatsapp/send-template — Envoi de template (auth required)
 // ══════════════════════════════════════════════════════
 
-router.post("/send-template", requireAuth, async (req, res) => {
+router.post("/send-template", requireAuth, requireTenantContext, async (req, res) => {
   const parse = templateSendSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid payload" });
@@ -856,20 +870,26 @@ router.delete("/accounts/:id", requireAuth, requireRole("admin"), async (req, re
 // GET /api/whatsapp/conversations — Conversations WhatsApp
 // ══════════════════════════════════════════════════════
 
-router.get("/conversations", requireAuth, async (req, res) => {
+router.get("/conversations", requireAuth, requireTenantContext, async (req, res) => {
   const userId = req.user.sub;
   const limit = Math.min(Number(req.query.limit) || 20, 100);
 
-  const conversations = await prisma.$queryRaw`
-    SELECT c.*,
-      (SELECT COUNT(*)::int FROM messages m WHERE m.conversation_id = c.id) as message_count,
-      (SELECT content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) as last_message,
-      cc.whatsapp_profile_name
-    FROM conversations c
-    LEFT JOIN channel_contacts cc ON cc.user_id = c.user_id AND cc.whatsapp_phone = c.channel_phone_from
-    WHERE c.user_id = ${userId} AND c.channel = 'whatsapp'
-    ORDER BY c.updated_at DESC
-    LIMIT ${limit}`;
+  const where = { userId, channel: "whatsapp" };
+  if (req.tenantId) where.tenantId = req.tenantId;
+
+  const conversations = await prisma.conversation.findMany({
+    where,
+    orderBy: { updatedAt: "desc" },
+    take: limit,
+    select: {
+      id: true,
+      title: true,
+      channelPhoneFrom: true,
+      updatedAt: true,
+      startedAt: true,
+      tenantId: true
+    }
+  });
 
   return res.json({ conversations });
 });
@@ -878,15 +898,18 @@ router.get("/conversations", requireAuth, async (req, res) => {
 // GET /api/whatsapp/conversations/:id/messages — Messages d'une conversation
 // ══════════════════════════════════════════════════════
 
-router.get("/conversations/:id/messages", requireAuth, async (req, res) => {
+router.get("/conversations/:id/messages", requireAuth, requireTenantContext, async (req, res) => {
   const userId = req.user.sub;
   const conversationId = req.params.id;
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
 
-  // Verify ownership
+  // Verify ownership (+ tenant isolation)
+  const convWhere = { id: conversationId, userId, channel: "whatsapp" };
+  if (req.tenantId) convWhere.tenantId = req.tenantId;
+
   const conversation = await prisma.conversation.findFirst({
-    where: { id: conversationId, userId, channel: "whatsapp" },
+    where: convWhere,
     select: { id: true, channelPhoneFrom: true, title: true }
   });
 

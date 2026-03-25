@@ -6,7 +6,7 @@ import morgan from "morgan";
 import { fileURLToPath } from "url";
 import { config } from "./config.js";
 import { prisma } from "./prisma.js";
-import { globalRateLimit } from "./middleware/security.js";
+import { globalRateLimit, webhookRateLimit } from "./middleware/security.js";
 import authRoutes from "./routes/auth.js";
 import agentRoutes from "./routes/agents.js";
 import accessRoutes from "./routes/access.js";
@@ -22,6 +22,8 @@ import usageRoutes from "./routes/usage.js";
 import whatsappRoutes from "./routes/whatsapp.js";
 import remindersRoutes from "./routes/reminders.js";
 import { requireAuth } from "./middleware/auth.js";
+import { requireTenantContext } from "./middleware/tenant.js";
+import workspacesRoutes from "./routes/workspaces.js";
 import { startReminderWorker, stopReminderWorker } from "../ia_models/reminders/reminder-service.js";
 
 const app = express();
@@ -76,6 +78,10 @@ app.use(
 
 app.use(globalRateLimit);
 
+// Rate-limit public webhook endpoints before any body parsing
+app.use("/api/whatsapp/webhook", webhookRateLimit);
+app.use("/api/whatsapp/twilio-webhook", webhookRateLimit);
+
 // Capture raw body for WhatsApp webhook signature validation
 app.use("/api/whatsapp/webhook", express.json({
   limit: "1mb",
@@ -85,14 +91,14 @@ app.use("/api/whatsapp/webhook", express.json({
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan("combined"));
 
-// Set aggressive timeouts for long-running AI operations
+// Set timeouts for long-running AI operations (configurable via env)
 app.use((req, res, next) => {
   if (req.path === "/api/chat/stream") {
-    req.setTimeout(720000);
-    res.setTimeout(720000);
+    req.setTimeout(config.chatStreamTimeoutMs);
+    res.setTimeout(config.chatStreamTimeoutMs);
   } else if (req.path === "/api/chat/ask") {
-    req.setTimeout(300000);
-    res.setTimeout(300000);
+    req.setTimeout(config.chatAskTimeoutMs);
+    res.setTimeout(config.chatAskTimeoutMs);
   }
   next();
 });
@@ -115,9 +121,14 @@ app.use("/api/feedback", feedbackRoutes);
 app.use("/api/usage", usageRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/reminders", remindersRoutes);
+app.use("/api/workspaces", workspacesRoutes);
 
-app.get("/api/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
+app.get("/api/me", requireAuth, requireTenantContext, (req, res) => {
+  res.json({
+    user: req.user,
+    tenantPlan: req.tenantPlan,
+    tenantParentId: req.tenantParentId
+  });
 });
 
 app.use((err, _req, res, _next) => {

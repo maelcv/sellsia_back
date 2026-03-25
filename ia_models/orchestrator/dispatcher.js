@@ -296,7 +296,8 @@ export async function orchestrate({
   tools = null,
   toolContext = null,
   knowledgeContext = null,
-  thinkingMode = "low"
+  thinkingMode = "low",
+  tenantId = null
 }) {
   const startTime = Date.now();
 
@@ -353,8 +354,10 @@ export async function orchestrate({
     };
   }
 
-  // Enrichit le toolContext avec l'agentId courant (utilisé par le tool schedule_reminder)
-  const enrichedToolContext = toolContext ? { ...toolContext, agentId } : { agentId };
+  // Enrichit le toolContext avec l'agentId et tenantId courants
+  const enrichedToolContext = toolContext
+    ? { ...toolContext, agentId, tenantId }
+    : { agentId, tenantId };
 
   const result = await agent.execute({
     userMessage,
@@ -441,7 +444,8 @@ export async function* orchestrateStream({
   toolContext = null,
   thinkingMode = "low",
   knowledgeContext = null,
-  isFirstMessage = false
+  isFirstMessage = false,
+  tenantId = null
 }) {
   // Step 1: Emit conversation title on first message
   if (isFirstMessage) {
@@ -508,8 +512,10 @@ export async function* orchestrateStream({
     skillRouting: skillResult ? { chosen_skill: skillResult.chosen_skill, confidence: skillResult.confidence, reason: skillResult.reason } : null
   };
 
-  // Enrichit le toolContext avec l'agentId courant (utilisé par le tool schedule_reminder)
-  const enrichedToolContext = toolContext ? { ...toolContext, agentId } : { agentId };
+  // Enrichit le toolContext avec l'agentId et tenantId courants
+  const enrichedToolContext = toolContext
+    ? { ...toolContext, agentId, tenantId }
+    : { agentId, tenantId };
 
   // Step 6: Stream from the agent (which internally manages sub-agents)
   for await (const event of agent.executeStream({
