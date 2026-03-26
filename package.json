@@ -12,6 +12,7 @@
     "db:push": "npx prisma db push",
     "db:seed": "node src/seed.js",
     "db:studio": "npx prisma studio",
+    "db:reset": "npx prisma generate && npx prisma migrate reset --force --skip-generate && npx prisma db push --skip-generate --accept-data-loss",
     "postinstall": "npx prisma generate"
   },
   "dependencies": {
@@ -29,9 +30,12 @@
     "morgan": "^1.10.0",
     "multer": "^2.1.1",
     "node-cron": "^3.0.3",
+    "nodemailer": "^8.0.4",
+    "otplib": "^13.4.0",
     "papaparse": "^5.5.3",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.18.0",
+    "qrcode": "^1.5.4",
     "twilio": "^5.13.0",
     "zod": "^3.24.1"
   },

@@ -17,7 +17,7 @@ generator client {
 enum UserRole {
   admin
   client
-  collaborator
+  sub_client
 }
 
 enum AccessStatus {
@@ -55,7 +55,7 @@ enum DocType {
 /// DB values: "single-agent", "multi-agent"
 enum RoutingMode {
   single_agent // maps to "single-agent" in DB
-  multi_agent  // maps to "multi-agent" in DB
+  multi_agent // maps to "multi-agent" in DB
 }
 
 enum MessageRole {
@@ -117,7 +117,7 @@ enum CollaboratorStatus {
 enum AgentType {
   local
   mistral_remote // maps to "mistral-remote" in DB
-  openai_remote  // maps to "openai-remote" in DB — agents importés depuis OpenAI Assistants
+  openai_remote // maps to "openai-remote" in DB — agents importés depuis OpenAI Assistants
 }
 
 enum ProviderErrorType {
@@ -132,16 +132,17 @@ enum ProviderErrorType {
 
 /// Statut d'un rappel planifié
 enum ReminderStatus {
-  PENDING    // En attente d'exécution
-  SENT       // Envoyé avec succès
-  FAILED     // Échec d'envoi (voir errorMessage)
-  CANCELLED  // Annulé manuellement par l'utilisateur
+  PENDING // En attente d'exécution
+  SENT // Envoyé avec succès
+  FAILED // Échec d'envoi (voir errorMessage)
+  CANCELLED // Annulé manuellement par l'utilisateur
 }
 
 /// Canal de livraison du rappel
 enum ReminderChannel {
-  chat      // Push SSE dans l'interface de la plateforme
-  whatsapp  // Message WhatsApp via l'API Meta
+  chat // Push SSE dans l'interface de la plateforme
+  whatsapp // Message WhatsApp via l'API Meta
+  email // Email via SMTP configuré
 }
 
 enum FeedbackCategory {
@@ -162,60 +163,68 @@ enum ReviewStatus {
 
 /// Tenant = workspace d'un client de la plateforme.
 /// Toutes les données métier sont isolées par tenant_id.
-/// Les admins de la plateforme (role=admin) n'appartiennent à aucun tenant (tenantId = null).
-/// Un tenant peut avoir un parent (sous-client d'un client) — profondeur max 3 niveaux.
-model Tenant {
+/// Les admins de la plateforme (role=admin) n'appartiennent à aucun workspace (workspaceId = null).
+/// Un workspace peut avoir un parent (sous-client d'un client) — profondeur max 3 niveaux.
+model Workspace {
   id        String   @id @default(cuid())
-  name      String                        // Ex: "SELI", "ACME"
-  slug      String   @unique              // Ex: "seli", "acme" (URL-safe, unique)
-  status    String   @default("active")   // active | suspended | deleted
-  plan      String   @default("free")     // LEGACY — conserver pendant migration, remplacé par planId
+  name      String // Ex: "SELI", "ACME"
+  slug      String   @unique // Ex: "seli", "acme" (URL-safe, unique)
+  status    String   @default("active") // active | suspended | deleted
+  plan      String   @default("free") // LEGACY — conserver pendant migration, remplacé par planId
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Hiérarchie tenant (client → sous-clients)
-  parentTenantId String? @map("parent_tenant_id")
-  parent         Tenant? @relation("TenantHierarchy", fields: [parentTenantId], references: [id])
-  children       Tenant[] @relation("TenantHierarchy")
+  parentWorkspaceId String?     @map("parent_workspace_id")
+  parent            Workspace?  @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id])
+  children          Workspace[] @relation("WorkspaceHierarchy")
 
   // Plan assigné au workspace (source de vérité pour les permissions)
-  planId Int?    @map("plan_id")
-  tenantPlan Plan? @relation(fields: [planId], references: [id])
+  planId        Int?  @map("plan_id")
+  workspacePlan Plan? @relation(fields: [planId], references: [id])
+
+  // Custom IA Provider (si permission ai_provider activée dans le plan)
+  customAiProvider String? @map("custom_ai_provider") // JSON stringified provider config
 
   // Relations inverses — toutes les entités qui appartiennent à ce tenant
-  users              User[]
-  conversations      Conversation[]
-  messages           Message[]
-  agentPrompts       AgentPrompt[]
-  clientServiceLinks ClientServiceLink[]
-  orchestrationLogs  OrchestrationLog[]
-  reasoningSteps     ReasoningStep[]
-  auditLogs          AuditLog[]
-  reminders          Reminder[]
-  roles              Role[]
-  agents             Agent[]
-  tenantAgentAccess  TenantAgentAccess[]
+  users                User[]
+  conversations        Conversation[]
+  messages             Message[]
+  agentPrompts         AgentPrompt[]
+  clientServiceLinks   ClientServiceLink[]
+  orchestrationLogs    OrchestrationLog[]
+  reasoningSteps       ReasoningStep[]
+  auditLogs            AuditLog[]
+  reminders            Reminder[]
+  roles                Role[]
+  agents               Agent[]
+  workspaceAgentAccess WorkspaceAgentAccess[]
+  dataAccessProfiles   UserDataAccessProfile[]
+  emailConfigs         EmailConfig[]
+  calendarEvents       CalendarEvent[]
+  WorkspaceInvitation  WorkspaceInvitation[]
+  workspaceIntegrations WorkspaceIntegration[]
 
-  @@index([parentTenantId])
-  @@map("tenants")
+  @@index([parentWorkspaceId])
+  @@map("workspaces")
 }
 
 // ── RBAC ─────────────────────────────────────────────────────
 
 /// Rôle métier dans un tenant (ex: "admin", "seller", "manager").
-/// Distinct de l'enum UserRole qui est le rôle plateforme (admin, client, collaborator).
+/// Distinct de l'enum UserRole qui est le rôle plateforme (admin, client, sub_client).
 model Role {
-  id       String @id @default(cuid())
-  tenantId String @map("tenant_id")
-  name     String // "admin", "seller", "manager"
-  label    String // "Administrateur", "Commercial", "Manager"
+  id          String @id @default(cuid())
+  workspaceId String @map("workspace_id")
+  name        String // "admin", "seller", "manager"
+  label       String // "Administrateur", "Commercial", "Manager"
 
-  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   permissions RolePermission[]
   assignments UserRoleAssignment[]
 
-  @@unique([tenantId, name])
-  @@index([tenantId])
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
   @@map("roles")
 }
 
@@ -245,7 +254,7 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-/// Assignation d'un rôle métier à un utilisateur (dans son tenant).
+/// Assignation d'un rôle métier à un utilisateur (dans son workspace).
 /// Attention : ne pas confondre avec l'enum UserRole (rôle plateforme).
 model UserRoleAssignment {
   id     String @id @default(cuid())
@@ -262,46 +271,60 @@ model UserRoleAssignment {
 // ── Models ───────────────────────────────────────────────────
 
 model User {
-  id           Int      @id @default(autoincrement())
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  role         UserRole
-  companyName  String?  @map("company_name")
-  whatsappPhone String? @unique @map("whatsapp_phone")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  role          UserRole
+  companyName   String?  @map("company_name")
+  whatsappPhone String?  @unique @map("whatsapp_phone")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // 2FA TOTP
+  twoFactorSecret  String? @map("two_factor_secret")
+  twoFactorEnabled Boolean @default(false) @map("two_factor_enabled")
 
   // Multi-tenant : null pour les super-admins plateforme (role=admin)
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   // Relations
-  userAgentAccess    UserAgentAccess[]
-  accessRequests     AccessRequest[]     @relation("AccessRequestUser")
-  reviewedRequests   AccessRequest[]     @relation("AccessRequestReviewer")
-  auditLogs          AuditLog[]
-  clientPlan         ClientPlan?
-  collaborators      Collaborator[]
-  clientServiceLinks ClientServiceLink[]
-  conversations      Conversation[]
-  agentPrompts       AgentPrompt[]
-  knowledgeDocs      KnowledgeDocument[]
-  orchestrationLogs  OrchestrationLog[]
-  messageFeedback    MessageFeedback[]
-  tokenUsage         TokenUsage[]
-  providerErrors     ProviderError[]
-  whatsappAccounts   WhatsappAccount[]
-  channelContacts    ChannelContact[]
-  reminders          Reminder[]
-  roleAssignments    UserRoleAssignment[]
-  ownedAgents        Agent[]             @relation("OwnedAgents")
+  userAgentAccess            UserAgentAccess[]
+  accessRequests             AccessRequest[]              @relation("AccessRequestUser")
+  reviewedRequests           AccessRequest[]              @relation("AccessRequestReviewer")
+  auditLogs                  AuditLog[]
+  clientPlan                 ClientPlan?
+  collaborators              Collaborator[]
+  clientServiceLinks         ClientServiceLink[]
+  conversations              Conversation[]
+  agentPrompts               AgentPrompt[]
+  knowledgeDocs              KnowledgeDocument[]
+  orchestrationLogs          OrchestrationLog[]
+  messageFeedback            MessageFeedback[]
+  tokenUsage                 TokenUsage[]
+  providerErrors             ProviderError[]
+  whatsappAccounts           WhatsappAccount[]
+  channelContacts            ChannelContact[]
+  reminders                  Reminder[]
+  roleAssignments            UserRoleAssignment[]
+  ownedAgents                Agent[]                      @relation("OwnedAgents")
+  dataAccessProfile          UserDataAccessProfile?
+  emailConfig                EmailConfig?
+  calendarEvents             CalendarEvent[]
+  workspaceInvitations       WorkspaceInvitation[]
+  // Impersonation
+  impersonationsInitiated    ImpersonationSession[]       @relation("ImpersonationByAdmin")
+  impersonationsReceived     ImpersonationSession[]       @relation("ImpersonationTarget")
+  // Integrations
+  userIntegrations           UserIntegration[]
+  workspaceIntegrationsConfigured WorkspaceIntegration[] @relation("WorkspaceIntegrationsConfigured")
 
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("users")
 }
 
 /// Agent IA.
-/// tenantId = null → agent global plateforme (accessible par tous, géré par le super admin).
-/// tenantId = set  → agent tenant-scoped (créé/importé par ce client, visible uniquement dans son workspace).
+/// workspaceId = null → agent global plateforme (accessible par tous, géré par le super admin).
+/// workspaceId = set  → agent workspace-scoped (créé/importé par ce client, visible uniquement dans son workspace).
 model Agent {
   id             String    @id
   name           String
@@ -311,28 +334,30 @@ model Agent {
   mistralAgentId String?   @map("mistral_agent_id")
   createdAt      DateTime  @default(now()) @map("created_at")
 
-  // Scoping tenant : null = global, set = tenant-scoped
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // Scoping tenant : null = global, set = workspace-scoped
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Propriétaire (user qui a créé/importé l'agent)
-  ownerId Int? @map("owner_id")
+  ownerId Int?  @map("owner_id")
   owner   User? @relation("OwnedAgents", fields: [ownerId], references: [id], onDelete: SetNull)
 
   // Relations
-  userAgentAccess   UserAgentAccess[]
-  tenantAgentAccess TenantAgentAccess[]
-  accessRequests    AccessRequest[]
-  conversations     Conversation[]
-  messages          Message[]
-  agentPrompts      AgentPrompt[]
-  knowledgeDocs     KnowledgeDocument[]
-  reasoningSteps    ReasoningStep[]
-  tokenUsage        TokenUsage[]
-  providerErrors    ProviderError[]
-  reminders         Reminder[]
+  userAgentAccess      UserAgentAccess[]
+  workspaceAgentAccess WorkspaceAgentAccess[]
+  accessRequests       AccessRequest[]
+  conversations        Conversation[]
+  messages             Message[]
+  agentPrompts         AgentPrompt[]
+  knowledgeDocs        KnowledgeDocument[]
+  reasoningSteps       ReasoningStep[]
+  tokenUsage           TokenUsage[]
+  providerErrors       ProviderError[]
+  reminders            Reminder[]
 
-  @@index([tenantId])
+  allowedInPlans Plan[] @relation("PlanToAgent")
+
+  @@index([workspaceId])
   @@map("agents")
 }
 
@@ -354,19 +379,19 @@ model UserAgentAccess {
 /// Accès d'un tenant à un agent (niveau workspace).
 /// Permet à un client de contrôler quels agents sont disponibles dans son workspace
 /// et de les partager avec ses sous-clients.
-model TenantAgentAccess {
-  id        Int          @id @default(autoincrement())
-  tenantId  String       @map("tenant_id")
-  agentId   String       @map("agent_id")
-  status    AccessStatus
-  createdAt DateTime     @default(now()) @map("created_at")
+model WorkspaceAgentAccess {
+  id          Int          @id @default(autoincrement())
+  workspaceId String       @map("workspace_id")
+  agentId     String       @map("agent_id")
+  status      AccessStatus
+  createdAt   DateTime     @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, agentId])
-  @@index([tenantId])
-  @@map("tenant_agent_access")
+  @@unique([workspaceId, agentId])
+  @@index([workspaceId])
+  @@map("workspace_agent_access")
 }
 
 model AccessRequest {
@@ -395,12 +420,12 @@ model AuditLog {
   createdAt   DateTime @default(now()) @map("created_at")
 
   // Multi-tenant : null pour les actions des super-admins
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   actorUser User? @relation(fields: [actorUserId], references: [id])
 
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("audit_logs")
 }
 
@@ -419,12 +444,13 @@ model Plan {
   permissionsJson String @default("{}") @map("permissions_json")
 
   // Quotas
-  maxSubClients Int @default(0)  @map("max_sub_clients") // 0 = aucun sous-client autorisé
+  maxSubClients Int @default(0) @map("max_sub_clients") // 0 = aucun sous-client autorisé
   maxUsers      Int @default(10) @map("max_users")
-  maxAgents     Int @default(5)  @map("max_agents")
+  maxAgents     Int @default(5) @map("max_agents")
 
-  clientPlans ClientPlan[]
-  tenants     Tenant[]
+  clientPlans   ClientPlan[]
+  tenants       Workspace[]
+  allowedAgents Agent[]      @relation("PlanToAgent")
 
   @@map("plans")
 }
@@ -488,33 +514,33 @@ model ClientServiceLink {
   updatedAt          DateTime          @default(now()) @map("updated_at")
 
   // Multi-tenant
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   owner   User            @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   service ExternalService @relation(fields: [serviceId], references: [id], onDelete: Cascade)
 
   @@unique([ownerUserId, serviceId])
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("client_service_links")
 }
 
 model Conversation {
-  id              String              @id
-  userId          Int                 @map("user_id")
-  agentId         String?             @map("agent_id")
-  title           String?
-  contextType     String?             @map("context_type")
-  contextEntityId String?             @map("context_entity_id")
-  contextUrl      String?             @map("context_url")
-  channel         ConversationChannel @default(chrome)
-  channelPhoneFrom String?            @map("channel_phone_from")
-  startedAt       DateTime            @default(now()) @map("started_at")
-  updatedAt       DateTime            @default(now()) @map("updated_at")
+  id               String              @id
+  userId           Int                 @map("user_id")
+  agentId          String?             @map("agent_id")
+  title            String?
+  contextType      String?             @map("context_type")
+  contextEntityId  String?             @map("context_entity_id")
+  contextUrl       String?             @map("context_url")
+  channel          ConversationChannel @default(chrome)
+  channelPhoneFrom String?             @map("channel_phone_from")
+  startedAt        DateTime            @default(now()) @map("started_at")
+  updatedAt        DateTime            @default(now()) @map("updated_at")
 
   // Multi-tenant
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
@@ -526,7 +552,10 @@ model Conversation {
   providerErrors    ProviderError[]
   whatsappMessages  WhatsappMessage[]
 
-  @@index([tenantId])
+  // CRITICAL: Unique constraint to prevent race condition when multiple webhooks arrive simultaneously
+  // for the same WhatsApp phone number. Without this, upsert() cannot work atomically.
+  @@unique([userId, channel, channelPhoneFrom], name: "conversation_unique_channel_contact")
+  @@index([workspaceId])
   @@map("conversations")
 }
 
@@ -544,8 +573,8 @@ model Message {
   createdAt      DateTime    @default(now()) @map("created_at")
 
   // Multi-tenant (déduit de la conversation, dénormalisé pour les requêtes directes)
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
@@ -553,7 +582,7 @@ model Message {
   feedback       MessageFeedback[]
   reasoningSteps ReasoningStep[]
 
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("messages")
 }
 
@@ -568,13 +597,13 @@ model AgentPrompt {
   createdAt    DateTime @default(now()) @map("created_at")
 
   // Multi-tenant : null pour les prompts globaux (admin plateforme)
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   agent  Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   client User? @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("agent_prompts")
 }
 
@@ -614,13 +643,13 @@ model OrchestrationLog {
   createdAt         DateTime     @default(now()) @map("created_at")
 
   // Multi-tenant
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("orchestration_logs")
 }
 
@@ -651,14 +680,14 @@ model ReasoningStep {
   createdAt      DateTime @default(now()) @map("created_at")
 
   // Multi-tenant
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   message      Message?     @relation(fields: [messageId], references: [id], onDelete: Cascade)
   agent        Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("reasoning_steps")
 }
 
@@ -746,21 +775,26 @@ model Reminder {
   channel         ReminderChannel @default(chat)
   /// Numéro WhatsApp cible au format E.164 (requis si channel=whatsapp)
   targetPhone     String?         @map("target_phone")
+  /// Email cible (requis si channel=email)
+  targetEmail     String?         @map("target_email")
   sentAt          DateTime?       @map("sent_at")
+  failedAt        DateTime?       @map("failed_at")
   errorMessage    String?         @map("error_message")
+  /// Retry counter for transient errors (network, timeout, etc.)
+  retryCount      Int             @default(0) @map("retry_count")
   createdAt       DateTime        @default(now()) @map("created_at")
   updatedAt       DateTime        @updatedAt @map("updated_at")
 
   // Multi-tenant
-  tenantId String? @map("tenant_id")
-  tenant   Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   // Index composite pour les requêtes du cron worker (status + scheduledAt)
   @@index([status, scheduledAt])
-  @@index([tenantId])
+  @@index([workspaceId])
   @@map("reminders")
 }
 
@@ -778,4 +812,394 @@ model WhatsappMessage {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@map("whatsapp_messages")
+}
+
+// ── User Data Access Control ────────────────────────────────
+
+/// Profil d'accès aux données pour un utilisateur au sein de son tenant.
+/// Définit si l'utilisateur a un accès personnel (ses propres données) ou global (tout le workspace),
+/// et si il a accès au CRM (lecture/écriture).
+model UserDataAccessProfile {
+  id            String   @id @default(cuid())
+  userId        Int      @unique @map("user_id")
+  workspaceId   String   @map("workspace_id")
+  /// "personal" = ne voit que ses données, "global" = voit tout le tenant, "custom" = sélection manuelle
+  accessScope   String   @default("personal")
+  crmAccess     Boolean  @default(false) @map("crm_access")
+  crmWrite      Boolean  @default(false) @map("crm_write")
+  /// JSON : ressources accessibles en mode custom { agents: [...], knowledgeBases: [...] }
+  resourcesJson String   @default("{}") @map("resources_json")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("user_data_access_profiles")
+}
+
+// ── Email System (Phase 2) ───────────────────────────────────
+
+/// Configuration SMTP/IMAP par utilisateur (Phase 2)
+model EmailConfig {
+  id                Int       @id @default(autoincrement())
+  userId            Int       @unique @map("user_id")
+  workspaceId       String    @map("workspace_id")
+  smtpHost          String    @map("smtp_host")
+  smtpPort          Int       @map("smtp_port")
+  smtpUser          String    @map("smtp_user")
+  smtpPassEncrypted String    @map("smtp_pass_encrypted")
+  smtpSecure        Boolean   @default(true) @map("smtp_secure")
+  imapHost          String?   @map("imap_host")
+  imapPort          Int?      @map("imap_port")
+  fromName          String?   @map("from_name")
+  fromEmail         String    @map("from_email")
+  rgpdConsent       Boolean   @default(false) @map("rgpd_consent")
+  rgpdConsentAt     DateTime? @map("rgpd_consent_at")
+  isActive          Boolean   @default(true) @map("is_active")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs      EmailLog[]
+
+  @@index([workspaceId])
+  @@map("email_configs")
+}
+
+/// Journal des emails envoyés
+model EmailLog {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  workspaceId  String   @map("workspace_id")
+  configId     Int?     @map("config_id")
+  toAddress    String   @map("to_address")
+  ccAddress    String?  @map("cc_address")
+  bccAddress   String?  @map("bcc_address")
+  subject      String
+  bodySnippet  String?  @map("body_snippet")
+  status       String   @default("sent") // "sent" | "failed"
+  errorMessage String?  @map("error_message")
+  reminderId   Int?     @map("reminder_id")
+  sentAt       DateTime @default(now()) @map("sent_at")
+
+  config EmailConfig? @relation(fields: [configId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@map("email_logs")
+}
+
+// ── Calendar (Phase 2) ──────────────────────────────────────
+
+/// Événements calendrier créés par les agents ou manuellement
+model CalendarEvent {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  workspaceId String?  @map("workspace_id")
+  title       String
+  description String?
+  startAt     DateTime @map("start_at")
+  endAt       DateTime @map("end_at")
+  timezone    String   @default("Europe/Paris")
+  location    String?
+  reminderId  Int?     @map("reminder_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startAt])
+  @@index([workspaceId])
+  @@map("calendar_events")
+}
+
+// ── Phase 3: CRM Auto-completion + Data Enrichment + Mass Import ──
+
+/// Enrichissement de données SIRET (SIRENE API)
+model SiretEnrichment {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  workspaceId String    @map("workspace_id")
+  siret       String    @unique
+  siren       String?
+  company     String?
+  address     String?
+  postalCode  String?   @map("postal_code")
+  city        String?
+  sector      String? // NAF code
+  employees   Int?
+  revenue     BigInt?
+  foundedAt   DateTime? @map("founded_at")
+  metadata    String? // JSON données enrichies
+  status      String    @default("pending") // pending | completed | failed
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([status])
+  @@map("siret_enrichments")
+}
+
+/// Job d'import en masse (CSV, Excel)
+model BulkImportJob {
+  id            Int       @id @default(autoincrement())
+  userId        Int       @map("user_id")
+  workspaceId   String    @map("workspace_id")
+  fileName      String    @map("file_name")
+  entityType    String    @map("entity_type") // "company" | "contact" | "opportunity"
+  status        String    @default("pending") // pending | processing | completed | failed
+  totalRows     Int       @default(0) @map("total_rows")
+  processedRows Int       @default(0) @map("processed_rows")
+  successCount  Int       @default(0) @map("success_count")
+  errorLog      String?   @map("error_log") // JSON array of errors
+  createdAt     DateTime  @default(now()) @map("created_at")
+  completedAt   DateTime? @map("completed_at")
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([status])
+  @@map("bulk_import_jobs")
+}
+
+/// Tâche assignée (suite à un import ou enrichissement)
+model TaskAssignment {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  assignedToId Int?      @map("assigned_to_id") // commercial/manager à qui la tâche est assignée
+  workspaceId  String    @map("workspace_id")
+  title        String
+  description  String?
+  dueDate      DateTime? @map("due_date")
+  status       String    @default("pending") // pending | in_progress | completed
+  entityType   String?   @map("entity_type") // "company" | "contact" | "opportunity"
+  entityId     String?   @map("entity_id")
+  priority     String    @default("medium") // low | medium | high
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([assignedToId])
+  @@index([workspaceId])
+  @@index([status])
+  @@map("task_assignments")
+}
+
+// ── Phase 4: Documents + OCR + Agents Spécialisés ──────
+
+/// Stockage de documents liés aux entités CRM
+model Document {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  workspaceId String   @map("workspace_id")
+  title       String
+  fileName    String   @map("file_name")
+  fileUrl     String   @map("file_url")
+  mimeType    String   @map("mime_type")
+  fileSize    Int      @map("file_size")
+  // Lien à une entité CRM
+  entityType  String?  @map("entity_type") // "company" | "contact" | "opportunity"
+  entityId    String?  @map("entity_id")
+  // OCR
+  ocrText     String?  @map("ocr_text") // Texte extrait par OCR
+  ocrStatus   String   @default("pending") @map("ocr_status") // pending | completed | failed
+  // Alertes détectées (échéances, numéros, etc.)
+  alertsJson  String?  @map("alerts_json") // JSON array
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([entityType, entityId])
+  @@map("documents")
+}
+
+/// Log des traitements OCR
+model DocumentOcrLog {
+  id          Int      @id @default(autoincrement())
+  documentId  Int      @map("document_id")
+  status      String // "processing" | "completed" | "failed"
+  errorMsg    String?  @map("error_msg")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("document_ocr_logs")
+}
+
+// ── Phase 5: Custom Fields + External Connections + Analytics ──
+
+/// Définition de champs personnalisés par entité
+model CustomFieldDefinition {
+  id          Int      @id @default(autoincrement())
+  workspaceId String   @map("workspace_id")
+  entityType  String   @map("entity_type") // "company" | "contact" | "opportunity" | "user"
+  fieldName   String   @map("field_name")
+  fieldLabel  String   @map("field_label")
+  fieldType   String   @map("field_type") // "text" | "number" | "date" | "select" | "boolean"
+  options     String? // JSON array pour type "select"
+  required    Boolean  @default(false)
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([workspaceId, entityType, fieldName])
+  @@map("custom_field_definitions")
+}
+
+/// Valeurs de champs personnalisés
+model CustomFieldValue {
+  id           Int    @id @default(autoincrement())
+  definitionId Int    @map("definition_id")
+  entityType   String @map("entity_type")
+  entityId     String @map("entity_id")
+  value        String
+
+  @@unique([definitionId, entityId])
+  @@map("custom_field_values")
+}
+
+/// Connexion à un service externe (OAuth)
+model ExternalServiceLink {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  workspaceId  String    @map("workspace_id")
+  serviceCode  String    @map("service_code") // "google-calendar", "outlook", "sharepoint", "stripe", etc.
+  accessToken  String    @map("access_token")
+  refreshToken String?   @map("refresh_token")
+  expiresAt    DateTime? @map("expires_at")
+  isActive     Boolean   @default(true) @map("is_active")
+  linkedAt     DateTime  @default(now()) @map("linked_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@unique([userId, serviceCode])
+  @@map("external_service_links")
+}
+
+/// Analytics — Logs d'utilisation agrégés
+model AnalyticsLog {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  workspaceId  String   @map("workspace_id")
+  eventType    String   @map("event_type") // "conversation", "tool_call", "agent_run", etc.
+  entityType   String?  @map("entity_type")
+  entityId     String?  @map("entity_id")
+  duration     Int? // en ms
+  status       String? // "success" | "error"
+  tokensUsed   Int?     @map("tokens_used")
+  costEstimate BigInt?  @map("cost_estimate") // en millièmes de $
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@map("analytics_logs")
+}
+
+// ── Workspace Invitations ──────────────────────────────────
+
+/// Permet aux clients d'inviter des sub-clients dans leur workspace.
+/// Token-based, avec expiration et suivi du statut (pending, accepted, revoked).
+model WorkspaceInvitation {
+  id          String    @id @default(cuid())
+  workspaceId String    @map("workspace_id")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  invitedEmail String    @map("invited_email")
+  token        String    @unique @default(cuid())
+  expiresAt    DateTime  @map("expires_at")
+  acceptedAt   DateTime? @map("accepted_at")
+  status       String    @default("pending") // pending | accepted | expired | revoked
+
+  createdByUserId Int  @map("created_by_user_id")
+  createdBy       User @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@index([workspaceId])
+  @@index([invitedEmail])
+  @@map("workspace_invitations")
+}
+
+// ── Impersonation Sessions ──────────────────────────────────
+
+/// Audit trail et session state quand un admin simule un autre user
+model ImpersonationSession {
+  id        String   @id @default(cuid())
+  adminId   Int      @map("admin_id")
+  targetId  Int      @map("target_id")
+  tokenJti  String   @unique @map("token_jti") // Pour invalidation du token
+  startedAt DateTime @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+
+  admin  User @relation("ImpersonationByAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+  target User @relation("ImpersonationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([targetId])
+  @@map("impersonation_sessions")
+}
+
+// ── Integration Types ────────────────────────────────────────
+
+/// Types d'intégrations disponibles (CRM, Email, WhatsApp, Calendrier, etc.)
+model IntegrationType {
+  id             String   @id @default(cuid())
+  name           String   // "Sellsy", "HubSpot", "Gmail SMTP", "Meta WhatsApp", etc.
+  category       String   // "crm" | "mail" | "whatsapp" | "calendar" | "other"
+  logoUrl        String?  @map("logo_url")
+  configSchema   Json     @map("config_schema") // JSON Schema des champs de config
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  workspaceLinks WorkspaceIntegration[]
+  userLinks      UserIntegration[]
+
+  @@unique([name, category])
+  @@map("integration_types")
+}
+
+/// Configuration d'une intégration au niveau d'un workspace (partagée par tous les users)
+model WorkspaceIntegration {
+  id                  String   @id @default(cuid())
+  workspaceId         String   @map("workspace_id")
+  integrationTypeId   String   @map("integration_type_id")
+  isEnabled           Boolean  @default(true) @map("is_enabled")
+  encryptedConfig     String   @map("encrypted_config") // AES-256 encrypted JSON
+  configuredAt        DateTime @default(now()) @map("configured_at")
+  configuredByUserId  Int?     @map("configured_by_user_id")
+
+  workspace       Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  integrationType IntegrationType @relation(fields: [integrationTypeId], references: [id], onDelete: Cascade)
+  configuredBy    User?           @relation("WorkspaceIntegrationsConfigured", fields: [configuredByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, integrationTypeId])
+  @@index([workspaceId])
+  @@map("workspace_integrations")
+}
+
+/// Connexion personnelle d'un user à une intégration (e.g., son compte WhatsApp, son calendrier)
+model UserIntegration {
+  id                    String   @id @default(cuid())
+  userId                Int      @map("user_id")
+  integrationTypeId     String   @map("integration_type_id")
+  encryptedCredentials  String   @map("encrypted_credentials") // AES-256 encrypted JSON
+  linkedAt              DateTime @default(now()) @map("linked_at")
+
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  integrationType  IntegrationType @relation(fields: [integrationTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, integrationTypeId])
+  @@index([userId])
+  @@map("user_integrations")
+}
+
+// ── Platform Settings ───────────────────────────────────────
+
+model SystemSetting {
+  id    Int    @id @default(autoincrement())
+  key   String @unique // e.g., "setup_completed", "system_smtp_config"
+  value String // JSON stringified value
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
 }

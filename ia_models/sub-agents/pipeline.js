@@ -12,6 +12,13 @@ import { PipelineDiagnosticSubAgent } from "./pipeline-diagnostic.js";
 import { SalesAnalysisSubAgent } from "./sales-analysis.js";
 import { SalesStrategySubAgent } from "./sales-strategy.js";
 import { SalesWriterSubAgent } from "./sales-writer.js";
+import { KnowledgeSubAgent } from "./knowledge.js";
+import { CRMSearchSubAgent } from "./crm-search.js";
+import { CRMActionSubAgent } from "./crm-action.js";
+import { TaskListSubAgent } from "./task-list.js";
+import { TaskCreatorSubAgent } from "./task-creator.js";
+import { ImageReaderSubAgent } from "./image-reader.js";
+import { AdminPlatformSubAgent } from "./admin-platform.js";
 
 /**
  * Execute the sub-agent pipeline.
@@ -129,7 +136,14 @@ async function _runSubAgentPhase(type, tasks, provider, toolContext, currentCont
     "pipeline-diagnostic": PipelineDiagnosticSubAgent,
     "sales-analysis": SalesAnalysisSubAgent,
     "sales-strategy": SalesStrategySubAgent,
-    "sales-writer": SalesWriterSubAgent
+    "sales-writer": SalesWriterSubAgent,
+    knowledge: KnowledgeSubAgent,
+    "crm-search": CRMSearchSubAgent,
+    "crm-action": CRMActionSubAgent,
+    "task-list": TaskListSubAgent,
+    "task-creator": TaskCreatorSubAgent,
+    "image-reader": ImageReaderSubAgent,
+    "admin-platform": AdminPlatformSubAgent
   }[type];
 
   if (!SubAgentClass) {
@@ -250,7 +264,14 @@ function _getSubAgentLabel(type, index) {
     "pipeline-diagnostic": "Diagnostic Pipeline",
     "sales-analysis": "Analyse Commerciale",
     "sales-strategy": "Stratégie & Priorités",
-    "sales-writer": "Rédaction Commerciale"
+    "sales-writer": "Rédaction Commerciale",
+    knowledge: "Base de Connaissance",
+    "crm-search": "Recherche CRM",
+    "crm-action": "Action CRM",
+    "task-list": "Liste Tâches",
+    "task-creator": "Créateur Tâche",
+    "image-reader": "Analyse Image",
+    "admin-platform": "Statistiques Plateforme"
   };
   const base = labels[type] || type;
   return index > 0 ? `${base} #${index + 1}` : base;
@@ -268,9 +289,23 @@ function _detectOperation(type, task) {
   if (type === "web") {
     return /scrape|lire|read|page|url|http/.test(instr) ? "scrape" : "search";
   }
-  if (type === "sellsy") {
+  if (type === "sellsy" || type === "crm-search") {
     if (/crée|create|ajoute|add|note|activite/.test(instr)) return "create";
     if (/modifie|update|met.a.jour|change/.test(instr)) return "update";
+    return "read";
+  }
+  if (type === "crm-action") {
+    if (/crée|create|ajoute|add/.test(instr)) return "create";
+    if (/modifie|update|supprime|delete/.test(instr)) return "update";
+    return "action";
+  }
+  if (type === "task-creator") {
+    return /crée|create|rappelle|remind/.test(instr) ? "create" : "action";
+  }
+  if (type === "image-reader") {
+    return "read";
+  }
+  if (type === "admin-platform") {
     return "read";
   }
   return "read";

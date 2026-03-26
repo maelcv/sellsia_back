@@ -24,3 +24,14 @@ export const webhookRateLimit = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many webhook requests." }
 });
+
+// Chat AI endpoints — moderate limit per authenticated user (20 req/min)
+export const chatRateLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.sub || req.ip, // Use userId if available
+  skip: (req) => req.user?.role === "admin", // Admins bypass
+  message: { error: "Trop de demandes. Veuillez attendre avant de relancer une conversation." }
+});

@@ -1,11 +1,16 @@
 import express from "express";
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { prisma } from "../prisma.js";
+import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
-import { requireTenantContext } from "../middleware/tenant.js";
+import { requireWorkspaceContext } from "../middleware/tenant.js";
 
 const router = express.Router();
+
+const toggleWorkspaceAgentSchema = z.object({
+  agentId: z.string(),
+  active: z.boolean()
+});
 
 const adminAgentSchema = z.object({
   id: z.string().min(3).max(64),
@@ -16,7 +21,7 @@ const adminAgentSchema = z.object({
   mistralAgentId: z.string().max(128).optional().default("")
 });
 
-const tenantAgentSchema = z.object({
+const workspaceAgentSchema = z.object({
   name: z.string().min(2).max(120),
   description: z.string().min(8).max(500),
   isActive: z.boolean().optional().default(true)
@@ -29,7 +34,7 @@ const importAgentSchema = z.object({
   remoteAgentId: z.string().min(1).max(256)
 });
 
-const updateTenantAgentSchema = z.object({
+const updateWorkspaceAgentSchema = z.object({
   name: z.string().min(2).max(120).optional(),
   description: z.string().min(8).max(500).optional(),
   isActive: z.boolean().optional()
@@ -57,31 +62,36 @@ function formatAgent(a) {
     is_active: a.isActive,
     agent_type: toApiAgentType(a.agentType),
     mistral_agent_id: a.mistralAgentId,
-    tenant_id: a.tenantId || null,
+    workspace_id: a.workspaceId || null,
     owner_id: a.ownerId || null,
-    is_global: !a.tenantId
+    is_global: !a.workspaceId
   };
 }
 
 /**
  * GET /api/agents/catalog
- * - Si le tenant a agents_local ou agents_cloud : retourne agents globaux + agents du tenant
+ * - Si le workspace a agents_local ou agents_cloud : retourne agents globaux + agents du workspace
  * - Sinon : retourne uniquement les agents globaux (plateforme)
  */
-router.get("/catalog", requireAuth, requireTenantContext, async (req, res) => {
-  const perms = req.tenantPlan?.permissions || {};
+router.get("/catalog", requireAuth, requireWorkspaceContext, async (req, res) => {
+  const perms = req.workspacePlan?.permissions || {};
   const canSeeOwnAgents = req.user.role === "admin" || perms.agents_local || perms.agents_cloud;
 
-  const whereClause = canSeeOwnAgents && req.tenantId
-    ? { isActive: true, OR: [{ tenantId: null }, { tenantId: req.tenantId }] }
-    : { isActive: true, tenantId: null };
+  // Filter:
+  // 1. Admin see ALL agents
+  // 2. Others see Global Agents in Plan OR Agents belonging to their Workspace
+  const whereClause = req.user.role === "admin"
+    ? {}
+    : {
+        isActive: true,
+        OR: [
+          { workspaceId: req.workspaceId }, // Agents du workspace
+          { AND: [{ workspaceId: null }, { id: { in: req.allowedAgentIds || [] } }] } // Agents globaux du plan
+        ]
+      };
 
   const agents = await prisma.agent.findMany({
     where: whereClause,
-    select: {
-      id: true, name: true, description: true, isActive: true,
-      agentType: true, mistralAgentId: true, tenantId: true, ownerId: true
-    },
     orderBy: { name: "asc" }
   });
 
@@ -150,19 +160,22 @@ router.delete("/admin/:id", requireAuth, requireRole("admin"), async (req, res) 
   return res.json({ message: "Agent deleted" });
 });
 
-router.get("/my-access", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/my-access", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
-  const perms = req.tenantPlan?.permissions || {};
-  const canSeeOwnAgents = req.user.role === "admin" || perms.agents_local || perms.agents_cloud;
-
-  const whereClause = canSeeOwnAgents && req.tenantId
-    ? { isActive: true, OR: [{ tenantId: null }, { tenantId: req.tenantId }] }
-    : { isActive: true, tenantId: null };
+  const whereClause = req.user.role === "admin"
+    ? {}
+    : {
+        isActive: true,
+        OR: [
+          { workspaceId: req.workspaceId },
+          { AND: [{ workspaceId: null }, { id: { in: req.allowedAgentIds || [] } }] }
+        ]
+      };
 
   const agents = await prisma.agent.findMany({
     where: whereClause,
     select: {
-      id: true, name: true, description: true, tenantId: true,
+      id: true, name: true, description: true, workspaceId: true,
       userAgentAccess: { where: { userId }, select: { status: true } }
     },
     orderBy: { name: "asc" }
@@ -176,46 +189,46 @@ router.get("/my-access", requireAuth, requireTenantContext, async (req, res) => 
       description: agent.description,
       status: uaa ? uaa.status : null,
       isGranted: uaa?.status === "granted",
-      is_global: !agent.tenantId
+      is_global: !agent.workspaceId
     };
   });
 
   return res.json({ access });
 });
 
-// ── Tenant-scoped agent routes ─────────────────────────────────
+// ── Workspace-scoped agent routes ─────────────────────────────────
 
 /**
- * POST /api/agents/tenant
- * Créer un agent local tenant-scoped (client avec feature agents_local)
+ * POST /api/agents/workspace
+ * Créer un agent local workspace-scoped (client avec feature agents_local)
  */
 router.post(
-  "/tenant",
+  "/workspace",
   requireAuth,
-  requireRole("client", "collaborator", "admin"),
-  requireTenantContext,
+  requireRole("client", "sub_client", "admin"),
+  requireWorkspaceContext,
   requireFeature("agents_local"),
   async (req, res) => {
-    const parse = tenantAgentSchema.safeParse(req.body);
+    const parse = workspaceAgentSchema.safeParse(req.body);
     if (!parse.success) {
       return res.status(400).json({ error: "Données invalides", details: parse.error.flatten() });
     }
 
     // Vérifier quota maxAgents
-    if (req.tenantPlan && req.tenantId) {
+    if (req.workspacePlan && req.workspaceId) {
       const currentCount = await prisma.agent.count({
-        where: { tenantId: req.tenantId, isActive: true }
+        where: { workspaceId: req.workspaceId, isActive: true }
       });
-      if (currentCount >= req.tenantPlan.maxAgents) {
+      if (currentCount >= req.workspacePlan.maxAgents) {
         return res.status(429).json({
-          error: `Quota d'agents atteint (${req.tenantPlan.maxAgents} max)`,
-          quota: { used: currentCount, max: req.tenantPlan.maxAgents }
+          error: `Quota d'agents atteint (${req.workspacePlan.maxAgents} max)`,
+          quota: { used: currentCount, max: req.workspacePlan.maxAgents }
         });
       }
     }
 
     const { name, description, isActive } = parse.data;
-    const agentId = `tenant-${req.tenantId?.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
+    const agentId = `workspace-${req.workspaceId?.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
 
     const agent = await prisma.agent.create({
       data: {
@@ -224,7 +237,7 @@ router.post(
         description,
         isActive,
         agentType: "local",
-        tenantId: req.tenantId,
+        workspaceId: req.workspaceId,
         ownerId: req.user.sub
       }
     });
@@ -240,8 +253,8 @@ router.post(
 router.post(
   "/import",
   requireAuth,
-  requireRole("client", "collaborator", "admin"),
-  requireTenantContext,
+  requireRole("client", "sub_client", "admin"),
+  requireWorkspaceContext,
   requireFeature("agents_cloud"),
   async (req, res) => {
     const parse = importAgentSchema.safeParse(req.body);
@@ -250,20 +263,20 @@ router.post(
     }
 
     // Vérifier quota maxAgents
-    if (req.tenantPlan && req.tenantId) {
+    if (req.workspacePlan && req.workspaceId) {
       const currentCount = await prisma.agent.count({
-        where: { tenantId: req.tenantId, isActive: true }
+        where: { workspaceId: req.workspaceId, isActive: true }
       });
-      if (currentCount >= req.tenantPlan.maxAgents) {
+      if (currentCount >= req.workspacePlan.maxAgents) {
         return res.status(429).json({
-          error: `Quota d'agents atteint (${req.tenantPlan.maxAgents} max)`,
-          quota: { used: currentCount, max: req.tenantPlan.maxAgents }
+          error: `Quota d'agents atteint (${req.workspacePlan.maxAgents} max)`,
+          quota: { used: currentCount, max: req.workspacePlan.maxAgents }
         });
       }
     }
 
     const { name, description, agentType, remoteAgentId } = parse.data;
-    const agentId = `${agentType === "mistral-remote" ? "mistral" : "openai"}-${req.tenantId?.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
+    const agentId = `${agentType === "mistral-remote" ? "mistral" : "openai"}-${req.workspaceId?.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
 
     const agent = await prisma.agent.create({
       data: {
@@ -273,7 +286,7 @@ router.post(
         isActive: true,
         agentType: toPrismaAgentType(agentType),
         mistralAgentId: remoteAgentId,
-        tenantId: req.tenantId,
+        workspaceId: req.workspaceId,
         ownerId: req.user.sub
       }
     });
@@ -283,24 +296,24 @@ router.post(
 );
 
 /**
- * PATCH /api/agents/tenant/:id
- * Mettre à jour un agent tenant-scoped (propriétaire du tenant seulement)
+ * PATCH /api/agents/workspace/:id
+ * Mettre à jour un agent workspace-scoped (propriétaire du workspace seulement)
  */
 router.patch(
-  "/tenant/:id",
+  "/workspace/:id",
   requireAuth,
-  requireRole("client", "collaborator", "admin"),
-  requireTenantContext,
+  requireRole("client", "sub_client", "admin"),
+  requireWorkspaceContext,
   async (req, res) => {
-    const parse = updateTenantAgentSchema.safeParse(req.body);
+    const parse = updateWorkspaceAgentSchema.safeParse(req.body);
     if (!parse.success) {
       return res.status(400).json({ error: "Données invalides", details: parse.error.flatten() });
     }
 
-    // Vérifier ownership tenant (sauf admin)
+    // Vérifier ownership workspace (sauf admin)
     const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Agent introuvable" });
-    if (req.user.role !== "admin" && existing.tenantId !== req.tenantId) {
+    if (req.user.role !== "admin" && existing.workspaceId !== req.workspaceId) {
       return res.status(403).json({ error: "Vous ne pouvez modifier que les agents de votre workspace" });
     }
 
@@ -315,18 +328,18 @@ router.patch(
 );
 
 /**
- * DELETE /api/agents/tenant/:id
- * Supprimer un agent tenant-scoped (propriétaire du tenant seulement)
+ * DELETE /api/agents/workspace/:id
+ * Supprimer un agent workspace-scoped (propriétaire du workspace seulement)
  */
 router.delete(
-  "/tenant/:id",
+  "/workspace/:id",
   requireAuth,
-  requireRole("client", "collaborator", "admin"),
-  requireTenantContext,
+  requireRole("client", "sub_client", "admin"),
+  requireWorkspaceContext,
   async (req, res) => {
     const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Agent introuvable" });
-    if (req.user.role !== "admin" && existing.tenantId !== req.tenantId) {
+    if (req.user.role !== "admin" && existing.workspaceId !== req.workspaceId) {
       return res.status(403).json({ error: "Vous ne pouvez supprimer que les agents de votre workspace" });
     }
 
@@ -334,5 +347,52 @@ router.delete(
     return res.json({ message: "Agent supprimé" });
   }
 );
+
+/**
+ * POST /api/agents/workspace/toggle
+ * Permet à un workspace d'activer/désactiver un agent autorisé par son plan
+ */
+router.post("/workspace/toggle", requireAuth, requireWorkspaceContext, async (req, res) => {
+  const parse = toggleWorkspaceAgentSchema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: "Données invalides" });
+  }
+
+  const { agentId, active } = parse.data;
+
+  // Vérifier que l'agent est autorisé par le plan (ou appartient au workspace)
+  const isAllowed = (req.allowedAgentIds || []).includes(agentId);
+  const isOwner = await prisma.agent.findFirst({
+    where: { id: agentId, workspaceId: req.workspaceId }
+  });
+
+  if (!isAllowed && !isOwner) {
+    return res.status(403).json({ error: "Cet agent n'est pas inclus dans votre plan ou ne vous appartient pas." });
+  }
+
+  if (active) {
+    await prisma.workspaceAgentAccess.upsert({
+      where: {
+        workspaceId_agentId: { workspaceId: req.workspaceId, agentId }
+      },
+      create: {
+        workspaceId: req.workspaceId,
+        agentId,
+        status: "granted"
+      },
+      update: {
+        status: "granted"
+      }
+    });
+  } else {
+    // On peut soit supprimer, soit mettre en 'denied'
+    await prisma.workspaceAgentAccess.deleteMany({
+      where: { workspaceId: req.workspaceId, agentId }
+    });
+  }
+
+  await logAudit(req.user.sub, "TENANT_AGENT_TOGGLED", { agentId, active, workspaceId: req.workspaceId });
+  return res.json({ message: `Agent ${active ? "activé" : "désactivé"} avec succès` });
+});
 
 export default router;

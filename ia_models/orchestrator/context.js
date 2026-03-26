@@ -130,7 +130,11 @@ export async function enrichWithPipelineData(userId) {
  * @returns {Promise<string|null>} - Contenu concaténé des docs pertinents
  */
 export async function loadKnowledgeContext(query, agentId, clientId = null, limit = 3) {
+  // Normalize query for simple search
+  const normalizedQuery = (query || "").toLowerCase();
+  
   // Recherche simple : documents actifs pour cet agent/client
+  // Filtrage par contenu ou titre contenant des mots-clés (recherche basique)
   const docs = await prisma.knowledgeDocument.findMany({
     where: {
       isActive: true,
@@ -143,6 +147,12 @@ export async function loadKnowledgeContext(query, agentId, clientId = null, limi
           OR: [
             { clientId: null },
             { clientId }
+          ]
+        },
+        {
+          OR: [
+            { title: { contains: normalizedQuery, mode: "insensitive" } },
+            { content: { contains: normalizedQuery, mode: "insensitive" } }
           ]
         }
       ]

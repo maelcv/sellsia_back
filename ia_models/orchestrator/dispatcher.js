@@ -13,7 +13,7 @@ import { loadPrompt, interpolatePrompt } from "../prompts/loader.js";
 import { DirecteurAgent } from "../agents/directeur.js";
 import { CommercialAgent } from "../agents/commercial.js";
 import { TechnicienAgent } from "../agents/technicien.js";
-import { detectUserLanguage } from "../agents/base-agent.js";
+import { BaseAgent, detectUserLanguage } from "../agents/base-agent.js";
 import { prisma, logProviderError } from "../../src/prisma.js";
 import { selectSkill } from "../skills/router.js";
 import { formatSkillForInjection } from "../skills/catalog.js";
@@ -251,12 +251,17 @@ async function createAgent(agentId, provider, clientId) {
     console.warn("[createAgent] Could not fetch agent from DB:", err.message);
   }
 
-  // 2) Local agent classes
+  // 2) Local agent classes (hardcoded for base agents)
   const AgentClass = AGENT_CLASSES[agentId];
-  if (!AgentClass) return null;
-
   const systemPrompt = await loadPrompt(agentId, clientId);
-  return new AgentClass({ provider, systemPrompt });
+
+  // Use hardcoded agent class if available, otherwise use BaseAgent as fallback
+  if (AgentClass) {
+    return new AgentClass({ provider, systemPrompt });
+  }
+
+  // Fallback: generic BaseAgent for dynamically created agents (e.g., admin, custom agents)
+  return new BaseAgent({ agentId, provider, systemPrompt });
 }
 
 async function getAgentName(agentId) {

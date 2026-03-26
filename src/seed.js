@@ -30,7 +30,15 @@ const FREE_PERMISSIONS = {
   user_profiles: true,
   reminders: true,
   usage_stats: false,
-  orchestration_logs: false
+  orchestration_logs: false,
+  email_service: false,
+  calendar: false,
+  documents: false,
+  data_enrichment: false,
+  mass_import: false,
+  analytics: false,
+  custom_fields: false,
+  external_connections: false,
 };
 
 const PRO_PERMISSIONS = {
@@ -46,7 +54,15 @@ const PRO_PERMISSIONS = {
   user_profiles: true,
   reminders: true,
   usage_stats: true,
-  orchestration_logs: true
+  orchestration_logs: true,
+  email_service: true,
+  calendar: true,
+  documents: true,
+  data_enrichment: true,
+  mass_import: true,
+  analytics: true,
+  custom_fields: true,
+  external_connections: true,
 };
 
 const PLANS = [
@@ -86,28 +102,8 @@ const PLANS = [
   }
 ];
 
-// ── Agents globaux (partagés entre tous les tenants) ──────────
-
-const AGENTS = [
-  {
-    id: "commercial",
-    name: "Commercial",
-    description: "Agent commercial : briefs compte, suivis, aide a la vente, relances, suggestions d'actions.",
-    isActive: true
-  },
-  {
-    id: "directeur",
-    name: "Directeur",
-    description: "Agent direction : reporting, alertes, analyse pipeline, syntheses, recommandations strategiques.",
-    isActive: true
-  },
-  {
-    id: "technicien",
-    name: "Technicien",
-    description: "Agent technique : configuration Sellsy, API, automatisation, integration, documentation.",
-    isActive: true
-  }
-];
+// NOTE: Base agents (Commercial, Director, Technical) are created via POST /api/agents-management/seed-base-agents
+// They should NOT be pre-seeded here - they're created on-demand by the admin setup flow
 
 async function seed() {
   console.log("🌱 Démarrage du seed multi-tenant...\n");
@@ -137,30 +133,22 @@ async function seed() {
     console.log(`  ✓ Plan "${result.name}" (id: ${result.id})`);
   }
 
-  // ── 1. Agents globaux ──────────────────────────────────────
+  // ── 1. Clean up old agents ────────────────────────────────────
 
-  console.log("\n📦 Agents globaux...");
+  console.log("\n📦 Cleaning up old agents...");
 
   // Désactiver les anciens agents si présents
-  await prisma.agent.updateMany({
+  const oldAgents = await prisma.agent.updateMany({
     where: { id: { in: ["sales-copilot", "executive-copilot", "solution-architect-copilot"] } },
     data: { isActive: false }
   });
-
-  for (const agent of AGENTS) {
-    const result = await prisma.agent.upsert({
-      where: { id: agent.id },
-      update: {},
-      create: agent
-    });
-    console.log(`  ✓ Agent global : ${result.id}`);
-  }
+  console.log(`  ✓ Cleaned up ${oldAgents.count} old agents`);
 
   // ── 2. Tenants de test ────────────────────────────────────
 
-  console.log("\n🏢 Tenants de test...");
+  console.log("\n🏢 Workspaces de test...");
 
-  const seli = await prisma.tenant.upsert({
+  const seli = await prisma.workspace.upsert({
     where: { slug: "seli-dev" },
     update: { planId: proPlan.id },
     create: {
@@ -171,9 +159,9 @@ async function seed() {
       planId: proPlan.id
     }
   });
-  console.log(`  ✓ Tenant SELI : ${seli.id} (plan: pro)`);
+  console.log(`  ✓ Workspace SELI : ${seli.id} (plan: pro)`);
 
-  const acme = await prisma.tenant.upsert({
+  const acme = await prisma.workspace.upsert({
     where: { slug: "acme-dev" },
     update: { planId: freePlan.id },
     create: {
@@ -192,7 +180,7 @@ async function seed() {
 
   const passwordHash = await bcrypt.hash("Password123!", 12);
 
-  // Super-admin plateforme (sans tenant — voit tout)
+  // Super-admin plateforme (sans workspace — voit tout)
   const admin = await prisma.user.upsert({
     where: { email: "admin@sellsia.local" },
     update: {},
@@ -201,10 +189,10 @@ async function seed() {
       passwordHash,
       role: "admin",
       companyName: "Sellsia Platform",
-      tenantId: null // super-admin : pas de tenant
+      workspaceId: null // super-admin : pas de workspace
     }
   });
-  console.log(`  ✓ Super-admin : ${admin.email} (sans tenant)`);
+  console.log(`  ✓ Super-admin : ${admin.email} (sans workspace)`);
 
   // User client SELI
   const seliUser = await prisma.user.upsert({
@@ -215,10 +203,10 @@ async function seed() {
       passwordHash,
       role: "client",
       companyName: "SELI Dev",
-      tenantId: seli.id // lié au tenant SELI
+      workspaceId: seli.id // lié au workspace SELI
     }
   });
-  console.log(`  ✓ Client SELI : ${seliUser.email} (tenant: ${seli.slug})`);
+  console.log(`  ✓ Client SELI : ${seliUser.email} (workspace: ${seli.slug})`);
 
   // User client ACME
   const acmeUser = await prisma.user.upsert({
@@ -229,30 +217,163 @@ async function seed() {
       passwordHash,
       role: "client",
       companyName: "ACME Dev",
-      tenantId: acme.id // lié au tenant ACME
+      workspaceId: acme.id // lié au workspace ACME
     }
   });
-  console.log(`  ✓ Client ACME : ${acmeUser.email} (tenant: ${acme.slug})`);
+  console.log(`  ✓ Client ACME : ${acmeUser.email} (workspace: ${acme.slug})`);
 
-  // ── 4. Accès agents pour les users de test ────────────────
+  // ── 4. Integration types (pour IntegrationsPage) ────────────
 
-  console.log("\n🔑 Accès agents...");
+  console.log("\n🔗 Integration types...");
 
-  for (const agentId of ["commercial", "directeur", "technicien"]) {
-    // Accès pour le user SELI
-    await prisma.userAgentAccess.upsert({
-      where: { userId_agentId: { userId: seliUser.id, agentId } },
+  const integrationTypes = [
+    // CRM
+    {
+      name: "Sellsy",
+      category: "crm",
+      logoUrl: "https://www.sellsy.com/favicon.ico",
+      configSchema: { token: { type: "string" }, apiUrl: { type: "string" } },
+    },
+    {
+      name: "HubSpot",
+      category: "crm",
+      logoUrl: "https://www.hubspot.com/favicon.ico",
+      configSchema: { apiKey: { type: "string" } },
+    },
+    // Mail
+    {
+      name: "Gmail SMTP",
+      category: "mail",
+      logoUrl: "https://www.google.com/favicon.ico",
+      configSchema: {
+        email: { type: "string" },
+        password: { type: "string" },
+        smtpServer: { type: "string", default: "smtp.gmail.com" },
+        port: { type: "number", default: 587 },
+      },
+    },
+    // WhatsApp
+    {
+      name: "Meta Business WhatsApp",
+      category: "whatsapp",
+      logoUrl: "https://www.whatsapp.com/favicon.ico",
+      configSchema: {
+        businessAccountId: { type: "string" },
+        accessToken: { type: "string" },
+        phoneNumber: { type: "string" },
+      },
+    },
+    // Calendar
+    {
+      name: "Google Calendar",
+      category: "calendar",
+      logoUrl: "https://www.google.com/favicon.ico",
+      configSchema: {
+        clientId: { type: "string" },
+        clientSecret: { type: "string" },
+        refreshToken: { type: "string" },
+      },
+    },
+    // Other
+    {
+      name: "Webhook",
+      category: "other",
+      logoUrl: null,
+      configSchema: {
+        url: { type: "string" },
+        secret: { type: "string" },
+      },
+    },
+  ];
+
+  for (const typeData of integrationTypes) {
+    await prisma.integrationType.upsert({
+      where: { name_category: { name: typeData.name, category: typeData.category } },
       update: {},
-      create: { userId: seliUser.id, agentId, status: "granted" }
-    });
-    // Accès pour le user ACME
-    await prisma.userAgentAccess.upsert({
-      where: { userId_agentId: { userId: acmeUser.id, agentId } },
-      update: {},
-      create: { userId: acmeUser.id, agentId, status: "granted" }
+      create: typeData,
     });
   }
-  console.log("  ✓ Accès agents accordés aux 2 users de test");
+  console.log(`  ✓ ${integrationTypes.length} integration types seeded`);
+
+  // ── 5. IA Providers (ExternalService) ─────────────────────────
+
+  console.log("\n🤖 IA Providers...");
+
+  const iaProviders = [
+    {
+      code: "claude-3-5-sonnet",
+      name: "Claude 3.5 Sonnet",
+      category: "ia_cloud",
+      defaultConfig: JSON.stringify({
+        model: "claude-3-5-sonnet-20241022",
+        version: "2024-10-22"
+      })
+    },
+    {
+      code: "claude-haiku",
+      name: "Claude Haiku",
+      category: "ia_cloud",
+      defaultConfig: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        version: "2025-10-01"
+      })
+    },
+    {
+      code: "gpt-4",
+      name: "GPT-4 Turbo",
+      category: "ia_cloud",
+      defaultConfig: JSON.stringify({
+        model: "gpt-4-turbo",
+        version: "2024-04-09"
+      })
+    },
+    {
+      code: "gpt-4o",
+      name: "GPT-4o",
+      category: "ia_cloud",
+      defaultConfig: JSON.stringify({
+        model: "gpt-4o",
+        version: "2024-11-20"
+      })
+    },
+    {
+      code: "llama2-local",
+      name: "Llama 2 (Local)",
+      category: "ia_local",
+      defaultConfig: JSON.stringify({
+        model: "llama2",
+        endpoint: "http://localhost:8000"
+      })
+    }
+  ];
+
+  for (const provider of iaProviders) {
+    await prisma.externalService.upsert({
+      where: { code: provider.code },
+      update: {},
+      create: provider
+    });
+  }
+  console.log(`  ✓ ${iaProviders.length} IA providers seeded`);
+
+  // ── 6. Admin Platform Agent ────────────────────────────────
+
+  console.log("\n🤖 Admin Platform Agent...");
+
+  await prisma.agent.upsert({
+    where: { id: "admin-platform-agent" },
+    update: {},
+    create: {
+      id: "admin-platform-agent",
+      name: "Administrateur Plateforme",
+      description: "Accès aux métriques et analytics de plateforme (admin uniquement)",
+      isActive: true,
+      agentType: "local",
+      workspaceId: null, // Global agent
+      createdAt: new Date(),
+    },
+  });
+  console.log("  ✓ Admin Platform Agent créé");
 
   // ── Résumé ────────────────────────────────────────────────
 

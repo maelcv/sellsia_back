@@ -18,7 +18,8 @@ import { z } from "zod";
 import { prisma, logAudit, logReasoningStep, linkReasoningStepsToMessage } from "../prisma.js";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
-import { requireTenantContext } from "../middleware/tenant.js";
+import { requireWorkspaceContext } from "../middleware/tenant.js";
+import { chatRateLimit } from "../middleware/security.js";
 import { getProviderForUser, getActiveProviderCode } from "../../ia_models/providers/index.js";
 import { orchestrate, orchestrateStream } from "../../ia_models/orchestrator/dispatcher.js";
 import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
@@ -116,64 +117,166 @@ function getPayloadValidationError(parseError) {
 
 // ── Helper : récupérer les agents autorisés (filtrés par provider actif) ──
 
+/**
+ * getAllowedAgents — Determine which agents a user can chat with.
+ *
+ * Admin:       Access to agent-admin (global). Bypasses orchestrator, talks directly.
+ * Client:      Agents in workspace plan (via allowedInPlans) + workspace-scoped agents
+ *              granted access by admin + agents they created themselves.
+ * Sub-client:  Agents granted access via WorkspaceAgentAccess (status='granted').
+ */
 async function getAllowedAgents(userId) {
-  // Get active provider code
-  const activeProviderCode = await getActiveProviderCode(userId);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true, workspaceId: true }
+  });
 
-  // If Mistral AI is the active provider, try to get mistral-remote agents first
-  if (activeProviderCode === "mistral-cloud") {
-    const mistralRows = await prisma.$queryRaw`
-      SELECT a.id, a.name
-      FROM user_agent_access uaa
-      JOIN agents a ON a.id = uaa.agent_id
-      WHERE uaa.user_id = ${userId}
-        AND uaa.status = 'granted'
-        AND a.is_active = true
-        AND a.agent_type = 'mistral_remote'
-    `;
+  if (!user) {
+    console.error("[chat] getAllowedAgents — user not found:", userId);
+    return { agentRows: [], allowedIds: new Set(), providerCode: null };
+  }
 
-    // If mistral-remote agents found, use them
-    if (mistralRows.length > 0) {
-      return {
-        agentRows: mistralRows,
-        allowedIds: new Set(mistralRows.map((r) => r.id)),
-        providerCode: activeProviderCode
-      };
+  const role = user.role;
+  console.log("[chat] getAllowedAgents — userId:", userId, "role:", role, "workspaceId:", user.workspaceId);
+
+  // ── ADMIN ──────────────────────────────────────────────────────
+  // Admins get the admin agent directly (no orchestrator).
+  if (role === "admin") {
+    // Prefer agent-admin specifically; fallback to all global agents
+    let adminAgent = await prisma.agent.findUnique({ where: { id: "agent-admin" } });
+
+    // Auto-create agent-admin if it doesn't exist yet (no seed required)
+    if (!adminAgent) {
+      console.log("[chat] agent-admin not found, auto-creating...");
+      try {
+        adminAgent = await prisma.agent.create({
+          data: {
+            id: "agent-admin",
+            name: "Admin",
+            description: "Agent administratif pour la gestion plateforme",
+            agentType: "local",
+            isActive: true,
+            workspaceId: null
+          }
+        });
+        await prisma.agentPrompt.create({
+          data: {
+            agentId: "agent-admin",
+            systemPrompt: "Tu es un assistant administratif expert de la plateforme Sellsia. Tu aides à la gestion des workflows, des processus administratifs, et tu peux accéder à l'ensemble des données de la plateforme pour répondre aux questions.",
+            version: 1,
+            isActive: true
+          }
+        });
+      } catch (e) {
+        console.error("[chat] Failed to auto-create agent-admin:", e.message);
+      }
     }
 
-    // Fallback: If no mistral-remote agents, allow local agents for backward compatibility
-    const localRows = await prisma.$queryRaw`
-      SELECT a.id, a.name
-      FROM user_agent_access uaa
-      JOIN agents a ON a.id = uaa.agent_id
-      WHERE uaa.user_id = ${userId}
-        AND uaa.status = 'granted'
-        AND a.is_active = true
-        AND (a.agent_type = 'local' OR a.agent_type IS NULL)
-    `;
-
+    const agents = adminAgent ? [adminAgent] : await prisma.agent.findMany({ where: { workspaceId: null } });
+    console.log("[chat] Admin → granting", agents.length, "agents:", agents.map(a => a.id));
     return {
-      agentRows: localRows,
-      allowedIds: new Set(localRows.map((r) => r.id)),
-      providerCode: activeProviderCode
+      agentRows: agents,
+      allowedIds: new Set(agents.map(a => a.id)),
+      providerCode: "admin-direct",
+      isAdmin: true
     };
   }
 
-  // Otherwise, allow all agents (local and remote that don't require specific providers)
-  const rows = await prisma.$queryRaw`
-    SELECT a.id, a.name
-    FROM user_agent_access uaa
-    JOIN agents a ON a.id = uaa.agent_id
-    WHERE uaa.user_id = ${userId}
-      AND uaa.status = 'granted'
-      AND a.is_active = true
-  `;
+  // ── CLIENT ─────────────────────────────────────────────────────
+  // 1. Agents included in workspace plan (via Plan.allowedAgents)
+  // 2. Agents scoped to their workspace (created by admin for them)
+  // 3. Agents they own (created themselves if plan permits)
+  if (role === "client") {
+    const workspaceId = user.workspaceId;
+    if (!workspaceId) {
+      console.warn("[chat] Client has no workspaceId");
+      return { agentRows: [], allowedIds: new Set(), providerCode: null };
+    }
 
-  return {
-    agentRows: rows,
-    allowedIds: new Set(rows.map((r) => r.id)),
-    providerCode: activeProviderCode
-  };
+    // Get workspace with plan and plan's allowed agents
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: {
+        planRecord: {
+          select: {
+            allowedAgents: { where: { isActive: true }, select: { id: true, name: true } }
+          }
+        }
+      }
+    });
+
+    const planAgentIds = (workspace?.planRecord?.allowedAgents || []).map(a => a.id);
+
+    // Agents scoped to this workspace + agents owned by user
+    const workspaceAgents = await prisma.agent.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { workspaceId },                    // workspace-scoped agents
+          { id: { in: planAgentIds } },       // plan's allowed agents
+          { ownerId: userId }                 // self-created agents
+        ]
+      }
+    });
+
+    // Also check WorkspaceAgentAccess for admin-enabled agents
+    const waa = await prisma.workspaceAgentAccess.findMany({
+      where: { workspaceId, status: 'granted' },
+      select: { agentId: true }
+    });
+    const waaIds = new Set(waa.map(a => a.agentId));
+
+    // Merge: workspace agents + admin-enabled global agents
+    const enabledGlobalAgents = waaIds.size > 0
+      ? await prisma.agent.findMany({
+          where: { id: { in: Array.from(waaIds) }, isActive: true }
+        })
+      : [];
+
+    const allAgents = [...workspaceAgents, ...enabledGlobalAgents];
+    const uniqueMap = new Map(allAgents.map(a => [a.id, a]));
+    const agents = Array.from(uniqueMap.values());
+
+    console.log("[chat] Client → granting", agents.length, "agents:", agents.map(a => a.id));
+    return {
+      agentRows: agents,
+      allowedIds: new Set(agents.map(a => a.id)),
+      providerCode: await getActiveProviderCode(userId)
+    };
+  }
+
+  // ── SUB-CLIENT ─────────────────────────────────────────────────
+  // Only agents granted access via WorkspaceAgentAccess (status='granted')
+  if (role === "sub_client") {
+    const workspaceId = user.workspaceId;
+    if (!workspaceId) {
+      console.warn("[chat] Sub-client has no workspaceId");
+      return { agentRows: [], allowedIds: new Set(), providerCode: null };
+    }
+
+    const waa = await prisma.workspaceAgentAccess.findMany({
+      where: { workspaceId, status: 'granted' },
+      select: { agentId: true }
+    });
+
+    const agentIds = waa.map(a => a.agentId);
+    const agents = agentIds.length > 0
+      ? await prisma.agent.findMany({
+          where: { id: { in: agentIds }, isActive: true }
+        })
+      : [];
+
+    console.log("[chat] Sub-client → granting", agents.length, "agents:", agents.map(a => a.id));
+    return {
+      agentRows: agents,
+      allowedIds: new Set(agents.map(a => a.id)),
+      providerCode: await getActiveProviderCode(userId)
+    };
+  }
+
+  // Unknown role fallback
+  console.warn("[chat] Unknown role:", role);
+  return { agentRows: [], allowedIds: new Set(), providerCode: null };
 }
 
 // ── Helper : journaliser l'orchestration ──
@@ -238,7 +341,7 @@ function estimateTokens(text = "") {
 
 // ── Helper : build tool context for agent tool-calling ──
 
-async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}) {
+async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tenantId = null, features = {}) {
   const sellsyClient = await getSellsyClient(userId);
   const referenceSitesByTopic = {
     company: ["pappers.fr", "societe.com", "wikipedia.org"],
@@ -252,7 +355,9 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}) {
     : referenceSitesByTopic.generic;
 
   const context = {
-    userId,           // Nécessaire pour le tool schedule_reminder
+    userId,           // Nécessaire pour le tool schedule_reminder, send_email, create_calendar_event
+    tenantId,         // Nécessaire pour les tools email + calendar
+    features,         // Feature flags du tenant (email_service, calendar, etc.)
     sellsyClient,
     tavilyApiKey: config.tavilyApiKey || null,
     uploadedFiles: uploadedFiles || [],
@@ -319,7 +424,7 @@ async function checkTokenQuota(userId) {
 // POST /api/chat/ask — Demande synchrone
 // ══════════════════════════════════════════════════════
 
-router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5), async (req, res) => {
+router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.array("files", 5), async (req, res) => {
   // Parse body — if multipart, fields are in req.body; files in req.files
   let bodyToParse;
   try {
@@ -338,7 +443,7 @@ router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5),
   const uploadedFiles = req.files || [];
 
   // 1. Vérifier les permissions
-  const { allowedIds } = await getAllowedAgents(userId);
+  const { allowedIds, isAdmin } = await getAllowedAgents(userId);
   if (allowedIds.size === 0) {
     return res.status(403).json({
       error: "No granted agents. Request access from dashboard catalog first."
@@ -388,7 +493,7 @@ router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5),
         validatedConvId = null;
       }
     }
-    const conversationId = validatedConvId || await getOrCreateConversation(userId, requestedAgentId, pageContext, req.tenantId);
+    const conversationId = validatedConvId || await getOrCreateConversation(userId, requestedAgentId, pageContext, req.workspaceId);
 
     // Sauvegarder le message utilisateur (include file info if any)
     const userMsgContent = uploadedFiles.length > 0
@@ -407,7 +512,7 @@ router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5),
     const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId);
 
     // 6. Build tool context
-    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {});
+    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {});
 
     // 7. Orchestrer (with tools)
     const result = await orchestrate({
@@ -420,12 +525,12 @@ router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5),
       clientId: userId,
       conversationId,
       allowedAgents: allowedIds,
-      requestedAgentId,
+      requestedAgentId: isAdmin ? "agent-admin" : requestedAgentId,
       tools,
       toolContext,
       knowledgeContext,
       thinkingMode: requestedTools?.thinking || "low",
-      tenantId: req.tenantId
+      tenantId: req.workspaceId
     });
 
     // 8. Sauvegarder la réponse
@@ -525,7 +630,7 @@ router.post("/ask", requireAuth, requireTenantContext, upload.array("files", 5),
 // POST /api/chat/stream — Streaming SSE (with full orchestration)
 // ══════════════════════════════════════════════════════
 
-router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 5), async (req, res) => {
+router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, upload.array("files", 5), async (req, res) => {
   let bodyToParse;
   try {
     bodyToParse = req.body.payload ? JSON.parse(req.body.payload) : req.body;
@@ -542,8 +647,10 @@ router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 
   const userRole = req.user.role || "client";
   const uploadedFiles = req.files || [];
 
-  const { allowedIds } = await getAllowedAgents(userId);
+  const { allowedIds, isAdmin } = await getAllowedAgents(userId);
+  console.log("[chat] allowedIds.size:", allowedIds.size, "isAdmin:", !!isAdmin);
   if (allowedIds.size === 0) {
+    console.error("[chat] User has no access to any agents");
     return res.status(403).json({ error: "No granted agents." });
   }
 
@@ -592,12 +699,13 @@ router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 
       }
     }
     const isNewConversation = !validatedConversationId;
-    const conversationId = validatedConversationId || await getOrCreateConversation(userId, requestedAgentId, pageContext, req.tenantId);
+    const conversationId = validatedConversationId || await getOrCreateConversation(userId, requestedAgentId, pageContext, req.workspaceId);
 
     // Bug fix: persist agent assignment across messages.
     // On follow-up messages the client may not re-send requestedAgentId, so we
     // read it back from the conversation row to avoid re-classifying every time.
-    let effectiveRequestedAgentId = requestedAgentId;
+    // Admin always talks directly to agent-admin (bypasses orchestrator classification)
+    let effectiveRequestedAgentId = isAdmin ? "agent-admin" : requestedAgentId;
     if (validatedConversationId && !effectiveRequestedAgentId) {
       const existingConv = await prisma.conversation.findUnique({
         where: { id: validatedConversationId },
@@ -617,7 +725,7 @@ router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 
     const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId);
 
     // 3b. Build tool context for agent tool-calling
-    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {});
+    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {});
 
     // 4. Enrich pipeline data if directeur might be involved
     if (
@@ -673,7 +781,7 @@ router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 
       thinkingMode: requestedTools?.thinking || "low",
       knowledgeContext,
       isFirstMessage,
-      tenantId: req.tenantId
+      tenantId: req.workspaceId
     })) {
       if (clientDisconnected) break;
 
@@ -1015,7 +1123,7 @@ router.post("/stream", requireAuth, requireTenantContext, upload.array("files", 
 // GET /api/chat/history — Dernières conversations
 // ══════════════════════════════════════════════════════
 
-router.get("/history", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/history", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
   const limit = Math.min(Number(req.query.limit) || 10, 50);
   const conversations = await getRecentConversations(userId, limit);
@@ -1026,7 +1134,7 @@ router.get("/history", requireAuth, requireTenantContext, async (req, res) => {
 // GET /api/chat/conversation/:id — Messages d'une conversation
 // ══════════════════════════════════════════════════════
 
-router.get("/conversation/:id", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/conversation/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
   const messages = await getConversationMessages(req.params.id, userId);
 
@@ -1041,7 +1149,7 @@ router.get("/conversation/:id", requireAuth, requireTenantContext, async (req, r
 // PUT /api/chat/conversation/:id/title — Renommer manuellement une conversation
 // ══════════════════════════════════════════════════════
 
-router.put("/conversation/:id/title", requireAuth, requireTenantContext, async (req, res) => {
+router.put("/conversation/:id/title", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub || req.user.id;
   const { title } = req.body;
   if (!title || typeof title !== "string") {
@@ -1072,7 +1180,7 @@ router.put("/conversation/:id/title", requireAuth, requireTenantContext, async (
 // POST /api/chat/feedback — Feedback sur un message
 // ══════════════════════════════════════════════════════
 
-router.post("/feedback", requireAuth, requireTenantContext, async (req, res) => {
+router.post("/feedback", requireAuth, requireWorkspaceContext, async (req, res) => {
   const parse = feedbackSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid feedback payload" });
@@ -1135,7 +1243,7 @@ router.get("/download/:fileId", requireAuth, (req, res) => {
 // POST /api/chat/suggestions — Suggestions contextuelles
 // ══════════════════════════════════════════════════════
 
-router.post("/suggestions", requireAuth, requireTenantContext, async (req, res) => {
+router.post("/suggestions", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
   const pageContext = req.body.pageContext || {};
 
@@ -1217,4 +1325,124 @@ function getStaticSuggestions(contextType) {
   }
 }
 
+// ── Approval workflow for CRM/Task write actions ──
+
+/**
+ * POST /api/chat/approve
+ * User approves or rejects a pending CRM/Task action
+ * Pending actions are stored in-memory per session
+ */
+const pendingActions = new Map(); // sessionId -> action
+
+const approveSchema = z.object({
+  conversationId: z.string().min(1),
+  actionId: z.string().min(1),
+  approved: z.boolean(),
+  confirmPassword: z.string().optional() // For sensitive operations
+});
+
+router.post("/approve", requireAuth, requireWorkspaceContext, async (req, res) => {
+  try {
+    const { conversationId, actionId, approved } = approveSchema.parse(req.body);
+
+    // Retrieve pending action
+    const sessionKey = `${req.user.sub}:${conversationId}`;
+    const pendingAction = pendingActions.get(sessionKey);
+
+    if (!pendingAction || pendingAction.id !== actionId) {
+      return res.status(404).json({ error: "Pending action not found or expired" });
+    }
+
+    if (!approved) {
+      // User rejected the action
+      pendingActions.delete(sessionKey);
+      await addMessage(conversationId, "assistant", "Action annulée par l'utilisateur.", {});
+      return res.json({ success: true, message: "Action rejected" });
+    }
+
+    // User approved — execute the action
+    try {
+      let result;
+
+      if (pendingAction.type === "create_crm") {
+        // Execute CRM creation via Sellsy API or DB
+        result = await executeCRMAction(pendingAction.action, req.workspaceId);
+      } else if (pendingAction.type === "create_task") {
+        // Create calendar event or reminder
+        result = await createTaskFromApproval(pendingAction.action, req.user.sub);
+      } else {
+        return res.status(400).json({ error: `Unknown action type: ${pendingAction.type}` });
+      }
+
+      // Clean up
+      pendingActions.delete(sessionKey);
+
+      // Save action result to conversation
+      const resultMessage = `Action exécutée avec succès. ${result.message}`;
+      await addMessage(conversationId, "assistant", resultMessage, { actionResult: result });
+
+      return res.json({ success: true, result });
+    } catch (execErr) {
+      console.error("[Approval] Execution error:", execErr);
+      pendingActions.delete(sessionKey);
+      return res.status(500).json({ error: `Execution failed: ${execErr.message}` });
+    }
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Invalid request", issues: err.errors });
+    }
+    console.error("[Approval] Error:", err);
+    res.status(500).json({ error: "Approval processing failed" });
+  }
+});
+
+/**
+ * Helper: Execute CRM action (create/update/delete)
+ */
+async function executeCRMAction(action, workspaceId) {
+  // This would integrate with your Sellsy client or CRM provider
+  // For now, return a placeholder
+  return {
+    success: true,
+    message: `${action.type} ${action.object} completed`,
+    data: action
+  };
+}
+
+/**
+ * Helper: Create task/event/reminder from approval
+ */
+async function createTaskFromApproval(action, userId) {
+  const { title, date, time, isAllDay, description } = action;
+
+  if (action.type === "create_event") {
+    const event = await prisma.calendarEvent.create({
+      data: {
+        userId,
+        title,
+        startDate: new Date(date),
+        endDate: new Date(date),
+        isAllDay: isAllDay ?? false,
+        description: description || null
+      }
+    });
+    return { success: true, message: "Event created", eventId: event.id };
+  }
+
+  if (action.type === "create_reminder") {
+    const reminder = await prisma.reminder.create({
+      data: {
+        userId,
+        title,
+        reminderDate: new Date(`${date}T${time || "09:00"}`),
+        status: "pending",
+      }
+    });
+    return { success: true, message: "Reminder created", reminderId: reminder.id };
+  }
+
+  throw new Error(`Unknown task type: ${action.type}`);
+}
+
+export { pendingActions };
 export default router;

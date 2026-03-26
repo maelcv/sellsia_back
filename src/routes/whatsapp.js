@@ -19,7 +19,7 @@ import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requireTenantContext } from "../middleware/tenant.js";
+import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { encryptSecret, decryptSecret } from "../security/secrets.js";
 import { validateWhatsappSignature } from "../middleware/whatsapp-signature.js";
 import {
@@ -208,11 +208,13 @@ async function processIncomingMessage(event) {
   const normalizedFrom = normalizePhone(from);
   console.log(`[WhatsApp] Normalized incoming phone: ${normalizedFrom} (original: ${from})`);
 
+  // Try to find user by normalized phone or exact phone
   const mappedUser = await prisma.user.findFirst({
     where: { 
       OR: [
         { whatsappPhone: normalizedFrom },
-        { whatsappPhone: from }
+        { whatsappPhone: from },
+        { whatsappPhone: `+${normalizedFrom}` }
       ]
     }
   });
@@ -233,8 +235,15 @@ async function processIncomingMessage(event) {
 
   const accessToken = decryptSecret(account.accessTokenEncrypted);
 
-  // 2. Mark as read
-  markAsRead({ accessToken, businessPhoneNumberId: phoneNumberId, messageId }).catch(() => {});
+  // 2. Mark as read (non-critical, don't block on failure)
+  markAsRead({ accessToken, businessPhoneNumberId: phoneNumberId, messageId })
+    .catch((err) => {
+      console.warn(
+        `[WhatsApp] Failed to mark message ${messageId} as read (non-critical):`,
+        err.message
+      );
+      // Don't throw — this is a best-effort operation
+    });
 
   // 3. Upsert channel contact
   const profileName = contact?.profile?.name || null;
@@ -256,38 +265,35 @@ async function processIncomingMessage(event) {
   });
 
   // 4. Find or create conversation for this WhatsApp phone
-  const convWhere = { userId, channel: "whatsapp", channelPhoneFrom: from };
-  if (tenantId) convWhere.tenantId = tenantId;
+  // Use atomic upsert to prevent race condition when multiple messages arrive simultaneously
+  const title = profileName ? `WhatsApp — ${profileName}` : `WhatsApp — ${from}`;
 
-  let conversation = await prisma.conversation.findFirst({
-    where: convWhere,
-    orderBy: { updatedAt: "desc" },
-    select: { id: true }
+  const conversation = await prisma.conversation.upsert({
+    where: {
+      // NOTE: Prisma schema MUST have unique constraint on (userId, channel, channelPhoneFrom)
+      // @@unique([userId, channel, channelPhoneFrom])
+      userId_channel_channelPhoneFrom: {
+        userId,
+        channel: "whatsapp",
+        channelPhoneFrom: from
+      }
+    },
+    update: {
+      updatedAt: new Date()
+    },
+    create: {
+      id: crypto.randomUUID(),
+      userId,
+      agentId: null,
+      title,
+      contextType: "whatsapp",
+      channel: "whatsapp",
+      channelPhoneFrom: from,
+      tenantId: tenantId || null
+    }
   });
 
-  let conversationId;
-  if (conversation) {
-    conversationId = conversation.id;
-    await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { updatedAt: new Date() }
-    });
-  } else {
-    conversationId = crypto.randomUUID();
-    const title = profileName ? `WhatsApp — ${profileName}` : `WhatsApp — ${from}`;
-    await prisma.conversation.create({
-      data: {
-        id: conversationId,
-        userId,
-        agentId: null,
-        title,
-        contextType: "whatsapp",
-        channel: "whatsapp",
-        channelPhoneFrom: from,
-        tenantId: tenantId || null
-      }
-    });
-  }
+  const conversationId = conversation.id;
 
   // 5. Only process text messages for now (media support can be added later)
   const userMessage = text || `[${messageType}]`;
@@ -349,26 +355,69 @@ async function processIncomingMessage(event) {
     const tools = getAvailableTools(toolContext, { includeFileTools: false, thinkingMode: "low" });
 
     // Orchestrate (synchronous — no streaming for WhatsApp)
-    const result = await orchestrate({
-      provider,
-      userMessage,
-      pageContext: {},
-      sellsyData,
-      conversationHistory,
-      userRole: "client",
-      clientId: userId,
-      conversationId,
-      allowedAgents: allowedIds,
-      requestedAgentId: null,
-      tools,
-      toolContext,
-      knowledgeContext,
-      thinkingMode: "low",
-      tenantId
-    });
+    let result;
+    try {
+      result = await orchestrate({
+        provider,
+        userMessage,
+        pageContext: {},
+        sellsyData,
+        conversationHistory,
+        userRole: "client",
+        clientId: userId,
+        conversationId,
+        allowedAgents: allowedIds,
+        requestedAgentId: null,
+        tools,
+        toolContext,
+        knowledgeContext,
+        thinkingMode: "low",
+        tenantId
+      });
+    } catch (err) {
+      console.error("[WhatsApp] Orchestration exception:", err);
+      await sendWhatsAppReply(account, from,
+        "Une erreur technique s'est produite. Veuillez réessayer dans quelques minutes.");
+      return;
+    }
+
+    // Validate orchestration result
+    if (!result || typeof result !== 'object') {
+      console.error("[WhatsApp] Invalid orchestration result:", result);
+      await sendWhatsAppReply(account, from,
+        "Une erreur technique s'est produite. Veuillez réessayer dans quelques minutes.");
+      return;
+    }
 
     // Ensure we have a valid answer to send back to the message author
-    const answer = result.answer || result.content || "Désolé, je n'ai pas pu générer de réponse.";
+    const answer = (result.answer || result.content || "").trim();
+
+    if (!answer) {
+      // Handle empty response based on error type
+      let userMessage = "Je n'ai pas pu générer une réponse. Essayez de reformuler votre question.";
+
+      if (result.error === "rate_limited" || result.error === "insufficient_credits") {
+        userMessage = "Notre service IA est temporairement surchargé. Veuillez réessayer dans quelques minutes.";
+      } else if (result.error === "auth_failed") {
+        userMessage = "Erreur de configuration. Un administrateur a été notifié.";
+        logAudit(userId, "WHATSAPP_ORCHESTRATION_AUTH_ERROR", {
+          conversationId,
+          error: result.error,
+          from
+        }).catch(err => console.warn("Failed to log auth error:", err));
+      }
+
+      await sendWhatsAppReply(account, from, userMessage);
+
+      // Log the empty response
+      await logAudit(userId, "ORCHESTRATION_EMPTY_RESPONSE", {
+        conversationId,
+        agentId: result.agentId,
+        error: result.error || "Empty answer"
+      }).catch(err => console.warn("Failed to log empty response:", err));
+
+      return;
+    }
 
     // Save assistant message
     await addMessage(conversationId, {
@@ -495,7 +544,7 @@ async function handleStatusUpdate(event) {
 // POST /api/whatsapp/send — Envoi manuel (auth required)
 // ══════════════════════════════════════════════════════
 
-router.post("/send", requireAuth, requireTenantContext, async (req, res) => {
+router.post("/send", requireAuth, requireWorkspaceContext, async (req, res) => {
   const parse = sendSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid payload" });
@@ -605,7 +654,7 @@ router.post("/send", requireAuth, requireTenantContext, async (req, res) => {
 // POST /api/whatsapp/send-template — Envoi de template (auth required)
 // ══════════════════════════════════════════════════════
 
-router.post("/send-template", requireAuth, requireTenantContext, async (req, res) => {
+router.post("/send-template", requireAuth, requireWorkspaceContext, async (req, res) => {
   const parse = templateSendSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid payload" });
@@ -870,12 +919,12 @@ router.delete("/accounts/:id", requireAuth, requireRole("admin"), async (req, re
 // GET /api/whatsapp/conversations — Conversations WhatsApp
 // ══════════════════════════════════════════════════════
 
-router.get("/conversations", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/conversations", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
   const limit = Math.min(Number(req.query.limit) || 20, 100);
 
   const where = { userId, channel: "whatsapp" };
-  if (req.tenantId) where.tenantId = req.tenantId;
+  if (req.workspaceId) where.workspaceId = req.workspaceId;
 
   const conversations = await prisma.conversation.findMany({
     where,
@@ -887,7 +936,7 @@ router.get("/conversations", requireAuth, requireTenantContext, async (req, res)
       channelPhoneFrom: true,
       updatedAt: true,
       startedAt: true,
-      tenantId: true
+      workspaceId: true
     }
   });
 
@@ -898,15 +947,15 @@ router.get("/conversations", requireAuth, requireTenantContext, async (req, res)
 // GET /api/whatsapp/conversations/:id/messages — Messages d'une conversation
 // ══════════════════════════════════════════════════════
 
-router.get("/conversations/:id/messages", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/conversations/:id/messages", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
   const conversationId = req.params.id;
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
 
-  // Verify ownership (+ tenant isolation)
+  // Verify ownership (+ workspace isolation)
   const convWhere = { id: conversationId, userId, channel: "whatsapp" };
-  if (req.tenantId) convWhere.tenantId = req.tenantId;
+  if (req.workspaceId) convWhere.workspaceId = req.workspaceId;
 
   const conversation = await prisma.conversation.findFirst({
     where: convWhere,

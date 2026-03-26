@@ -21,10 +21,29 @@ import feedbackRoutes from "./routes/feedback.js";
 import usageRoutes from "./routes/usage.js";
 import whatsappRoutes from "./routes/whatsapp.js";
 import remindersRoutes from "./routes/reminders.js";
+import invitationsRoutes from "./routes/invitations.js";
 import { requireAuth } from "./middleware/auth.js";
-import { requireTenantContext } from "./middleware/tenant.js";
+import { requireWorkspaceContext } from "./middleware/tenant.js";
 import workspacesRoutes from "./routes/workspaces.js";
+import setupRoutes from "./routes/setup.js";
+import userAccessRoutes from "./routes/user-access.js";
+import twoFactorRoutes from "./routes/two-factor.js";
+import emailRoutes from "./routes/email.js";
+import calendarRoutes from "./routes/calendar.js";
+import crmOperationsRoutes from "./routes/crm-operations.js";
+import documentsRoutes from "./routes/documents.js";
+import customFieldsRoutes from "./routes/custom-fields.js";
+import analyticsRoutes from "./routes/analytics.js";
+import integrationsRoutes from "./routes/integrations.js";
+import setupProgressRoutes from "./routes/setup-progress.js";
+import clientOnboardingRoutes from "./routes/client-onboarding.js";
+import agentsManagementRoutes from "./routes/agents-management.js";
+import aiProvidersRoutes from "./routes/ai-providers.js";
+import orgchartRoutes from "./routes/orgchart.js";
+import profileSecurityRoutes from "./routes/profile-security.js";
 import { startReminderWorker, stopReminderWorker } from "../ia_models/reminders/reminder-service.js";
+import { startEnrichmentWorker } from "../ia_models/workers/enrichment-worker.js";
+import { startImportWorker } from "../ia_models/workers/import-worker.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -121,13 +140,35 @@ app.use("/api/feedback", feedbackRoutes);
 app.use("/api/usage", usageRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/reminders", remindersRoutes);
+app.use("/api/invitations", invitationsRoutes);
 app.use("/api/workspaces", workspacesRoutes);
+app.use("/api/user-access", userAccessRoutes);
+app.use("/api/2fa", twoFactorRoutes);
+app.use("/api/email", emailRoutes);
+app.use("/api/calendar", calendarRoutes);
+app.use("/api/crm", crmOperationsRoutes);
+app.use("/api/documents", documentsRoutes);
+app.use("/api/custom-fields", customFieldsRoutes);
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/integrations", integrationsRoutes);
+app.use("/api/setup", setupRoutes);
+app.use("/api/setup", setupProgressRoutes);
+app.use("/api/onboarding", clientOnboardingRoutes);
+app.use("/api/agents-management", agentsManagementRoutes);
+app.use("/api/ai-providers", aiProvidersRoutes);
+app.use("/api/onboarding/orgchart", orgchartRoutes);
+app.use("/api/profile", profileSecurityRoutes);
 
-app.get("/api/me", requireAuth, requireTenantContext, (req, res) => {
+app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
+  // Enrich with fields not in JWT (like twoFactorEnabled)
+  const dbUser = await prisma.user.findUnique({
+    where: { id: req.user.sub },
+    select: { twoFactorEnabled: true },
+  });
   res.json({
-    user: req.user,
-    tenantPlan: req.tenantPlan,
-    tenantParentId: req.tenantParentId
+    user: { ...req.user, twoFactorEnabled: dbUser?.twoFactorEnabled ?? false },
+    workspacePlan: req.workspacePlan,
+    workspaceParentId: req.workspaceParentId
   });
 });
 
@@ -153,6 +194,8 @@ process.on("SIGTERM", async () => {
 
 app.listen(config.port, () => {
   console.log(`Sellsia dashboard API listening on http://localhost:${config.port}`);
-  // Démarre le worker de rappels après que le serveur est prêt
+  // Démarrer tous les workers après que le serveur est prêt
   startReminderWorker();
+  startEnrichmentWorker();
+  startImportWorker();
 });

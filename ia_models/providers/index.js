@@ -156,18 +156,7 @@ export async function getProviderForUser(userId) {
 
   if (userLinks[0]) return instantiateProvider(userLinks[0]);
 
-  // 2) Cascade tenant hiérarchique : tenant du user → parent tenant(s) → ...
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { tenantId: true }
-  });
-
-  if (user?.tenantId) {
-    const tenantProvider = await getProviderForTenant(user.tenantId);
-    if (tenantProvider) return tenantProvider;
-  }
-
-  // 3) Provider global actif configuré par l'admin (ExternalService)
+  // 2) Provider global actif configuré par l'admin (ExternalService)
   const globalProviders = await prisma.$queryRaw`
     SELECT es.code, es.default_config as "defaultConfig"
     FROM external_services es
@@ -182,7 +171,7 @@ export async function getProviderForUser(userId) {
     if (provider) return provider;
   }
 
-  // 4) Backward compatibility: service IA admin user (client_service_links de l'admin)
+  // 3) Backward compatibility: service IA admin user (client_service_links de l'admin)
   const adminLinks = await prisma.$queryRawUnsafe(
     `SELECT csl.api_key_encrypted, csl.api_secret_encrypted, csl.config_json,
             es.code, es.category

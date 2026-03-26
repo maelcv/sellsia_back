@@ -11,7 +11,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requireTenantContext } from "../middleware/tenant.js";
+import { requireWorkspaceContext } from "../middleware/tenant.js";
 
 const router = express.Router();
 
@@ -26,7 +26,7 @@ const docSchema = z.object({
 
 // -- GET /api/knowledge -- Lister les documents --
 
-router.get("/", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
   const isAdmin = req.user.role === "admin";
   const userId = req.user.sub;
 

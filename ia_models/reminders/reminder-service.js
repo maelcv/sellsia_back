@@ -22,6 +22,7 @@
 import cron from "node-cron";
 import { prisma } from "../../src/prisma.js";
 import { reminderEmitter } from "./reminder-events.js";
+import { sendReminderViaEmail } from "./reminder-email.js";
 
 // --- Constantes -------------------------------------------------------
 
@@ -71,6 +72,22 @@ async function sendReminderViaWhatsApp(reminder) {
 }
 
 // --- Logique principale du worker -------------------------------------
+
+/**
+ * Détecte si une erreur est transitoire (peut être retraitée)
+ */
+function isTransientError(err) {
+  const message = (err?.message || "").toLowerCase();
+  return (
+    message.includes("timeout") ||
+    message.includes("econnrefused") ||
+    message.includes("econnreset") ||
+    message.includes("network") ||
+    message.includes("temporarily") ||
+    err?.code === "ETIMEDOUT" ||
+    err?.code === "ECONNREFUSED"
+  );
+}
 
 /**
  * Traite un lot de rappels échus.
@@ -129,24 +146,115 @@ async function processReminders() {
       } else if (reminder.channel === "whatsapp") {
         await sendReminderViaWhatsApp(reminder);
         console.log(`[ReminderWorker] Rappel #${reminder.id} envoyé via WhatsApp → ${reminder.targetPhone}`);
+      } else if (reminder.channel === "email") {
+        await sendReminderViaEmail(reminder);
+        console.log(`[ReminderWorker] Rappel #${reminder.id} envoyé via email → ${reminder.targetEmail}`);
       } else {
         // Canal inconnu — on considère quand même comme SENT pour ne pas bloquer
         console.warn(`[ReminderWorker] Canal inconnu "${reminder.channel}" pour rappel #${reminder.id}`);
       }
     } catch (err) {
       // --- Étape 3 : Gestion des erreurs ---
-      // Si l'envoi échoue, on repasse en FAILED avec le message d'erreur
       console.error(`[ReminderWorker] Erreur rappel #${reminder.id}:`, err.message);
 
-      await prisma.reminder.update({
-        where: { id: reminder.id },
-        data: {
-          status: "FAILED",
-          errorMessage: err.message,
-        },
-      });
+      const retryCount = reminder.retryCount || 0;
+      const MAX_RETRIES = 3;
+
+      // Detect if error is transient and retry count not exceeded
+      if (isTransientError(err) && retryCount < MAX_RETRIES) {
+        // Reschedule for 5 minutes later
+        const nextAttempt = new Date(Date.now() + 5 * 60 * 1000);
+        console.log(
+          `[ReminderWorker] Transient error - rescheduling rappel #${reminder.id} for ${nextAttempt.toISOString()} (attempt ${retryCount + 1}/${MAX_RETRIES})`
+        );
+
+        await prisma.reminder.update({
+          where: { id: reminder.id },
+          data: {
+            status: "PENDING", // Retour à PENDING pour retry
+            scheduledAt: nextAttempt,
+            retryCount: retryCount + 1,
+            errorMessage: null, // Clear previous error
+          },
+        });
+      } else {
+        // Permanent failure or max retries exceeded
+        console.error(
+          `[ReminderWorker] Permanent failure for rappel #${reminder.id} (retries: ${retryCount}/${MAX_RETRIES})`
+        );
+
+        await prisma.reminder.update({
+          where: { id: reminder.id },
+          data: {
+            status: "FAILED",
+            errorMessage: err.message,
+            failedAt: new Date(),
+          },
+        });
+
+        // Notify user that reminder failed
+        try {
+          await notifyUserReminderFailed(reminder, err);
+        } catch (notifyErr) {
+          console.warn(
+            `[ReminderWorker] Failed to notify user about failed reminder:`,
+            notifyErr.message
+          );
+        }
+      }
     }
   }
+}
+
+/**
+ * Notifie l'utilisateur qu'un rappel n'a pas pu être livré
+ * TODO: Implement in-app notifications via websocket or polling endpoint
+ */
+async function notifyUserReminderFailed(reminder, err) {
+  const messages = {
+    network: "Votre rappel n'a pas pu être livré (problème réseau). Nous continuerons à réessayer.",
+    rate_limit:
+      "Votre rappel est en attente (service temporairement occupé). Il sera livré sous peu.",
+    no_listener:
+      "Votre rappel attend que vous ouvriez l'application pour être livré.",
+    config:
+      "Votre rappel n'a pas pu être livré. Vérifiez votre configuration dans les paramètres.",
+    auth: "Erreur d'authentification. Contactez le support.",
+  };
+
+  let errorType = "unknown";
+  if (err?.message?.includes("WhatsApp account")) {
+    errorType = "config";
+  } else if (err?.code === "ETIMEDOUT" || err?.message?.includes("timeout")) {
+    errorType = "network";
+  } else if (err?.message?.includes("rate")) {
+    errorType = "rate_limit";
+  }
+
+  const message = messages[errorType] || "Votre rappel n'a pas pu être livré.";
+
+  // Log the failure for admin observability
+  console.log(`[ReminderWorker] Reminder #${reminder.id} failed (${errorType}): ${message}`, {
+    reminderId: reminder.id,
+    userId: reminder.userId,
+    errorType,
+    taskDescription: reminder.taskDescription,
+  });
+
+  // TODO: When Notification model is implemented, create in-app notification:
+  // await prisma.notification.create({
+  //   data: {
+  //     userId: reminder.userId,
+  //     type: "REMINDER_FAILED",
+  //     title: "Rappel non livré",
+  //     message,
+  //     data: JSON.stringify({
+  //       reminderId: reminder.id,
+  //       errorType,
+  //       taskDescription: reminder.taskDescription,
+  //     }),
+  //   },
+  // });
 }
 
 // --- API publique du module -------------------------------------------

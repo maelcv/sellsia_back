@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { requireTenantContext } from "../middleware/tenant.js";
+import { requireWorkspaceContext } from "../middleware/tenant.js";
 
 const router = express.Router();
 
@@ -20,7 +20,15 @@ const PERMISSION_KEYS = [
   "user_profiles",
   "reminders",
   "usage_stats",
-  "orchestration_logs"
+  "orchestration_logs",
+  "email_service",
+  "calendar",
+  "documents",
+  "data_enrichment",
+  "mass_import",
+  "analytics",
+  "custom_fields",
+  "external_connections",
 ];
 
 const ALL_TRUE_PERMISSIONS = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true]));
@@ -40,7 +48,8 @@ const upsertPlanSchema = z.object({
   permissions: z.record(z.string(), z.boolean()).optional().default({}),
   maxSubClients: z.number().int().min(0).max(10000).optional().default(0),
   maxUsers: z.number().int().min(1).max(100000).optional().default(10),
-  maxAgents: z.number().int().min(0).max(1000).optional().default(5)
+  maxAgents: z.number().int().min(0).max(1000).optional().default(5),
+  allowedAgentIds: z.array(z.string()).optional().default([])
 });
 
 /**
@@ -49,7 +58,7 @@ const upsertPlanSchema = z.object({
  * - Admin : toutes les features activées
  * - Client/collaborator : permissions du plan du workspace
  */
-router.get("/feature-access", requireAuth, requireTenantContext, async (req, res) => {
+router.get("/feature-access", requireAuth, requireWorkspaceContext, async (req, res) => {
   if (req.user.role === "admin") {
     return res.json({
       permissions: ALL_TRUE_PERMISSIONS,
@@ -110,7 +119,8 @@ router.get("/my-plan", requireAuth, requireRole("client"), async (req, res) => {
 
 router.get("/catalog", requireAuth, async (req, res) => {
   const plans = await prisma.plan.findMany({
-    orderBy: { priceEurMonth: "asc" }
+    orderBy: { priceEurMonth: "asc" },
+    include: { allowedAgents: { select: { id: true, name: true } } }
   });
 
   const mapped = plans.map((row) => ({
@@ -125,7 +135,8 @@ router.get("/catalog", requireAuth, async (req, res) => {
     permissions: (() => { try { return JSON.parse(row.permissionsJson || "{}"); } catch { return {}; } })(),
     maxSubClients: row.maxSubClients,
     maxUsers: row.maxUsers,
-    maxAgents: row.maxAgents
+    maxAgents: row.maxAgents,
+    allowedAgents: row.allowedAgents
   }));
 
   if (req.user.role === "admin") {
@@ -184,7 +195,10 @@ router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
       permissionsJson: JSON.stringify(payload.permissions || {}),
       maxSubClients: payload.maxSubClients ?? 0,
       maxUsers: payload.maxUsers ?? 10,
-      maxAgents: payload.maxAgents ?? 5
+      maxAgents: payload.maxAgents ?? 5,
+      allowedAgents: {
+        connect: (payload.allowedAgentIds || []).map(id => ({ id }))
+      }
     }
   });
 
@@ -218,7 +232,10 @@ router.patch("/admin/:id", requireAuth, requireRole("admin"), async (req, res) =
         permissionsJson: JSON.stringify(payload.permissions || {}),
         maxSubClients: payload.maxSubClients ?? 0,
         maxUsers: payload.maxUsers ?? 10,
-        maxAgents: payload.maxAgents ?? 5
+        maxAgents: payload.maxAgents ?? 5,
+        allowedAgents: {
+          set: (payload.allowedAgentIds || []).map(id => ({ id }))
+        }
       }
     });
   } catch (err) {

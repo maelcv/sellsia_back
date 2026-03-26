@@ -26,7 +26,7 @@ export async function createConversation(userId, agentId, pageContext = {}, tena
       contextType: pageContext?.type || (pageContext?.channel === "whatsapp" ? "whatsapp" : pageContext?.channel === "dashboard" ? "dashboard" : "generic"),
       contextEntityId: pageContext?.entityId || null,
       contextUrl: pageContext?.url || null,
-      tenantId: tenantId || null // isolation multi-tenant
+      workspaceId: tenantId || null // isolation multi-tenant (mapped from tenantId parameter)
     }
   });
 

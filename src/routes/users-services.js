@@ -27,7 +27,7 @@ const adminUserSchema = z.object({
   password: z.string().min(8).max(128).optional(),
   role: z.enum(["admin", "client"]),
   companyName: z.string().max(120).optional().default(""),
-  tenantId: z.string().cuid().optional()
+  workspaceId: z.string().cuid().optional()
 });
 
 const changePasswordSchema = z.object({
@@ -105,15 +105,7 @@ async function ensureClientSellsyLinks(userId) {
   }
 }
 
-async function disableOtherAiProviders(activeServiceId) {
-  await prisma.externalService.updateMany({
-    where: {
-      id: { not: activeServiceId },
-      category: { in: ["ia_cloud", "ia_local"] }
-    },
-    data: { isActive: false }
-  });
-}
+// REMOVED: disableOtherAiProviders because it leaked global state in multi-workspace mode.
 
 async function syncSellsyConnectionStatus(userId) {
   const activeSellsyCount = await prisma.$queryRaw`
@@ -613,7 +605,7 @@ router.post("/test-provider", requireAuth, async (req, res) => {
 router.get("/admin/users", requireAuth, requireRole("admin"), async (_req, res) => {
   const users = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
-    select: { id: true, email: true, role: true, companyName: true, createdAt: true }
+    select: { id: true, email: true, role: true, companyName: true, createdAt: true, twoFactorEnabled: true, workspace: { select: { parentWorkspaceId: true } } }
   });
   return res.json({ users });
 });
@@ -632,7 +624,7 @@ router.post("/admin/users", requireAuth, requireRole("admin"), async (req, res) 
       passwordHash: bcrypt.hashSync(payload.password, 12),
       role: payload.role,
       companyName: payload.companyName || null,
-      tenantId: payload.tenantId || null
+      workspaceId: payload.workspaceId || null
     }
   });
 
@@ -768,13 +760,13 @@ router.get("/admin/external-services", requireAuth, requireRole("admin"), async 
   const services = serviceRows.map((s) => {
     const defaultConfig = JSON.parse(s.defaultConfig || "{}");
 
-    // ── Decrypt sensitive data before sending to admin ──
-    if (defaultConfig.apiKey && defaultConfig._apiKeyEncrypted) {
-      defaultConfig.apiKey = decryptSecret(defaultConfig.apiKey);
+    // ── MASK sensitive data before sending to admin browser ──
+    if (defaultConfig.apiKey) {
+      defaultConfig.apiKey = maskSecret(decryptSecret(defaultConfig.apiKey));
       delete defaultConfig._apiKeyEncrypted;
     }
-    if (defaultConfig.apiSecret && defaultConfig._apiSecretEncrypted) {
-      defaultConfig.apiSecret = decryptSecret(defaultConfig.apiSecret);
+    if (defaultConfig.apiSecret) {
+      defaultConfig.apiSecret = maskSecret(decryptSecret(defaultConfig.apiSecret));
       delete defaultConfig._apiSecretEncrypted;
     }
 
@@ -821,9 +813,7 @@ router.post("/admin/external-services", requireAuth, requireRole("admin"), async
     throw err;
   }
 
-  if (payload.isActive && (payload.category === "ia-cloud" || payload.category === "ia-local")) {
-    await disableOtherAiProviders(created.id);
-  }
+  // REMOVED: global disableOtherAiProviders call
 
   await logAudit(req.user.sub, "EXTERNAL_SERVICE_CREATED", { code: payload.code });
   return res.status(201).json({ message: "External service created" });
@@ -871,9 +861,7 @@ router.patch("/admin/external-services/:id", requireAuth, requireRole("admin"), 
     throw err;
   }
 
-  if (payload.isActive && (payload.category === "ia-cloud" || payload.category === "ia-local")) {
-    await disableOtherAiProviders(id);
-  }
+  // REMOVED: global disableOtherAiProviders call
 
   await logAudit(req.user.sub, "EXTERNAL_SERVICE_UPDATED", { serviceId: id });
   return res.json({ message: "External service updated" });

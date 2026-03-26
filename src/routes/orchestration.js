@@ -28,28 +28,39 @@ router.get("/logs", requireAuth, requireRole("admin"), async (req, res) => {
   `;
   const total = countResult[0]?.count || 0;
 
-  const logs = await prisma.$queryRaw`
-    SELECT ol.id, ol.conversation_id AS "conversationId",
-           ol.user_id AS "userId", ol.user_message AS "userMessage",
-           ol.detected_intent AS "detectedIntent",
-           REPLACE(ol.routing_mode::text, '_', '-') AS "routingMode",
-           ol.agents_called AS "agentsCalled",
-           ol.context_type AS "contextType",
-           ol.context_entity_id AS "contextEntityId",
-           ol.sellsy_data_fetched AS "sellsyDataFetched",
-           ol.tokens_total AS "tokensTotal",
-           ol.response_time_ms AS "responseTimeMs",
-           ol.error,
-           ol.created_at AS "createdAt",
-           u.email AS "userEmail"
-    FROM orchestration_logs ol
-    LEFT JOIN users u ON u.id = ol.user_id
-    ORDER BY ol.created_at DESC
-    LIMIT ${limit} OFFSET ${offset}
-  `;
+  // Use Prisma's safe query builder instead of raw SQL
+  const logs = await prisma.orchestrationLog.findMany({
+    skip: offset,
+    take: limit,
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      conversationId: true,
+      userId: true,
+      userMessage: true,
+      detectedIntent: true,
+      routingMode: true,
+      agentsCalled: true,
+      contextType: true,
+      contextEntityId: true,
+      sellsyDataFetched: true,
+      tokensTotal: true,
+      responseTimeMs: true,
+      error: true,
+      createdAt: true,
+      user: { select: { email: true } }
+    }
+  });
+
+  // Transform for API response
+  const formattedLogs = logs.map(log => ({
+    ...log,
+    routingMode: log.routingMode?.replace(/_/g, '-'),
+    userEmail: log.user?.email
+  }));
 
   return res.json({
-    logs,
+    logs: formattedLogs,
     pagination: {
       page,
       limit,

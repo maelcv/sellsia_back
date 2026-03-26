@@ -803,12 +803,16 @@ const schedule_reminder = {
       },
       channel: {
         type: "string",
-        enum: ["chat", "whatsapp"],
-        description: "Canal de livraison : 'chat' (notification dans la plateforme) ou 'whatsapp' (message WhatsApp)"
+        enum: ["chat", "whatsapp", "email"],
+        description: "Canal de livraison : 'chat' (notification dans la plateforme), 'whatsapp' (message WhatsApp) ou 'email' (envoi par email)"
       },
       target_phone: {
         type: "string",
         description: "Numéro WhatsApp au format E.164 (ex: '+33612345678'). Requis seulement si channel='whatsapp'."
+      },
+      target_email: {
+        type: "string",
+        description: "Adresse email cible. Requis seulement si channel='email'."
       },
       timezone: {
         type: "string",
@@ -841,6 +845,9 @@ const schedule_reminder = {
     if (channel === "whatsapp" && !params.target_phone) {
       return { error: "target_phone est requis pour le canal whatsapp" };
     }
+    if (channel === "email" && !params.target_email) {
+      return { error: "target_email est requis pour le canal email" };
+    }
 
     const timezone = params.timezone || "Europe/Paris";
 
@@ -853,6 +860,8 @@ const schedule_reminder = {
 
     const channelLabel = channel === "whatsapp"
       ? `WhatsApp (${params.target_phone})`
+      : channel === "email"
+      ? `Email (${params.target_email})`
       : "notification dans la plateforme";
 
     // ── Phase 1 : Récapitulatif + demande de confirmation via ask_user ─
@@ -898,6 +907,7 @@ const schedule_reminder = {
           status: "PENDING",
           channel,
           targetPhone: params.target_phone || null,
+          targetEmail: params.target_email || null,
         },
       });
 
@@ -911,6 +921,268 @@ const schedule_reminder = {
     } catch (err) {
       console.error("[schedule_reminder tool] Erreur:", err);
       return { error: `Erreur lors de la création du rappel : ${err.message}` };
+    }
+  }
+};
+
+// ── Email Tool ────────────────────────────────────────
+
+const send_email = {
+  name: "send_email",
+  description:
+    "Compose et envoie un email au nom de l'utilisateur. IMPORTANT : utilise d'abord ask_user pour montrer un aperçu de l'email (destinataire, objet, corps) et demander confirmation avant d'envoyer.",
+  parameters: {
+    type: "object",
+    properties: {
+      to: {
+        type: "string",
+        description: "Adresse email du destinataire"
+      },
+      cc: {
+        type: "string",
+        description: "Adresse en copie (optionnel)"
+      },
+      subject: {
+        type: "string",
+        description: "Objet de l'email"
+      },
+      body: {
+        type: "string",
+        description: "Corps de l'email en texte brut ou HTML"
+      },
+      confirmed: {
+        type: "boolean",
+        description: "true = envoyer directement, false/absent = montrer l'aperçu d'abord"
+      }
+    },
+    required: ["to", "subject", "body"]
+  },
+  async execute(params, context) {
+    if (!context.userId || !context.tenantId) {
+      return { error: "Contexte utilisateur manquant" };
+    }
+
+    if (!params.confirmed) {
+      return {
+        status: "preview",
+        preview: {
+          to: params.to,
+          cc: params.cc || null,
+          subject: params.subject,
+          body: params.body,
+        },
+        message: `📧 Aperçu de l'email :\n\n**À :** ${params.to}\n**Objet :** ${params.subject}\n\n${params.body}\n\nConfirmez-vous l'envoi ?`,
+      };
+    }
+
+    try {
+      const { sendEmail } = await import("../email/email-service.js");
+      await sendEmail({
+        userId:   context.userId,
+        tenantId: context.tenantId,
+        to:       params.to,
+        cc:       params.cc,
+        subject:  params.subject,
+        html:     params.body,
+      });
+      return {
+        status: "sent",
+        message: `Email envoyé à ${params.to} avec succès.`,
+      };
+    } catch (err) {
+      console.error("[send_email tool] Erreur:", err);
+      return { error: `Erreur lors de l'envoi : ${err.message}` };
+    }
+  }
+};
+
+// ── Calendar Tool ─────────────────────────────────────
+
+const create_calendar_event = {
+  name: "create_calendar_event",
+  description:
+    "Crée un événement dans le calendrier de l'utilisateur. Utilise cet outil quand l'utilisateur demande de planifier une réunion, un rendez-vous ou un événement.",
+  parameters: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        description: "Titre de l'événement"
+      },
+      description: {
+        type: "string",
+        description: "Description ou notes pour cet événement (optionnel)"
+      },
+      start_at: {
+        type: "string",
+        description: "Date et heure de début en ISO 8601 UTC, ex: '2025-04-15T09:00:00Z'"
+      },
+      end_at: {
+        type: "string",
+        description: "Date et heure de fin en ISO 8601 UTC, ex: '2025-04-15T10:00:00Z'"
+      },
+      timezone: {
+        type: "string",
+        description: "Fuseau horaire de l'utilisateur, ex: 'Europe/Paris' (défaut)"
+      },
+      location: {
+        type: "string",
+        description: "Lieu de l'événement (optionnel)"
+      }
+    },
+    required: ["title", "start_at", "end_at"]
+  },
+  async execute(params, context) {
+    if (!context.userId || !context.tenantId) {
+      return { error: "Contexte utilisateur manquant" };
+    }
+
+    try {
+      const { prisma } = await import("../../src/prisma.js");
+      const event = await prisma.calendarEvent.create({
+        data: {
+          userId:      context.userId,
+          tenantId:    context.tenantId,
+          title:       params.title,
+          description: params.description ?? null,
+          startAt:     new Date(params.start_at),
+          endAt:       new Date(params.end_at),
+          timezone:    params.timezone ?? "Europe/Paris",
+          location:    params.location ?? null,
+        },
+      });
+      return {
+        status: "created",
+        eventId: event.id,
+        message: `Événement "${params.title}" créé le ${new Date(params.start_at).toLocaleString("fr-FR", { timeZone: params.timezone || "Europe/Paris" })}.`,
+      };
+    } catch (err) {
+      console.error("[create_calendar_event tool] Erreur:", err);
+      return { error: `Erreur lors de la création : ${err.message}` };
+    }
+  }
+};
+
+// ── CRM Phase 3 Tools ──────────────────────────────────
+
+const enrich_company_data = {
+  name: "enrich_company_data",
+  description:
+    "Enrichit les données d'une entreprise via son SIRET (INSEE SIRENE). Retourne données complètes : secteur, effectifs, CA, date création, etc.",
+  parameters: {
+    type: "object",
+    properties: {
+      siret: {
+        type: "string",
+        description: "SIRET de l'entreprise (14 chiffres), ex: '12345678901234'"
+      }
+    },
+    required: ["siret"]
+  },
+  async execute(params, context) {
+    if (!context.userId || !context.tenantId) {
+      return { error: "Contexte utilisateur manquant" };
+    }
+    if (!/^\d{14}$/.test(params.siret)) {
+      return { error: "SIRET invalide (doit contenir 14 chiffres)" };
+    }
+
+    try {
+      const { prisma } = await import("../../src/prisma.js");
+      // Créer ou récupérer job d'enrichissement
+      let enriched = await prisma.siretEnrichment.findUnique({
+        where: { siret: params.siret }
+      });
+
+      if (!enriched) {
+        enriched = await prisma.siretEnrichment.create({
+          data: {
+            userId: context.userId,
+            tenantId: context.tenantId,
+            siret: params.siret,
+            status: "pending",
+          }
+        });
+      }
+
+      return {
+        status: enriched.status,
+        siret: enriched.siret,
+        company: enriched.company || "Données en cours de récupération...",
+        message: enriched.status === "completed"
+          ? `Données d'enrichissement disponibles pour ${enriched.company}`
+          : "Enrichissement en cours, veuillez réessayer dans quelques secondes"
+      };
+    } catch (err) {
+      console.error("[enrich_company_data tool] Erreur:", err);
+      return { error: `Erreur lors de l'enrichissement : ${err.message}` };
+    }
+  }
+};
+
+const create_task = {
+  name: "create_task",
+  description:
+    "Crée une tâche assignée à un utilisateur, optionnellement liée à une entreprise/contact/opportunité.",
+  parameters: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        description: "Titre de la tâche"
+      },
+      description: {
+        type: "string",
+        description: "Description détaillée (optionnel)"
+      },
+      due_date: {
+        type: "string",
+        description: "Date d'échéance ISO 8601, ex: '2025-04-15T09:00:00Z' (optionnel)"
+      },
+      priority: {
+        type: "string",
+        enum: ["low", "medium", "high"],
+        description: "Priorité de la tâche"
+      },
+      entity_type: {
+        type: "string",
+        description: "Type d'entité liée : 'company', 'contact', 'opportunity' (optionnel)"
+      },
+      entity_id: {
+        type: "string",
+        description: "ID de l'entité liée (optionnel)"
+      }
+    },
+    required: ["title"]
+  },
+  async execute(params, context) {
+    if (!context.userId || !context.tenantId) {
+      return { error: "Contexte utilisateur manquant" };
+    }
+
+    try {
+      const { prisma } = await import("../../src/prisma.js");
+      const task = await prisma.taskAssignment.create({
+        data: {
+          userId: context.userId,
+          tenantId: context.tenantId,
+          title: params.title,
+          description: params.description || null,
+          dueDate: params.due_date ? new Date(params.due_date) : null,
+          priority: params.priority || "medium",
+          entityType: params.entity_type || null,
+          entityId: params.entity_id || null,
+          status: "pending",
+        }
+      });
+      return {
+        status: "created",
+        taskId: task.id,
+        message: `Tâche créée: "${params.title}" (ID: ${task.id})`
+      };
+    } catch (err) {
+      console.error("[create_task tool] Erreur:", err);
+      return { error: `Erreur lors de la création : ${err.message}` };
     }
   }
 };
@@ -1010,7 +1282,14 @@ export const ALL_TOOLS = [
   // Report generation
   generate_report,
   // Reminders — planification de rappels par les agents IA
-  schedule_reminder
+  schedule_reminder,
+  // Email — envoi d'emails par les agents IA
+  send_email,
+  // Calendar — création d'événements calendrier
+  create_calendar_event,
+  // Phase 3 — CRM operations
+  enrich_company_data,
+  create_task,
 ];
 
 /**
@@ -1061,9 +1340,23 @@ export function getAvailableTools(context = {}, options = {}) {
   tools.push(generate_report);
 
   // Reminder tool — disponible si un userId est dans le contexte
-  // (permet aux agents de planifier des rappels pour l'utilisateur)
   if (context.userId) {
     tools.push(schedule_reminder);
+    // Email tool — disponible si feature email_service activée
+    if (context.features?.email_service) {
+      tools.push(send_email);
+    }
+    // Calendar tool — disponible si feature calendar activée
+    if (context.features?.calendar) {
+      tools.push(create_calendar_event);
+    }
+    // Phase 3: CRM operations
+    if (context.features?.data_enrichment) {
+      tools.push(enrich_company_data);
+    }
+    if (context.features?.mass_import) {
+      tools.push(create_task);
+    }
   }
 
   // Low thinking mode keeps a constrained tool surface.
@@ -1076,6 +1369,10 @@ export function getAvailableTools(context = {}, options = {}) {
       if (tool.name.startsWith("sellsy_")) return true;
       if (tool.name.startsWith("parse_")) return true;
       if (tool.name === "schedule_reminder") return true;
+      if (tool.name === "send_email") return true;
+      if (tool.name === "create_calendar_event") return true;
+      if (tool.name === "enrich_company_data") return true;
+      if (tool.name === "create_task") return true;
       return false;
     });
   }

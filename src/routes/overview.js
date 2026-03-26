@@ -75,7 +75,7 @@ async function buildRealSeries(userId, mode) {
   return { labels, seriesA, seriesB };
 }
 
-router.get("/client", requireAuth, requireRole("client", "collaborator"), async (req, res) => {
+router.get("/client", requireAuth, requireRole("client", "sub_client", "collaborator"), async (req, res) => {
   const userId = req.user.sub;
 
   const grantedAgents = await prisma.userAgentAccess.count({
@@ -142,65 +142,123 @@ router.get("/client", requireAuth, requireRole("client", "collaborator"), async 
 });
 
 router.get("/admin", requireAuth, requireRole("admin"), async (_req, res) => {
-  const activeClientsResult = await prisma.$queryRaw`
-    SELECT COUNT(*)::int as count FROM users
-    WHERE role = 'client' AND id IN (
-      SELECT user_id FROM client_plans WHERE sellsy_connection_status = 'active'
-    )`;
-  const activeClients = activeClientsResult[0]?.count || 0;
+  // Section 1: Token by provider IA
+  const tokenByProviderRows = await prisma.$queryRaw`
+    SELECT
+      COALESCE(es.code, 'platform-default') as provider,
+      COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+    FROM messages m
+    LEFT JOIN conversations c ON c.id = m.conversation_id
+    LEFT JOIN client_service_links csl ON csl.owner_user_id = c.user_id AND csl.status = 'active'
+    LEFT JOIN external_services es ON es.id = csl.service_id
+    WHERE m.role = 'assistant'
+    GROUP BY COALESCE(es.code, 'platform-default')
+    ORDER BY tokens DESC`;
+  const tokenByProvider = tokenByProviderRows.map(row => ({
+    provider: row.provider,
+    tokens: Number(row.tokens)
+  }));
 
-  const totalClients = await prisma.user.count({
-    where: { role: "client" }
+  // Section 2: Token by agent type (local vs cloud)
+  const tokenByAgentTypeRows = await prisma.$queryRaw`
+    SELECT
+      a.agent_type as type,
+      COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN agents a ON a.id = c.agent_id
+    WHERE m.role = 'assistant'
+    GROUP BY a.agent_type`;
+  const tokenByAgentType = tokenByAgentTypeRows.reduce((acc, row) => {
+    acc[row.type] = Number(row.tokens);
+    return acc;
+  }, {});
+
+  // Section 3: Token by workspace (top 10)
+  const tokenByWorkspaceRows = await prisma.$queryRaw`
+    SELECT
+      w.name as workspace,
+      w.id,
+      COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN users u ON u.id = c.user_id
+    JOIN workspaces w ON w.id = u.workspace_id
+    WHERE m.role = 'assistant'
+    GROUP BY w.id, w.name
+    ORDER BY tokens DESC
+    LIMIT 10`;
+  const tokenByWorkspace = tokenByWorkspaceRows.map(row => ({
+    workspace: row.workspace,
+    workspaceId: row.id,
+    tokens: Number(row.tokens)
+  }));
+
+  // Section 4: Token by user (top 10)
+  const tokenByUserRows = await prisma.$queryRaw`
+    SELECT
+      u.email,
+      u.id,
+      u.company_name as companyName,
+      COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN users u ON u.id = c.user_id
+    WHERE m.role = 'assistant'
+    GROUP BY u.id, u.email, u.company_name
+    ORDER BY tokens DESC
+    LIMIT 10`;
+  const tokenByUser = tokenByUserRows.map(row => ({
+    email: row.email,
+    userId: row.id,
+    companyName: row.companyName,
+    tokens: Number(row.tokens)
+  }));
+
+  // Section 5: KPIs
+  const activeWorkspaces = await prisma.workspace.count({
+    where: { status: "active" }
   });
 
-  const tokenRow = await prisma.$queryRaw`
-    SELECT COALESCE(SUM(token_received), 0)::int as "tokenReceived",
-           COALESCE(SUM(token_sent), 0)::int as "tokenSent",
-           COALESCE(SUM(token_processed), 0)::int as "tokenProcessed",
-           COALESCE(SUM(token_returned), 0)::int as "tokenReturned"
-    FROM client_plans`;
+  const activeAgents = await prisma.agent.count({
+    where: { isActive: true }
+  });
 
-  const tokenAgg = tokenRow[0] || { tokenReceived: 0, tokenSent: 0, tokenProcessed: 0, tokenReturned: 0 };
+  const totalConversations = await prisma.conversation.count();
 
-  const messageTokenRow = await prisma.$queryRaw`
-    SELECT COALESCE(SUM(tokens_input), 0)::int as "tokensInput",
-           COALESCE(SUM(tokens_output), 0)::int as "tokensOutput"
+  const conversationsLast7d = await prisma.conversation.count({
+    where: {
+      startedAt: {
+        gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      }
+    }
+  });
+
+  // Section 6: KPI total tokens
+  const totalTokensRow = await prisma.$queryRaw`
+    SELECT COALESCE(SUM(tokens_input + tokens_output), 0)::int as total
     FROM messages
     WHERE role = 'assistant'`;
-
-  const messageTokenAgg = messageTokenRow[0] || { tokensInput: 0, tokensOutput: 0 };
-
-  const tokenReceived = tokenAgg.tokenReceived || Number(messageTokenAgg.tokensInput);
-  const tokenSent = tokenAgg.tokenSent || Number(messageTokenAgg.tokensInput);
-  const tokenProcessed = tokenAgg.tokenProcessed || (Number(messageTokenAgg.tokensInput) + Number(messageTokenAgg.tokensOutput));
-  const tokenReturned = tokenAgg.tokenReturned || Number(messageTokenAgg.tokensOutput);
-
-  const pendingRequests = await prisma.accessRequest.count({
-    where: { status: "pending" }
-  });
+  const totalTokens = Number(totalTokensRow[0]?.total || 0);
 
   const graphIn = await buildRealSeries(null, "both_in");
-  const graphOut = await buildRealSeries(null, "both_out");
 
   return res.json({
-    cards: {
-      activeClients,
-      totalClients,
-      tokenReceived,
-      tokenSent,
-      pendingRequests
+    tokenByProvider,
+    tokenByAgentType,
+    tokenByWorkspace,
+    tokenByUser,
+    kpis: {
+      activeWorkspaces,
+      activeAgents,
+      totalConversations,
+      conversationsLast7d,
+      totalTokens
     },
-    charts: {
-      tokensReceivedProcessed: {
-        labels: graphIn.labels,
-        received: graphIn.seriesA,
-        processed: graphIn.seriesB
-      },
-      tokensSentReturned: {
-        labels: graphOut.labels,
-        sent: graphOut.seriesA,
-        returned: graphOut.seriesB
-      }
+    chart: {
+      labels: graphIn.labels,
+      received: graphIn.seriesA,
+      processed: graphIn.seriesB
     }
   });
 });
@@ -260,6 +318,68 @@ router.get("/quotas", requireAuth, requireRole("admin"), async (req, res) => {
     quotas,
     byModule,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+  });
+});
+
+// ── GET /api/overview/subclient — Sub-client (member) dashboard ──
+router.get("/subclient", requireAuth, requireRole("sub_client"), async (req, res) => {
+  const userId = req.user.sub;
+
+  // Token usage (user-specific)
+  const planInfo = await prisma.$queryRaw`
+    SELECT cp.token_used as "tokenUsed", cp.token_received as "tokenReceived",
+           cp.token_processed as "tokenProcessed", cp.token_sent as "tokenSent",
+           cp.token_returned as "tokenReturned",
+           p.monthly_token_limit as "tokenLimit"
+    FROM client_plans cp
+    JOIN plans p ON p.id = cp.plan_id
+    WHERE cp.user_id = ${userId}
+    LIMIT 1`;
+
+  const plan = planInfo[0] || { tokenUsed: 0, tokenLimit: 0, tokenReceived: 0, tokenSent: 0, tokenProcessed: 0, tokenReturned: 0 };
+
+  // Token by agent for this user
+  const tokenByAgentRows = await prisma.$queryRaw`
+    SELECT
+      a.id,
+      a.name,
+      COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    JOIN agents a ON a.id = c.agent_id
+    WHERE c.user_id = ${userId} AND m.role = 'assistant'
+    GROUP BY a.id, a.name
+    ORDER BY tokens DESC
+    LIMIT 5`;
+  const tokenByAgent = tokenByAgentRows.map(row => ({
+    agentId: row.id,
+    agentName: row.name,
+    tokens: Number(row.tokens)
+  }));
+
+  // Conversations last 7 days
+  const conversationsLast7d = await prisma.conversation.count({
+    where: {
+      userId,
+      createdAt: {
+        gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      }
+    }
+  });
+
+  // Chart: Token usage per day (7 days)
+  const series = await buildRealSeries(userId, "both_in");
+
+  return res.json({
+    tokenUsed: Number(plan.tokenUsed),
+    tokenLimit: Number(plan.tokenLimit),
+    tokenByAgent,
+    conversationsLast7d,
+    chart: {
+      labels: series.labels,
+      received: series.seriesA,
+      processed: series.seriesB
+    }
   });
 });
 

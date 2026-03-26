@@ -1,5 +1,5 @@
 /**
- * workspaces.js — Gestion des workspaces (tenants) SaaS
+ * workspaces.js — Gestion des workspaces (workspaces) SaaS
  *
  * Routes admin : CRUD complet des workspaces
  * Routes client : création de sous-clients (si plan le permet)
@@ -10,7 +10,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
-import { requireTenantContext } from "../middleware/tenant.js";
+import { requireWorkspaceContext } from "../middleware/tenant.js";
 
 const router = express.Router();
 
@@ -20,9 +20,7 @@ const createWorkspaceSchema = z.object({
   name: z.string().min(2).max(120),
   slug: z.string().min(2).max(80).regex(/^[a-z0-9-]+$/, "Slug: lettres minuscules, chiffres et tirets uniquement"),
   planId: z.number().int().positive(),
-  ownerEmail: z.string().email().max(254),
-  ownerPassword: z.string().min(8).max(128),
-  ownerCompanyName: z.string().max(120).optional()
+  ownerId: z.number().int().positive()
 });
 
 const updateWorkspaceSchema = z.object({
@@ -43,19 +41,19 @@ const createSubClientSchema = z.object({
 
 // ── Helper ───────────────────────────────────────────────────
 
-function formatWorkspace(tenant) {
+function formatWorkspace(workspace) {
   return {
-    id: tenant.id,
-    name: tenant.name,
-    slug: tenant.slug,
-    status: tenant.status,
-    planId: tenant.planId,
-    planName: tenant.tenantPlan?.name || tenant.plan || null,
-    parentTenantId: tenant.parentTenantId || null,
-    createdAt: tenant.createdAt,
-    updatedAt: tenant.updatedAt,
-    userCount: tenant._count?.users || 0,
-    childCount: tenant._count?.children || 0
+    id: workspace.id,
+    name: workspace.name,
+    slug: workspace.slug,
+    status: workspace.status,
+    planId: workspace.planId,
+    planName: workspace.workspacePlan?.name || workspace.plan || null,
+    parentWorkspaceId: workspace.parentWorkspaceId || null,
+    createdAt: workspace.createdAt,
+    updatedAt: workspace.updatedAt,
+    userCount: workspace._count?.users || 0,
+    childCount: workspace._count?.children || 0
   };
 }
 
@@ -66,59 +64,172 @@ function formatWorkspace(tenant) {
  * Liste tous les workspaces (admin seulement)
  */
 router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
-  const tenants = await prisma.tenant.findMany({
+  const workspaces = await prisma.workspace.findMany({
     where: { status: { not: "deleted" } },
     include: {
-      tenantPlan: { select: { id: true, name: true } },
+      workspacePlan: { select: { id: true, name: true } },
       _count: { select: { users: true, children: true } }
     },
     orderBy: { createdAt: "desc" }
   });
 
-  return res.json({ workspaces: tenants.map(formatWorkspace) });
+  return res.json({ workspaces: workspaces.map(formatWorkspace) });
 });
 
 /**
  * GET /api/workspaces/my-children
- * Liste les sous-clients du tenant courant (client avec feature sub_clients)
+ * Liste les sous-clients du workspace courant (client avec feature sub_clients)
  * IMPORTANT : Cette route doit être déclarée AVANT /:id pour ne pas être capturée par ce pattern
  */
 router.get(
   "/my-children",
   requireAuth,
-  requireRole("client", "collaborator"),
-  requireTenantContext,
+  requireRole("client", "sub_client"),
+  requireWorkspaceContext,
   requireFeature("sub_clients"),
   async (req, res) => {
-    const tenants = await prisma.tenant.findMany({
-      where: { parentTenantId: req.tenantId, status: { not: "deleted" } },
+    const workspaces = await prisma.workspace.findMany({
+      where: { parentWorkspaceId: req.workspaceId, status: { not: "deleted" } },
       include: {
-        tenantPlan: { select: { id: true, name: true } },
+        workspacePlan: { select: { id: true, name: true } },
         _count: { select: { users: true, children: true } }
       },
       orderBy: { createdAt: "desc" }
     });
 
     // Quota utilisé
-    const plan = req.tenantPlan;
+    const plan = req.workspacePlan;
     const maxSubClients = plan?.maxSubClients || 0;
 
     return res.json({
-      workspaces: tenants.map(formatWorkspace),
-      quota: { used: tenants.length, max: maxSubClients }
+      workspaces: workspaces.map(formatWorkspace),
+      quota: { used: workspaces.length, max: maxSubClients }
     });
   }
 );
+
+/**
+ * GET /api/workspaces/diagnostic
+ * Debug endpoint: compare JWT vs DB user data
+ */
+router.get("/diagnostic", requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user.sub },
+    select: { id: true, email: true, role: true, workspaceId: true }
+  });
+
+  return res.json({
+    jwt_token: {
+      sub: req.user.sub,
+      role: req.user.role,
+      workspaceId: req.user.workspaceId,
+      email: req.user.email
+    },
+    database_user: user,
+    match_role: req.user.role === user?.role,
+    match_workspace: req.user.workspaceId === user?.workspaceId
+  });
+});
+
+/**
+ * GET /api/workspaces/me
+ * Retourne le détail du workspace courant pour le client
+ */
+router.get("/me", requireAuth, requireWorkspaceContext, async (req, res) => {
+  // Admins don't have a single workspace — they're global
+  if (!req.workspaceId) {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.sub },
+      select: { id: true, email: true, role: true, workspaceId: true }
+    });
+
+    console.error("[workspaces/me] User has no workspaceId", {
+      userId: req.user.sub,
+      role: req.user.role,
+      userWorkspaceId: user?.workspaceId,
+      jwtWorkspaceId: req.user.workspaceId,
+      timestamp: new Date().toISOString()
+    });
+
+    // Return 400 for incomplete setup, 403 for admins
+    if (req.user.role === "admin") {
+      return res.status(403).json({
+        error: "Admin users don't have a workspace. Use /api/workspaces instead."
+      });
+    }
+
+    return res.status(400).json({
+      error: "Account not fully configured",
+      code: "NO_WORKSPACE",
+      message: "Your account is not linked to a workspace. Please contact your administrator.",
+      userRole: req.user.role,
+      dbWorkspaceId: user?.workspaceId
+    });
+  }
+
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: req.workspaceId },
+    include: {
+      workspacePlan: { 
+        include: { 
+          allowedAgents: { select: { id: true, name: true, description: true } }
+        }
+      },
+      children: {
+        where: { status: { not: "deleted" } },
+        select: { id: true, name: true, slug: true, status: true }
+      },
+      _count: { select: { users: true } }
+    }
+  });
+
+  if (!workspace) return res.status(404).json({ error: "Workspace introuvable" });
+
+  const users = await prisma.user.findMany({
+    where: { workspaceId: workspace.id },
+    select: { id: true, email: true, role: true, createdAt: true }
+  });
+
+  // Récupérer les agents activés pour ce workspace
+  const activeAgentAccess = await prisma.workspaceAgentAccess.findMany({
+    where: { workspaceId: workspace.id, status: "granted" },
+    select: { agentId: true }
+  });
+  const activeIds = activeAgentAccess.map(a => a.agentId);
+
+  return res.json({
+    workspace: {
+      id: workspace.id,
+      name: workspace.name,
+      slug: workspace.slug,
+      plan: workspace.workspacePlan ? {
+        id: workspace.workspacePlan.id,
+        name: workspace.workspacePlan.name,
+        maxUsers: workspace.workspacePlan.maxUsers,
+        maxAgents: workspace.workspacePlan.maxAgents,
+        maxSubClients: workspace.workspacePlan.maxSubClients,
+        monthlyTokenLimit: workspace.workspacePlan.monthlyTokenLimit,
+        permissions: (() => { try { return JSON.parse(workspace.workspacePlan.permissionsJson || "{}"); } catch { return {}; } })()
+      } : null,
+      users,
+      subClients: workspace.children,
+      allowedAgents: (workspace.workspacePlan?.allowedAgents || []).map(a => ({
+        ...a,
+        isActive: activeIds.includes(a.id)
+      }))
+    }
+  });
+});
 
 /**
  * GET /api/workspaces/:id
  * Détail d'un workspace (admin seulement)
  */
 router.get("/:id", requireAuth, requireRole("admin"), async (req, res) => {
-  const tenant = await prisma.tenant.findUnique({
+  const workspace = await prisma.workspace.findUnique({
     where: { id: req.params.id },
     include: {
-      tenantPlan: { select: { id: true, name: true, permissionsJson: true, maxSubClients: true, maxUsers: true, maxAgents: true } },
+      workspacePlan: { select: { id: true, name: true, permissionsJson: true, maxSubClients: true, maxUsers: true, maxAgents: true } },
       _count: { select: { users: true, children: true } },
       children: {
         select: { id: true, name: true, slug: true, status: true, createdAt: true }
@@ -126,25 +237,25 @@ router.get("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     }
   });
 
-  if (!tenant) {
+  if (!workspace) {
     return res.status(404).json({ error: "Workspace introuvable" });
   }
 
   const users = await prisma.user.findMany({
-    where: { tenantId: tenant.id },
+    where: { workspaceId: workspace.id },
     select: { id: true, email: true, role: true, companyName: true, createdAt: true }
   });
 
   return res.json({
     workspace: {
-      ...formatWorkspace(tenant),
-      permissions: tenant.tenantPlan
-        ? (() => { try { return JSON.parse(tenant.tenantPlan.permissionsJson || "{}"); } catch { return {}; } })()
+      ...formatWorkspace(workspace),
+      permissions: workspace.workspacePlan
+        ? (() => { try { return JSON.parse(workspace.workspacePlan.permissionsJson || "{}"); } catch { return {}; } })()
         : {},
-      quotas: tenant.tenantPlan
-        ? { maxSubClients: tenant.tenantPlan.maxSubClients, maxUsers: tenant.tenantPlan.maxUsers, maxAgents: tenant.tenantPlan.maxAgents }
+      quotas: workspace.workspacePlan
+        ? { maxSubClients: workspace.workspacePlan.maxSubClients, maxUsers: workspace.workspacePlan.maxUsers, maxAgents: workspace.workspacePlan.maxAgents }
         : null,
-      subClients: tenant.children,
+      subClients: workspace.children,
       users
     }
   });
@@ -157,10 +268,11 @@ router.get("/:id", requireAuth, requireRole("admin"), async (req, res) => {
 router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   const parse = createWorkspaceSchema.safeParse(req.body);
   if (!parse.success) {
+    console.error("[WORKSPACE_CREATE_ERROR]", parse.error.flatten());
     return res.status(400).json({ error: "Données invalides", details: parse.error.flatten() });
   }
 
-  const { name, slug, planId, ownerEmail, ownerPassword, ownerCompanyName } = parse.data;
+  const { name, slug, planId, ownerId } = parse.data;
 
   // Vérifier que le plan existe
   const plan = await prisma.plan.findFirst({ where: { id: planId, isActive: true } });
@@ -169,22 +281,19 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   }
 
   // Vérifier unicité du slug
-  const existingSlug = await prisma.tenant.findUnique({ where: { slug } });
+  const existingSlug = await prisma.workspace.findUnique({ where: { slug } });
   if (existingSlug) {
     return res.status(409).json({ error: "Ce slug est déjà utilisé" });
   }
 
-  // Vérifier unicité de l'email owner
-  const existingUser = await prisma.user.findUnique({ where: { email: ownerEmail } });
-  if (existingUser) {
-    return res.status(409).json({ error: "Un utilisateur avec cet email existe déjà" });
+  const existingUser = await prisma.user.findUnique({ where: { id: ownerId } });
+  if (!existingUser) {
+    return res.status(404).json({ error: "Compte propriétaire introuvable" });
   }
 
-  const passwordHash = await bcrypt.hash(ownerPassword, 12);
-
-  // Création atomique : tenant + user owner
-  const [tenant, owner] = await prisma.$transaction(async (tx) => {
-    const newTenant = await tx.tenant.create({
+  // Création atomique : workspace + user owner
+  const [workspace, owner] = await prisma.$transaction(async (tx) => {
+    const newWorkspace = await tx.workspace.create({
       data: {
         name,
         slug,
@@ -194,24 +303,19 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
       }
     });
 
-    const newOwner = await tx.user.create({
-      data: {
-        email: ownerEmail,
-        passwordHash,
-        role: "client",
-        companyName: ownerCompanyName || name,
-        tenantId: newTenant.id
-      }
+    const updatedOwner = await tx.user.update({
+      where: { id: ownerId },
+      data: { workspaceId: newWorkspace.id }
     });
 
-    return [newTenant, newOwner];
+    return [newWorkspace, updatedOwner];
   });
 
-  await logAudit(req.user.sub, "WORKSPACE_CREATED", { tenantId: tenant.id, slug, ownerEmail });
+  await logAudit(req.user.sub, "WORKSPACE_CREATED", { workspaceId: workspace.id, slug, ownerId });
 
   return res.status(201).json({
     message: "Workspace créé",
-    workspace: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+    workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
     owner: { id: owner.id, email: owner.email }
   });
 });
@@ -229,7 +333,7 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const { name, slug, planId, status } = parse.data;
 
   if (slug) {
-    const existing = await prisma.tenant.findFirst({
+    const existing = await prisma.workspace.findFirst({
       where: { slug, id: { not: req.params.id } }
     });
     if (existing) {
@@ -251,13 +355,13 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     if (planId !== undefined) updateData.planId = planId;
     if (status !== undefined) updateData.status = status;
 
-    const tenant = await prisma.tenant.update({
+    const workspace = await prisma.workspace.update({
       where: { id: req.params.id },
       data: updateData
     });
 
-    await logAudit(req.user.sub, "WORKSPACE_UPDATED", { tenantId: req.params.id, changes: updateData });
-    return res.json({ message: "Workspace mis à jour", workspace: { id: tenant.id, slug: tenant.slug, name: tenant.name } });
+    await logAudit(req.user.sub, "WORKSPACE_UPDATED", { workspaceId: req.params.id, changes: updateData });
+    return res.json({ message: "Workspace mis à jour", workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name } });
   } catch (err) {
     if (err.code === "P2025") {
       return res.status(404).json({ error: "Workspace introuvable" });
@@ -272,12 +376,12 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  */
 router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    await prisma.tenant.update({
+    await prisma.workspace.update({
       where: { id: req.params.id },
       data: { status: "deleted" }
     });
 
-    await logAudit(req.user.sub, "WORKSPACE_DELETED", { tenantId: req.params.id });
+    await logAudit(req.user.sub, "WORKSPACE_DELETED", { workspaceId: req.params.id });
     return res.json({ message: "Workspace supprimé" });
   } catch (err) {
     if (err.code === "P2025") {
@@ -291,16 +395,16 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  * GET /api/workspaces/:id/users
  * Liste les users d'un workspace (admin ou owner du workspace)
  */
-router.get("/:id/users", requireAuth, requireTenantContext, async (req, res) => {
-  const tenantId = req.params.id;
+router.get("/:id/users", requireAuth, requireWorkspaceContext, async (req, res) => {
+  const workspaceId = req.params.id;
 
-  // Admin voit tout ; client ne peut voir que son propre tenant
-  if (req.user.role !== "admin" && req.tenantId !== tenantId) {
+  // Admin voit tout ; client ne peut voir que son propre workspace
+  if (req.user.role !== "admin" && req.workspaceId !== workspaceId) {
     return res.status(403).json({ error: "Accès refusé" });
   }
 
   const users = await prisma.user.findMany({
-    where: { tenantId },
+    where: { workspaceId },
     select: { id: true, email: true, role: true, companyName: true, createdAt: true }
   });
 
@@ -308,17 +412,17 @@ router.get("/:id/users", requireAuth, requireTenantContext, async (req, res) => 
 });
 
 /**
- * POST /api/workspaces/:tenantId/sub-clients
+ * POST /api/workspaces/:workspaceId/sub-clients
  * Créer un sous-client (client avec feature sub_clients)
  */
 router.post(
-  "/:tenantId/sub-clients",
+  "/:workspaceId/sub-clients",
   requireAuth,
   requireRole("client", "admin"),
-  requireTenantContext,
+  requireWorkspaceContext,
   requireFeature("sub_clients"),
   async (req, res) => {
-    const parentTenantId = req.user.role === "admin" ? req.params.tenantId : req.tenantId;
+    const parentWorkspaceId = req.user.role === "admin" ? req.params.workspaceId : req.workspaceId;
 
     const parse = createSubClientSchema.safeParse(req.body);
     if (!parse.success) {
@@ -328,20 +432,20 @@ router.post(
     const { name, slug, planId, ownerEmail, ownerPassword, ownerCompanyName } = parse.data;
 
     // Vérifier quota maxSubClients
-    if (req.user.role !== "admin" && req.tenantPlan) {
-      const currentCount = await prisma.tenant.count({
-        where: { parentTenantId, status: { not: "deleted" } }
+    if (req.user.role !== "admin" && req.workspacePlan) {
+      const currentCount = await prisma.workspace.count({
+        where: { parentWorkspaceId, status: { not: "deleted" } }
       });
-      if (currentCount >= req.tenantPlan.maxSubClients) {
+      if (currentCount >= req.workspacePlan.maxSubClients) {
         return res.status(429).json({
-          error: `Quota de sous-clients atteint (${req.tenantPlan.maxSubClients} max)`,
-          quota: { used: currentCount, max: req.tenantPlan.maxSubClients }
+          error: `Quota de sous-clients atteint (${req.workspacePlan.maxSubClients} max)`,
+          quota: { used: currentCount, max: req.workspacePlan.maxSubClients }
         });
       }
     }
 
     // Vérifier unicité slug
-    const existingSlug = await prisma.tenant.findUnique({ where: { slug } });
+    const existingSlug = await prisma.workspace.findUnique({ where: { slug } });
     if (existingSlug) {
       return res.status(409).json({ error: "Ce slug est déjà utilisé" });
     }
@@ -355,11 +459,11 @@ router.post(
     // Déterminer le plan : celui spécifié ou hériter du parent
     let resolvedPlanId = planId;
     if (!resolvedPlanId) {
-      const parentTenant = await prisma.tenant.findUnique({
-        where: { id: parentTenantId },
+      const parentWorkspace = await prisma.workspace.findUnique({
+        where: { id: parentWorkspaceId },
         select: { planId: true }
       });
-      resolvedPlanId = parentTenant?.planId || null;
+      resolvedPlanId = parentWorkspace?.planId || null;
     }
 
     const plan = resolvedPlanId
@@ -368,15 +472,15 @@ router.post(
 
     const passwordHash = await bcrypt.hash(ownerPassword, 12);
 
-    const [tenant, owner] = await prisma.$transaction(async (tx) => {
-      const newTenant = await tx.tenant.create({
+    const [workspace, owner] = await prisma.$transaction(async (tx) => {
+      const newWorkspace = await tx.workspace.create({
         data: {
           name,
           slug,
           status: "active",
           plan: plan?.name || "free",
           planId: resolvedPlanId || undefined,
-          parentTenantId
+          parentWorkspaceId
         }
       });
 
@@ -386,23 +490,23 @@ router.post(
           passwordHash,
           role: "client",
           companyName: ownerCompanyName || name,
-          tenantId: newTenant.id
+          workspaceId: newWorkspace.id
         }
       });
 
-      return [newTenant, newOwner];
+      return [newWorkspace, newOwner];
     });
 
     await logAudit(req.user.sub, "SUB_CLIENT_CREATED", {
-      parentTenantId,
-      childTenantId: tenant.id,
+      parentWorkspaceId,
+      childWorkspaceId: workspace.id,
       slug,
       ownerEmail
     });
 
     return res.status(201).json({
       message: "Sous-client créé",
-      workspace: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+      workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name },
       owner: { id: owner.id, email: owner.email }
     });
   }

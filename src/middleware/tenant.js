@@ -1,45 +1,45 @@
 /**
- * tenant.js — Middleware d'isolation multi-tenant
+ * tenant.js — Middleware d'isolation multi-workspace
  *
  * Fonctionnement :
  *   1. Vérifie que l'utilisateur est authentifié (requireAuth doit passer en premier)
- *   2. Pour les super-admins (role="admin") : bypass — req.tenantId = null
- *   3. Pour les clients (role="client" / "collaborator") : charge le tenantId depuis
- *      la DB et le stocke dans req.tenantId
- *   4. Bloque avec 500 si un client n'a pas de tenantId (anomalie de données)
+ *   2. Pour les super-admins (role="admin") : bypass — req.workspaceId = null
+ *   3. Pour les clients/sub-clients (role="client" / "sub_client") : charge le workspaceId depuis
+ *      la DB et le stocke dans req.workspaceId
+ *   4. Bloque avec 400 si un client n'a pas de workspaceId (onboarding incomplet)
  *
  * Usage :
- *   router.get("/", requireAuth, requireTenantContext, async (req, res) => {
- *     // req.tenantId est garanti non-null pour les clients
- *     // req.tenantId est null pour les admins (accès global)
+ *   router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
+ *     // req.workspaceId est garanti non-null pour les clients
+ *     // req.workspaceId est null pour les admins (accès global)
  *   });
  *
  * Règle d'or dans les handlers :
- *   if (req.tenantId) {
- *     where: { tenantId: req.tenantId }   // Filtre client
+ *   if (req.workspaceId) {
+ *     where: { workspaceId: req.workspaceId }   // Filtre client
  *   }
- *   // Si req.tenantId est null → admin, pas de filtre tenant
+ *   // Si req.workspaceId est null → admin, pas de filtre workspace
  */
 
 import { prisma } from "../prisma.js";
 
 /**
- * Middleware principal : résout et injecte req.tenantId.
+ * Middleware principal : résout et injecte req.workspaceId.
  * À placer après requireAuth sur toutes les routes protégées.
  */
-export async function requireTenantContext(req, res, next) {
+export async function requireWorkspaceContext(req, res, next) {
   try {
     // Vérification de base : requireAuth doit être passé avant
     if (!req.user) {
       return res.status(401).json({ error: "Non authentifié" });
     }
 
-    // Super-admin plateforme : bypass de l'isolation tenant
-    // Il voit les données de tous les tenants, permissions toutes actives
+    // Super-admin plateforme : bypass de l'isolation workspace
+    // Il voit les données de tous les workspaces, permissions toutes actives
     if (req.user.role === "admin") {
-      req.tenantId = null;
-      req.tenantParentId = null;
-      req.tenantPlan = null; // Les admins bypasse requireFeature de toute façon
+      req.workspaceId = null;
+      req.workspaceParentId = null;
+      req.workspacePlan = null; // Les admins bypass requireFeature de toute façon
       return next();
     }
 
@@ -48,34 +48,39 @@ export async function requireTenantContext(req, res, next) {
       return res.status(401).json({ error: "Token invalide : sub manquant" });
     }
 
-    // Résoudre le tenantId : JWT d'abord, sinon DB
-    let resolvedTenantId = req.user.tenantId || null;
+    // Résoudre le workspaceId : JWT d'abord, sinon DB
+    let resolvedWorkspaceId = req.user.workspaceId || null;
 
-    if (!resolvedTenantId) {
+    if (!resolvedWorkspaceId) {
       const user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { tenantId: true, role: true }
+        select: { workspaceId: true, role: true }
       });
       if (!user) {
         return res.status(401).json({ error: "Utilisateur introuvable" });
       }
-      resolvedTenantId = user.tenantId;
+      resolvedWorkspaceId = user.workspaceId;
     }
 
-    if (!resolvedTenantId) {
-      console.error(`[TENANT] userId=${userId} (role=${req.user.role}) n'a pas de tenantId !`);
-      return res.status(500).json({
-        error: "Ce compte n'est associé à aucun tenant. Contactez l'administrateur."
+    if (!resolvedWorkspaceId) {
+      console.warn(`[WORKSPACE] userId=${userId} (role=${req.user.role}) n'a pas de workspaceId - this may be normal during onboarding`);
+      // For non-admin users without a workspace, return 400 instead of 500
+      // This indicates the user needs to complete onboarding
+      return res.status(400).json({
+        error: "Account not fully configured",
+        code: "NO_WORKSPACE",
+        message: "Your account needs to be linked to a workspace. Please contact support or complete your profile setup.",
+        hint: "If you just signed up, your workspace should be created automatically. Please refresh the page."
       });
     }
 
-    // Charger le tenant avec son plan (nécessaire pour requireFeature)
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: resolvedTenantId },
+    // Charger le workspace avec son plan (nécessaire pour requireFeature)
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: resolvedWorkspaceId },
       select: {
         id: true,
-        parentTenantId: true,
-        tenantPlan: {
+        parentWorkspaceId: true,
+        workspacePlan: {
           select: {
             id: true,
             name: true,
@@ -83,51 +88,74 @@ export async function requireTenantContext(req, res, next) {
             maxSubClients: true,
             maxUsers: true,
             maxAgents: true,
-            monthlyTokenLimit: true
+            monthlyTokenLimit: true,
+            allowedAgents: {
+              select: { id: true }
+            }
           }
         }
       }
     });
 
-    if (!tenant) {
-      console.error(`[TENANT] Tenant ${resolvedTenantId} introuvable en DB`);
-      return res.status(500).json({ error: "Tenant introuvable. Contactez l'administrateur." });
+    if (!workspace) {
+      console.error(`[WORKSPACE] Workspace ${resolvedWorkspaceId} introuvable en DB`);
+      return res.status(500).json({ error: "Workspace introuvable. Contactez l'administrateur." });
     }
 
-    req.tenantId = tenant.id;
-    req.tenantParentId = tenant.parentTenantId || null;
-    req.tenantPlan = tenant.tenantPlan
+    req.workspaceId = workspace.id;
+    req.workspaceParentId = workspace.parentWorkspaceId || null;
+
+    // Parse permissions with strict validation (fail-closed on corruption)
+    let parsedPermissions = {};
+    if (workspace.workspacePlan?.permissionsJson) {
+      try {
+        const parsed = JSON.parse(workspace.workspacePlan.permissionsJson);
+        if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsedPermissions = parsed;
+        } else {
+          throw new Error("Permissions must be a JSON object, not array or primitive");
+        }
+      } catch (err) {
+        console.error(
+          `[WORKSPACE] Failed to parse permissionsJson for workspace ${req.workspaceId}:`,
+          err.message
+        );
+        // Fail-closed: if permissions are corrupted, block all features
+        parsedPermissions = null;
+      }
+    }
+
+    req.workspacePlan = workspace.workspacePlan
       ? {
-          ...tenant.tenantPlan,
-          permissions: (() => {
-            try { return JSON.parse(tenant.tenantPlan.permissionsJson || "{}"); }
-            catch { return {}; }
-          })()
+          ...workspace.workspacePlan,
+          permissions: parsedPermissions
         }
       : null;
+
+    req.allowedAgentIds = req.workspacePlan?.allowedAgents?.map(a => a.id) || [];
 
     next();
 
   } catch (err) {
-    console.error("[TENANT] Erreur middleware tenant :", err);
+    console.error("[WORKSPACE] Erreur middleware workspace :", err);
     res.status(500).json({ error: "Erreur interne" });
   }
 }
 
 /**
- * Helper : vérifie qu'une ressource DB appartient bien au tenant de la requête.
+ * Helper : vérifie qu'une ressource DB appartient bien au workspace de la requête.
  * À utiliser après un findUnique() pour valider l'ownership avant de retourner/modifier.
  *
- * @param {Object} resource - L'objet retourné par Prisma (doit avoir un champ tenantId)
- * @param {Object} req       - La requête Express (doit avoir req.tenantId)
+ * @param {Object} resource - L'objet retourné par Prisma (doit avoir un champ workspaceId)
+ * @param {Object} req       - La requête Express (doit avoir req.workspaceId)
  * @returns {boolean} true si OK
- * @throws {Error} si le tenant ne correspond pas (à transformer en 403 dans le handler)
+ * @throws {Error} si le workspace ne correspond pas (à transformer en 403 dans le handler)
  *
  * Exemple :
  *   const conv = await prisma.conversation.findUnique({ where: { id } });
- *   validateTenantOwnership(conv, req);  // throws si mauvais tenant
+ *   validateWorkspaceOwnership(conv, req);  // throws si mauvais workspace
  */
-export function validateTenantOwnership(resource, req) {
+export function validateWorkspaceOwnership(resource, req) {
   // Les super-admins peuvent accéder à toutes les ressources
   if (req.user?.role === "admin") return true;
 
@@ -135,18 +163,18 @@ export function validateTenantOwnership(resource, req) {
     throw Object.assign(new Error("Ressource introuvable"), { statusCode: 404 });
   }
 
-  if (!resource.tenantId) {
-    // Ressource sans tenantId (données legacy) : accès refusé par défaut
+  if (!resource.workspaceId) {
+    // Ressource sans workspaceId (données legacy) : accès refusé par défaut
     throw Object.assign(
-      new Error("Cette ressource n'est pas associée à un tenant"),
+      new Error("Cette ressource n'est pas associée à un workspace"),
       { statusCode: 403 }
     );
   }
 
-  if (resource.tenantId !== req.tenantId) {
-    // Tentative d'accès cross-tenant : log de sécurité + 404 (ne pas révéler l'existence)
+  if (resource.workspaceId !== req.workspaceId) {
+    // Tentative d'accès cross-workspace : log de sécurité + 404 (ne pas révéler l'existence)
     console.warn(
-      `[SECURITY] Cross-tenant access blocked: user tenant=${req.tenantId}, resource tenant=${resource.tenantId}, userId=${req.user?.sub}`
+      `[SECURITY] Cross-workspace access blocked: user workspace=${req.workspaceId}, resource workspace=${resource.workspaceId}, userId=${req.user?.sub}`
     );
     throw Object.assign(new Error("Ressource introuvable"), { statusCode: 404 });
   }
