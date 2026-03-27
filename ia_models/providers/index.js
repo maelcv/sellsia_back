@@ -212,13 +212,26 @@ export async function getProviderForUser(userId) {
  * @returns {Promise<{ token: string, type: 'token'|'oauth' } | { clientId: string, clientSecret: string, type: 'oauth' } | null>}
  */
 export async function getSellsyCredentials(userId) {
+  // Helper: extract token or OAuth credentials from a decrypted credentials object.
+  // Supports multiple field name conventions used by different frontend versions.
+  function extractCreds(creds) {
+    const token = creds.token || creds.accessToken || creds.access_token || creds.apiToken || creds.api_token || creds.apiKey || creds.api_key;
+    if (token) return { token, type: "token" };
+    const clientId = creds.clientId || creds.client_id;
+    const clientSecret = creds.clientSecret || creds.client_secret || creds.clientKey || creds.client_key;
+    if (clientId && clientSecret) return { clientId, clientSecret, type: "oauth" };
+    return null;
+  }
+
   // 1. User's own Sellsy credentials (Modern - UserIntegration)
+  // Uses ILIKE for case-insensitive name matching and LIKE '%sellsy%' for partial match
+  // to tolerate naming variations ('Sellsy', 'Sellsy CRM', 'sellsy', etc.)
   const userIntegrations = await prisma.$queryRaw`
     SELECT ui.encrypted_credentials, it.name
     FROM user_integrations ui
     JOIN integration_types it ON it.id = ui.integration_type_id
     WHERE ui.user_id = ${userId}
-      AND it.name = 'Sellsy'
+      AND LOWER(it.name) LIKE '%sellsy%'
       AND it.category = 'crm'
     LIMIT 1
   `;
@@ -226,8 +239,12 @@ export async function getSellsyCredentials(userId) {
   if (userIntegrations[0]) {
     try {
       const creds = JSON.parse(decryptSecret(userIntegrations[0].encrypted_credentials));
-      if (creds.token) return { token: creds.token, type: "token" };
-      if (creds.clientId && creds.clientSecret) return { clientId: creds.clientId, clientSecret: creds.clientSecret, type: "oauth" };
+      const result = extractCreds(creds);
+      if (result) {
+        console.log(`[getSellsyCredentials] Found UserIntegration for user ${userId} (type: ${result.type})`);
+        return result;
+      }
+      console.warn("[getSellsyCredentials] UserIntegration found but no usable credential fields:", Object.keys(creds));
     } catch (e) {
       console.error("[getSellsyCredentials] Failed to parse UserIntegration:", e.message);
     }
@@ -266,13 +283,14 @@ export async function getSellsyCredentials(userId) {
 
   if (user?.workspaceId) {
     // 3a. Workspace-wide Integration (Modern - WorkspaceIntegration)
-    // This is the shared configuration for the entire workspace
+    // The workspace config typically holds shared settings (webhook, apiUrl).
+    // It may also contain actual credentials — try to extract them if present.
     const workspaceIntegrations = await prisma.$queryRaw`
       SELECT wi.encrypted_config, it.name
       FROM workspace_integrations wi
       JOIN integration_types it ON it.id = wi.integration_type_id
       WHERE wi.workspace_id = ${user.workspaceId}
-        AND it.name = 'Sellsy'
+        AND LOWER(it.name) LIKE '%sellsy%'
         AND it.category = 'crm'
         AND wi.is_enabled = true
       LIMIT 1
@@ -281,21 +299,26 @@ export async function getSellsyCredentials(userId) {
     if (workspaceIntegrations[0]) {
       try {
         const creds = JSON.parse(decryptSecret(workspaceIntegrations[0].encrypted_config));
-        if (creds.token) return { token: creds.token, type: "token" };
-        if (creds.clientId && creds.clientSecret) return { clientId: creds.clientId, clientSecret: creds.clientSecret, type: "oauth" };
+        const result = extractCreds(creds);
+        if (result) {
+          console.log(`[getSellsyCredentials] Found WorkspaceIntegration for workspace ${user.workspaceId} (type: ${result.type})`);
+          return result;
+        }
+        // WorkspaceIntegration may only hold shared config (no actual credentials) — fall through
       } catch (e) {
         console.error("[getSellsyCredentials] Failed to parse WorkspaceIntegration:", e.message);
       }
     }
 
-    // 3b. Workspace UserIntegration (any client in workspace)
+    // 3b. Workspace UserIntegration (any client or sub-client in the workspace)
+    // Prefers client over sub_client, most recent connection first.
     const wsUserIntegrations = await prisma.$queryRaw`
       SELECT ui.encrypted_credentials, it.name
       FROM user_integrations ui
       JOIN integration_types it ON it.id = ui.integration_type_id
       JOIN users u ON u.id = ui.user_id
       WHERE u.workspace_id = ${user.workspaceId}
-        AND it.name = 'Sellsy'
+        AND LOWER(it.name) LIKE '%sellsy%'
         AND it.category = 'crm'
         AND u.role IN ('client', 'sub_client')
       ORDER BY u.role ASC, ui.linked_at DESC
@@ -305,8 +328,12 @@ export async function getSellsyCredentials(userId) {
     if (wsUserIntegrations[0]) {
       try {
         const creds = JSON.parse(decryptSecret(wsUserIntegrations[0].encrypted_credentials));
-        if (creds.token) return { token: creds.token, type: "token" };
-        if (creds.clientId && creds.clientSecret) return { clientId: creds.clientId, clientSecret: creds.clientSecret, type: "oauth" };
+        const result = extractCreds(creds);
+        if (result) {
+          console.log(`[getSellsyCredentials] Found workspace UserIntegration for workspace ${user.workspaceId} (type: ${result.type})`);
+          return result;
+        }
+        console.warn("[getSellsyCredentials] WS UserIntegration found but no usable credential fields:", Object.keys(creds));
       } catch (e) {
         console.error("[getSellsyCredentials] Failed to parse WS UserIntegration:", e.message);
       }
@@ -341,6 +368,7 @@ export async function getSellsyCredentials(userId) {
     }
   }
 
+  console.warn(`[getSellsyCredentials] No Sellsy credentials found for user ${userId} (workspace: ${user?.workspaceId ?? "none"})`);
   return null;
 }
 

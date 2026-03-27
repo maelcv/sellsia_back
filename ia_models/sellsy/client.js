@@ -59,28 +59,47 @@ export class SellsyClient {
       return this.credentials.token;
     }
 
-    // OAuth: refresh si expiré
+    // OAuth via stored access_token + refresh_token (authorization_code flow result).
+    // Sellsy does NOT support client_credentials grant. Tokens must be obtained via
+    // the authorization_code flow and stored as accessToken + refreshToken.
     if (this._accessToken && Date.now() < this._tokenExpiry) {
       return this._accessToken;
     }
 
+    const refreshToken = this.credentials.refreshToken || this.credentials.refresh_token;
+    if (!refreshToken) {
+      throw new Error(
+        "Sellsy OAuth: no refresh token available. " +
+        "Please reconnect your Sellsy account using a Personal Access Token (PAT) " +
+        "generated in Sellsy → Settings → Security → API Tokens."
+      );
+    }
+
+    // Refresh the access token using the stored refresh token
     const response = await fetch("https://login.sellsy.com/oauth2/access-tokens", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        grant_type: "client_credentials",
+        grant_type: "refresh_token",
         client_id: this.credentials.clientId,
-        client_secret: this.credentials.clientSecret
+        client_secret: this.credentials.clientSecret,
+        refresh_token: refreshToken
       })
     });
 
     if (!response.ok) {
-      throw new Error(`Sellsy OAuth failed: ${response.status}`);
+      const errBody = await response.json().catch(() => ({}));
+      const errMsg = errBody?.error_description || errBody?.error || response.status;
+      throw new Error(`Sellsy OAuth token refresh failed (${errMsg}). Please reconnect your Sellsy account.`);
     }
 
     const data = await response.json();
     this._accessToken = data.access_token;
-    this._tokenExpiry = Date.now() + (data.expires_in - 60) * 1000;
+    this._tokenExpiry = Date.now() + ((data.expires_in || 3600) - 60) * 1000;
+    // Update stored refresh token if a new one was issued
+    if (data.refresh_token) {
+      this.credentials.refreshToken = data.refresh_token;
+    }
     return this._accessToken;
   }
 
@@ -102,7 +121,10 @@ export class SellsyClient {
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(`Sellsy API ${response.status}: ${err.message || err.error || "Unknown"}`);
+      // Sellsy error format: { "error": { "code": N, "message": "...", "context": "..." } }
+      const errObj = err.error && typeof err.error === "object" ? err.error : null;
+      const errMsg = errObj?.message || (typeof err.error === "string" ? err.error : null) || err.message || JSON.stringify(err) || "Unknown";
+      throw new Error(`Sellsy API ${response.status}: ${errMsg}`);
     }
 
     return response.json();

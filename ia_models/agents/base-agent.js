@@ -358,12 +358,23 @@ OBLIGATOIRE :
   _buildToolResultMessages_OpenAI(rawMessage, toolResults) {
     const messages = [];
 
-    // Add the assistant message that requested tools
-    messages.push({
-      role: "assistant",
-      content: rawMessage?.content || null,
-      tool_calls: rawMessage?.tool_calls || []
-    });
+    // Build the assistant message that requested tools.
+    // Mistral (and OpenAI) reject a message with content: null AND tool_calls: []
+    // so we only include each field when it has a meaningful value.
+    const assistantMsg = { role: "assistant" };
+    const rawContent = rawMessage?.content || null;
+    const rawToolCalls = rawMessage?.tool_calls?.length > 0 ? rawMessage.tool_calls : null;
+
+    if (rawContent !== null) assistantMsg.content = rawContent;
+    if (rawToolCalls !== null) assistantMsg.tool_calls = rawToolCalls;
+
+    // Fallback: if neither field is present, set content to empty string so the
+    // message is at least valid (shouldn't normally happen).
+    if (!("content" in assistantMsg) && !("tool_calls" in assistantMsg)) {
+      assistantMsg.content = "";
+    }
+
+    messages.push(assistantMsg);
 
     // Add tool results
     for (const result of toolResults) {
@@ -488,12 +499,12 @@ OBLIGATOIRE :
 
     const formattedTools = this._formatToolsForProvider(tools);
 
-    // Build initial messages
+    // Build initial messages — filter out invalid assistant messages (empty
+    // content without tool_calls) that Mistral/OpenAI would reject.
     const messages = [
-      ...conversationHistory.map((m) => ({
-        role: m.role,
-        content: m.content
-      })),
+      ...conversationHistory
+        .map((m) => ({ role: m.role, content: m.content || "" }))
+        .filter((m) => m.role !== "assistant" || m.content.trim() !== ""),
       { role: "user", content: userMessage }
     ];
 
@@ -700,11 +711,12 @@ OBLIGATOIRE :
 
     const formattedTools = this._formatToolsForProvider(tools);
 
+    // Build initial messages — filter out invalid assistant messages (empty
+    // content without tool_calls) that Mistral/OpenAI would reject.
     const messages = [
-      ...conversationHistory.map((m) => ({
-        role: m.role,
-        content: m.content
-      })),
+      ...conversationHistory
+        .map((m) => ({ role: m.role, content: m.content || "" }))
+        .filter((m) => m.role !== "assistant" || m.content.trim() !== ""),
       { role: "user", content: userMessage }
     ];
 
