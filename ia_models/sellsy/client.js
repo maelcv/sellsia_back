@@ -111,6 +111,17 @@ export class SellsyClient {
   // ── Sociétés / Companies ──
 
   async getCompany(id) {
+    // If the ID is not numeric, it might be a company name — try to search first.
+    if (typeof id === "string" && !/^\d+$/.test(id)) {
+      try {
+        const results = await this.searchCompanies(id, 1);
+        if (results && results.length > 0) {
+          return await this.getCompany(results[0].id);
+        }
+      } catch (err) {
+        console.warn(`[SellsyClient] Failed to resolve company name ${id}:`, err.message);
+      }
+    }
     const company = unwrapItem(await this.request(`/companies/${id}`));
     return {
       id: company.id,
@@ -147,6 +158,17 @@ export class SellsyClient {
   // ── Contacts ──
 
   async getContact(id) {
+    // If the ID looks like an email or is not numeric
+    if (typeof id === "string" && (id.includes("@") || !/^\d+$/.test(id))) {
+      try {
+        const results = await this.searchContacts(id, 1);
+        if (results && results.length > 0) {
+          return await this.getContact(results[0].id);
+        }
+      } catch (err) {
+        console.warn(`[SellsyClient] Failed to resolve contact ${id}:`, err.message);
+      }
+    }
     const contact = unwrapItem(await this.request(`/contacts/${id}`));
     return {
       id: contact.id,
@@ -166,7 +188,26 @@ export class SellsyClient {
   // ── Opportunités / Deals ──
 
   async getOpportunity(id) {
-    const opp = unwrapItem(await this.request(`/opportunities/${id}`));
+    // If the ID looks like an opportunity number (e.g., "OPP-00078", "OPP-12345")
+    // or contains a dash (typical of numeric references in business), try to search for it first.
+    if (typeof id === "string" && (id.toUpperCase().startsWith("OPP-") || (id.includes("-") && id.length > 3))) {
+      try {
+             const results = await this.getOpportunities({ search: id }, 1);
+             if (results && results.length > 0) {
+               // Prefer exact number match if multiple results come back from search
+               const exact = results.find(o => String(o.number).toUpperCase() === id.toUpperCase()) || results[0];
+               // If we found it, return the full object (re-fetching by numeric ID ensures full detail if search was shallow)
+               if (exact && exact.id) {
+                 return await this.getOpportunity(exact.id);
+               }
+             }
+      } catch (err) {
+        console.warn(`[SellsyClient] Failed to resolve opportunity number ${id}:`, err.message);
+      }
+    }
+
+    const response = await this.request(`/opportunities/${id}`);
+    const opp = unwrapItem(response);
     return {
       id: opp.id,
       number: opp.number,
@@ -209,6 +250,21 @@ export class SellsyClient {
   // ── Devis / Quotes ──
 
   async getQuote(id) {
+    // If the ID looks like an estimate number (e.g., "EST-00078", "DEVIS-123")
+    if (typeof id === "string" && (id.toUpperCase().startsWith("EST-") || id.toUpperCase().startsWith("DEVIS-") || (id.includes("-") && id.length > 3))) {
+      try {
+             const results = await this.getEstimates({ search: id }, 1);
+             if (results && results.length > 0) {
+               const exact = results.find(o => String(o.number).toUpperCase() === id.toUpperCase()) || results[0];
+               if (exact && exact.id) {
+                 return await this.getQuote(exact.id);
+               }
+             }
+      } catch (err) {
+        console.warn(`[SellsyClient] Failed to resolve quote number ${id}:`, err.message);
+      }
+    }
+
     const quote = unwrapItem(await this.request(`/estimates/${id}`));
     return {
       id: quote.id,
@@ -225,6 +281,14 @@ export class SellsyClient {
       createdAt: quote.created,
       raw: quote
     };
+  }
+
+  async getEstimates(filters = {}, limit = 25) {
+    const data = await this.request("/estimates/search", {
+      method: "POST",
+      body: { filters, limit, order: [{ direction: "desc", field: "created" }] }
+    });
+    return data.data || [];
   }
 
   // ── Pipeline / Vue globale ──
@@ -335,12 +399,297 @@ export class SellsyClient {
     try {
       const data = await this.request("/invoices/search", {
         method: "POST",
+        body: { filters, limit, order: [{ direction: "desc", field: "created" }] }
+      });
+      return data.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async getInvoice(id) {
+    // If the ID looks like an invoice number (e.g., "INV-00078", "FAC-123")
+    if (typeof id === "string" && (id.toUpperCase().startsWith("INV-") || id.toUpperCase().startsWith("FAC-") || (id.includes("-") && id.length > 3))) {
+      try {
+             const results = await this.getInvoices({ search: id }, 1);
+             if (results && results.length > 0) {
+               const exact = results.find(o => String(o.number).toUpperCase() === id.toUpperCase()) || results[0];
+               if (exact && exact.id) {
+                 return await this.getInvoice(exact.id);
+               }
+             }
+      } catch (err) {
+        console.warn(`[SellsyClient] Failed to resolve invoice number ${id}:`, err.message);
+      }
+    }
+    const invoice = unwrapItem(await this.request(`/invoices/${id}`));
+    return {
+      id: invoice.id,
+      number: invoice.number,
+      subject: invoice.subject,
+      status: invoice.status,
+      totalAmount: invoice.amounts?.total_incl_tax || invoice.total_incl_tax,
+      currency: invoice.currency || invoice.amounts?.currency,
+      companyId: invoice.related?.company_id || invoice.company_id,
+      contactId: invoice.contact_id,
+      createdAt: invoice.created,
+      raw: invoice
+    };
+  }
+
+  // ── Créer une facture ──
+
+  async createInvoice(payload) {
+    return unwrapItem(await this.request("/invoices", {
+      method: "POST",
+      body: payload
+    }));
+  }
+
+  // ── Marquer une facture comme payée ──
+
+  async markInvoicePaid(id, paidDate = null) {
+    return unwrapItem(await this.request(`/invoices/${id}`, {
+      method: "PATCH",
+      body: { status: "paid", paid_date: paidDate || new Date().toISOString().slice(0, 10) }
+    }));
+  }
+
+  // ── Envoyer une facture par email ──
+
+  async sendInvoice(id, emailPayload = {}) {
+    return await this.request(`/invoices/${id}/send`, {
+      method: "POST",
+      body: emailPayload
+    });
+  }
+
+  // ── Recherche de contacts ──
+
+  async searchContacts(query, limit = 10) {
+    const data = await this.request("/contacts/search", {
+      method: "POST",
+      body: {
+        filters: { search: query },
+        limit,
+        order: [{ direction: "desc", field: "updated" }]
+      }
+    });
+    return data.data || [];
+  }
+
+  // ── Créer un contact ──
+
+  async createContact(payload) {
+    return unwrapItem(await this.request("/contacts", {
+      method: "POST",
+      body: payload
+    }));
+  }
+
+  // ── Mettre à jour un contact ──
+
+  async updateContact(id, fields) {
+    return unwrapItem(await this.request(`/contacts/${id}`, {
+      method: "PATCH",
+      body: fields
+    }));
+  }
+
+  // ── Créer une société ──
+
+  async createCompany(payload) {
+    return unwrapItem(await this.request("/companies", {
+      method: "POST",
+      body: payload
+    }));
+  }
+
+  // ── Créer une opportunité ──
+
+  async createOpportunity(payload) {
+    return unwrapItem(await this.request("/opportunities", {
+      method: "POST",
+      body: payload
+    }));
+  }
+
+  // ── Créer un devis ──
+
+  async createQuote(payload) {
+    return unwrapItem(await this.request("/estimates", {
+      method: "POST",
+      body: payload
+    }));
+  }
+
+  // ── Mettre à jour un devis ──
+
+  async updateQuote(id, fields) {
+    return unwrapItem(await this.request(`/estimates/${id}`, {
+      method: "PATCH",
+      body: fields
+    }));
+  }
+
+  // ── Envoyer un devis par email ──
+
+  async sendQuote(id, emailPayload = {}) {
+    return await this.request(`/estimates/${id}/send`, {
+      method: "POST",
+      body: emailPayload
+    });
+  }
+
+  // ── Catalogue produits/services ──
+
+  async getProducts(filters = {}, limit = 25) {
+    try {
+      const data = await this.request("/items/search", {
+        method: "POST",
         body: { filters, limit }
       });
       return data.data || [];
     } catch {
       return [];
     }
+  }
+
+  async getProduct(id) {
+    return unwrapItem(await this.request(`/items/${id}`));
+  }
+
+  // ── Taux de TVA ──
+
+  async getTaxRates() {
+    try {
+      const data = await this.request("/taxes");
+      return data.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  // ── Champs personnalisés ──
+
+  async getCustomFields(entityType) {
+    try {
+      // entityType: "company", "contact", "opportunity", "invoice", "estimate"
+      const data = await this.request(`/custom-fields?entity_type=${entityType}`);
+      return data.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  // ── Tags ──
+
+  async getTags() {
+    try {
+      const data = await this.request("/tags");
+      return data.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async addTagToEntity(entityType, entityId, tagIds) {
+    const typeMap = {
+      company: "companies",
+      contact: "contacts",
+      opportunity: "opportunities"
+    };
+    const endpoint = typeMap[entityType];
+    if (!endpoint) throw new Error(`Type d'entité non supporté pour les tags: ${entityType}`);
+    return await this.request(`/${endpoint}/${entityId}/tags`, {
+      method: "POST",
+      body: { tags: tagIds.map(id => ({ id })) }
+    });
+  }
+
+  // ── Tâches / Tasks ──
+
+  async getTasks(filters = {}, limit = 25) {
+    try {
+      const data = await this.request("/tasks/search", {
+        method: "POST",
+        body: { filters, limit }
+      });
+      return data.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async createSellsyTask(payload) {
+    return unwrapItem(await this.request("/tasks", {
+      method: "POST",
+      body: payload
+    }));
+  }
+
+  async updateTask(id, fields) {
+    return unwrapItem(await this.request(`/tasks/${id}`, {
+      method: "PATCH",
+      body: fields
+    }));
+  }
+
+  // ── Utilisateurs / Équipe ──
+
+  async getTeamUsers() {
+    try {
+      const data = await this.request("/staffs");
+      return data.data || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async getCurrentUser() {
+    try {
+      return unwrapItem(await this.request("/me"));
+    } catch {
+      return null;
+    }
+  }
+
+  // ── Statistiques CRM ──
+
+  async getCRMStats() {
+    try {
+      const [companies, contacts, opps, invoices] = await Promise.allSettled([
+        this.request("/companies/search", { method: "POST", body: { limit: 1 } }),
+        this.request("/contacts/search", { method: "POST", body: { limit: 1 } }),
+        this.request("/opportunities/search", { method: "POST", body: { limit: 1 } }),
+        this.request("/invoices/search", { method: "POST", body: { limit: 1 } })
+      ]);
+
+      return {
+        totalCompanies: companies.status === "fulfilled" ? (companies.value.pagination?.total ?? 0) : null,
+        totalContacts: contacts.status === "fulfilled" ? (contacts.value.pagination?.total ?? 0) : null,
+        totalOpportunities: opps.status === "fulfilled" ? (opps.value.pagination?.total ?? 0) : null,
+        totalInvoices: invoices.status === "fulfilled" ? (invoices.value.pagination?.total ?? 0) : null
+      };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }
+
+  // ── Recherche globale multi-entités ──
+
+  async globalSearch(query, limit = 5) {
+    const [companies, contacts, opps] = await Promise.allSettled([
+      this.searchCompanies(query, limit),
+      this.searchContacts(query, limit),
+      this.getOpportunities({ search: query }, limit)
+    ]);
+
+    return {
+      companies: companies.status === "fulfilled" ? companies.value : [],
+      contacts: contacts.status === "fulfilled" ? contacts.value : [],
+      opportunities: opps.status === "fulfilled" ? opps.value : []
+    };
   }
 }
 

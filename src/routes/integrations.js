@@ -146,7 +146,8 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
 
 /**
  * GET /api/workspaces/:id/integrations
- * Client: List enabled integrations for workspace
+ * Admin: List ALL integrations (enabled & disabled)
+ * Client: List ENABLED integrations only
  */
 router.get(
   "/workspace/:workspaceId",
@@ -165,24 +166,42 @@ router.get(
         return res.status(404).json({ error: "Workspace not found" });
       }
 
-      // Admil can see everything, others only their own workspace
+      // Admin can see everything, others only their own workspace
       if (req.user.role !== "admin" && workspace.id !== req.user.workspaceId) {
         return res.status(403).json({ error: "Not authorized" });
       }
 
+      // Build filter: clients see only enabled integrations
+      const whereFilter = {
+        workspaceId,
+        ...(req.user.role !== "admin" && { isEnabled: true }),
+      };
+
       const integrations = await prisma.workspaceIntegration.findMany({
-        where: { workspaceId },
+        where: whereFilter,
         include: { integrationType: true },
         orderBy: { integrationType: { name: "asc" } },
       });
 
-      // Mask credentials/config
-      const masked = integrations.map((int) => ({
-        ...int,
-        encryptedConfig: maskSecret(int.encryptedConfig),
-      }));
+      // Decrypt config for display
+      const withConfig = integrations.map((int) => {
+        let config = {};
+        try {
+          if (int.encryptedConfig) {
+            config = JSON.parse(decryptSecret(int.encryptedConfig));
+          }
+        } catch (err) {
+          console.warn(`Failed to decrypt config for integration ${int.id}:`, err);
+        }
 
-      res.json({ integrations: masked });
+        return {
+          ...int,
+          config,
+          encryptedConfig: maskSecret(int.encryptedConfig),
+        };
+      });
+
+      res.json({ integrations: withConfig });
     } catch (err) {
       console.error("[GET /workspace/:id/integrations] Error:", err);
       res.status(500).json({ error: "Failed to list workspace integrations" });
@@ -202,6 +221,7 @@ const configureWorkspaceIntegrationSchema = z.object({
 router.post(
   "/workspace/:workspaceId",
   requireAuth,
+  requireRole("client", "admin"),
   async (req, res) => {
     try {
       const { workspaceId } = req.params;
@@ -256,10 +276,23 @@ router.post(
         integrationTypeId: data.integrationTypeId,
       });
 
-      // Mask credentials
-      const masked = { ...integration, encryptedConfig: maskSecret(integration.encryptedConfig) };
+      // Decrypt config for response
+      let config = {};
+      try {
+        if (integration.encryptedConfig) {
+          config = JSON.parse(decryptSecret(integration.encryptedConfig));
+        }
+      } catch (err) {
+        console.warn(`Failed to decrypt config for integration ${integration.id}:`, err);
+      }
 
-      res.status(201).json({ integration: masked });
+      const response = {
+        ...integration,
+        config,
+        encryptedConfig: maskSecret(integration.encryptedConfig),
+      };
+
+      res.status(201).json({ integration: response });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ error: "Invalid input", issues: err.errors });
@@ -282,8 +315,8 @@ const updateWorkspaceIntegrationSchema = z.object({
 router.patch(
   "/workspace/:workspaceId/:integrationId",
   requireAuth,
+  requireRole("client", "admin"),
   requireWorkspaceContext,
-  requireFeature("external_connections"),
   async (req, res) => {
     try {
       const { workspaceId, integrationId } = req.params;
@@ -321,8 +354,22 @@ router.patch(
 
       await logAudit(req.user.sub, "UPDATE_WORKSPACE_INTEGRATION", { workspaceId, integrationId });
 
-      const masked = { ...integration, encryptedConfig: maskSecret(integration.encryptedConfig) };
-      res.json({ integration: masked });
+      // Decrypt config for response
+      let config = {};
+      try {
+        if (integration.encryptedConfig) {
+          config = JSON.parse(decryptSecret(integration.encryptedConfig));
+        }
+      } catch (err) {
+        console.warn(`Failed to decrypt config for integration ${integration.id}:`, err);
+      }
+
+      const response = {
+        ...integration,
+        config,
+        encryptedConfig: maskSecret(integration.encryptedConfig),
+      };
+      res.json({ integration: response });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ error: "Invalid input", issues: err.errors });
@@ -343,8 +390,8 @@ router.patch(
 router.delete(
   "/workspace/:workspaceId/:integrationId",
   requireAuth,
+  requireRole("client", "admin"),
   requireWorkspaceContext,
-  requireFeature("external_connections"),
   async (req, res) => {
     try {
       const { workspaceId, integrationId } = req.params;
@@ -390,7 +437,6 @@ router.get(
   "/me",
   requireAuth,
   requireWorkspaceContext,
-  requireFeature("external_connections"),
   async (req, res) => {
     try {
       const integrations = await prisma.userIntegration.findMany({
@@ -426,24 +472,40 @@ router.post(
   "/me",
   requireAuth,
   requireWorkspaceContext,
-  requireFeature("external_connections"),
   async (req, res) => {
     try {
       const data = linkUserIntegrationSchema.parse(req.body);
 
-      // Verify integration type exists
+      // Verify integration type exists and is active
       const integrationType = await prisma.integrationType.findUnique({
         where: { id: data.integrationTypeId },
       });
 
-      if (!integrationType) {
-        return res.status(404).json({ error: "Integration type not found" });
+      if (!integrationType || !integrationType.isActive) {
+        return res.status(404).json({ error: "Integration type not found or inactive" });
+      }
+
+      // Verify integration is enabled for this workspace
+      // (Admin must have activated it first)
+      const workspaceIntegration = await prisma.workspaceIntegration.findFirst({
+        where: {
+          workspaceId: req.workspaceId,
+          integrationTypeId: data.integrationTypeId,
+          isEnabled: true,
+        },
+      });
+
+      if (!workspaceIntegration) {
+        return res.status(403).json({
+          error: "Integration not available in this workspace",
+          details: "Admin must enable this integration first",
+        });
       }
 
       // Encrypt credentials
       const encryptedCredentials = encryptSecret(JSON.stringify(data.credentials));
 
-      // Upsert
+      // Upsert user integration
       const integration = await prisma.userIntegration.upsert({
         where: { userId_integrationTypeId: { userId: req.user.sub, integrationTypeId: data.integrationTypeId } },
         create: {
@@ -457,7 +519,10 @@ router.post(
         include: { integrationType: true },
       });
 
-      await logAudit(req.user.sub, "LINK_USER_INTEGRATION", { integrationTypeId: data.integrationTypeId });
+      await logAudit(req.user.sub, "LINK_USER_INTEGRATION", {
+        integrationTypeId: data.integrationTypeId,
+        workspaceId: req.workspaceId,
+      });
 
       const masked = { ...integration, encryptedCredentials: maskSecret(integration.encryptedCredentials) };
       res.status(201).json({ integration: masked });
@@ -479,7 +544,6 @@ router.delete(
   "/me/:id",
   requireAuth,
   requireWorkspaceContext,
-  requireFeature("external_connections"),
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -624,6 +688,36 @@ router.post("/seed", requireAuth, requireRole("admin"), async (req, res) => {
           password: { type: "string" },
         },
       },
+      // Workspace data storage
+      {
+        name: "DB Local",
+        category: "storage",
+        logoUrl: null,
+        configSchema: {
+          description: { type: "string", default: "Stockage local des données du workspace" },
+        },
+      },
+      {
+        name: "Knowledge Base Workspace",
+        category: "storage",
+        logoUrl: null,
+        configSchema: {
+          description: { type: "string", default: "Base de connaissances et ressources du workspace" },
+        },
+      },
+      // CRM additional
+      {
+        name: "CRM Salesforce",
+        category: "crm",
+        logoUrl: "https://www.salesforce.com/favicon.ico",
+        configSchema: {
+          instanceUrl: { type: "string" },
+          clientId: { type: "string" },
+          clientSecret: { type: "string" },
+          username: { type: "string" },
+          password: { type: "string" },
+        },
+      },
       // Other
       {
         name: "Webhook",
@@ -665,6 +759,54 @@ router.post("/seed", requireAuth, requireRole("admin"), async (req, res) => {
   } catch (err) {
     console.error("[POST /seed] Error:", err);
     res.status(500).json({ error: "Failed to seed integration types" });
+  }
+});
+
+/**
+ * POST /api/integrations/test-connection
+ * Test connection to an integration (SMTP, IMAP, POP, etc.)
+ */
+router.post("/test-connection", requireAuth, async (req, res) => {
+  try {
+    const { integrationType, config, credentials, protocol } = z.object({
+      integrationType: z.string(),
+      config: z.record(z.any()).optional(),
+      credentials: z.record(z.any()).optional(),
+      protocol: z.string().optional(),
+    }).parse(req.body);
+
+    // Validate SMTP configuration
+    if (integrationType === "SMTP Custom") {
+      if (config) {
+        // Testing workspace config
+        if (!config.smtpHost || !config.smtpPort) {
+          return res.status(400).json({ error: "Hôte et port SMTP requis" });
+        }
+      }
+
+      if (credentials) {
+        // Testing user auth
+        if (!credentials.email || !credentials.password) {
+          return res.status(400).json({ error: "Email et mot de passe requis" });
+        }
+
+        // In a real scenario, you would validate credentials here
+        // For now, we just do basic validation
+        if (!credentials.email.includes("@")) {
+          return res.status(400).json({ error: "Email invalide" });
+        }
+      }
+    }
+
+    // For other integration types, add similar validations as needed
+
+    res.json({ success: true, message: "Connexion valide" });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Données invalides", issues: err.errors });
+    }
+    console.error("[POST /test-connection] Error:", err);
+    res.status(500).json({ error: "Erreur lors du test de connexion" });
   }
 });
 

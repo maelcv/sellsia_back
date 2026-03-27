@@ -175,6 +175,9 @@ router.get("/me", requireAuth, requireWorkspaceContext, async (req, res) => {
           allowedAgents: { select: { id: true, name: true, description: true } }
         }
       },
+      agents: {
+        select: { id: true, name: true, description: true }
+      },
       children: {
         where: { status: { not: "deleted" } },
         select: { id: true, name: true, slug: true, status: true }
@@ -190,12 +193,17 @@ router.get("/me", requireAuth, requireWorkspaceContext, async (req, res) => {
     select: { id: true, email: true, role: true, createdAt: true }
   });
 
-  // Récupérer les agents activés pour ce workspace
+  // Récupérer les agents activés pour ce workspace (incluant les globaux accordés)
   const activeAgentAccess = await prisma.workspaceAgentAccess.findMany({
     where: { workspaceId: workspace.id, status: "granted" },
-    select: { agentId: true }
+    include: { 
+      agent: { 
+        select: { id: true, name: true, description: true } 
+      } 
+    }
   });
   const activeIds = activeAgentAccess.map(a => a.agentId);
+  const grantedAgents = activeAgentAccess.map(a => a.agent);
 
   return res.json({
     workspace: {
@@ -213,10 +221,19 @@ router.get("/me", requireAuth, requireWorkspaceContext, async (req, res) => {
       } : null,
       users,
       subClients: workspace.children,
-      allowedAgents: (workspace.workspacePlan?.allowedAgents || []).map(a => ({
-        ...a,
-        isActive: activeIds.includes(a.id)
-      }))
+      allowedAgents: (() => {
+        const all = [
+          ...(workspace.workspacePlan?.allowedAgents || []),
+          ...workspace.agents,
+          ...grantedAgents
+        ];
+        // Unique par ID
+        const unique = Array.from(new Map(all.map(a => [a.id, a])).values());
+        return unique.map(a => ({
+          ...a,
+          isActive: activeIds.includes(a.id)
+        }));
+      })()
     }
   });
 });
@@ -511,5 +528,88 @@ router.post(
     });
   }
 );
+
+/**
+ * GET /api/workspaces/:id/tasks
+ * Lister les tâches d'un workspace (admin seulement)
+ */
+router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => {
+  const tasks = await prisma.taskAssignment.findMany({
+    where: { workspaceId: req.params.id },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+    include: { user: { select: { id: true, email: true } } },
+  });
+  res.json({ tasks });
+});
+
+/**
+ * GET /api/workspaces/:id/events
+ * Lister les événements calendrier d'un workspace (admin seulement)
+ */
+router.get("/:id/events", requireAuth, requireRole("admin"), async (req, res) => {
+  const events = await prisma.calendarEvent.findMany({
+    where: { workspaceId: req.params.id },
+    orderBy: { startAt: "desc" },
+    take: 100,
+    include: { user: { select: { id: true, email: true } } },
+  });
+  res.json({ events });
+});
+
+/**
+ * POST /api/workspaces/:workspaceId/user-agent-access
+ * Manage user access to workspace agents (client/admin only)
+ */
+router.post("/:workspaceId/user-agent-access", requireAuth, requireRole("client", "admin"), requireWorkspaceContext, async (req, res) => {
+  const { userId, agentAccess } = z.object({
+    userId: z.number().int().positive(),
+    agentAccess: z.record(z.string(), z.boolean()),
+  }).parse(req.body);
+
+  // Verify user is in the same workspace
+  const targetUser = await prisma.user.findFirst({
+    where: { id: userId, workspaceId: req.workspaceId },
+  });
+
+  if (!targetUser) {
+    return res.status(404).json({ error: "Utilisateur non trouvé dans ce workspace" });
+  }
+
+  // Get all agents in the workspace
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: req.workspaceId },
+    include: { agents: { select: { id: true } } },
+  });
+
+  if (!workspace) {
+    return res.status(404).json({ error: "Workspace non trouvé" });
+  }
+
+  const workspaceAgentIds = workspace.agents.map((a) => a.id);
+
+  // Update access for each agent
+  const updates = await Promise.all(
+    workspaceAgentIds.map(async (agentId) => {
+      const hasAccess = agentAccess[agentId] === true;
+
+      return prisma.userAgentAccess.upsert({
+        where: { userId_agentId: { userId, agentId } },
+        update: { status: hasAccess ? "granted" : "revoked" },
+        create: {
+          userId,
+          agentId,
+          status: hasAccess ? "granted" : "revoked",
+        },
+      });
+    })
+  );
+
+  res.json({
+    success: true,
+    message: "Accès configuré avec succès",
+    updates: updates.length,
+  });
+});
 
 export default router;

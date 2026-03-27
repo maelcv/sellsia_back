@@ -2,10 +2,12 @@ import { Router } from "express";
 import { z } from "zod";
 import QRCode from "qrcode";
 import bcrypt from "bcryptjs";
+import { generateSecret, generateURI, verifySync } from "otplib";
 import { prisma } from "../prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
+
 
 router.use(requireAuth);
 
@@ -24,9 +26,8 @@ router.post("/setup", async (req, res) => {
     return res.status(400).json({ error: "2FA déjà activé" });
   }
 
-  const { authenticator } = await import("otplib");
-  const secret = authenticator.generateSecret();
-  const otpauth = authenticator.keyuri(user.email, "Sellsia", secret);
+  const secret = generateSecret();
+  const otpauth = generateURI({ label: user.email, issuer: "Sellsia", secret });
 
   // Stocker le secret temporairement (pas encore enabled)
   await prisma.user.update({
@@ -68,8 +69,7 @@ router.post("/verify", async (req, res) => {
     return res.status(400).json({ error: "2FA déjà activé" });
   }
 
-  const { authenticator } = await import("otplib");
-  const isValid = authenticator.check(parsed.data.code, user.twoFactorSecret);
+  const isValid = verifySync({ secret: user.twoFactorSecret, token: parsed.data.code }).valid;
   if (!isValid) {
     return res.status(401).json({ error: "Code TOTP invalide" });
   }
@@ -154,6 +154,99 @@ router.post("/admin-disable", async (req, res) => {
     success: true,
     message: `2FA désactivé pour ${targetUser.email}`
   });
+});
+
+// ─── POST /api/2fa/request-email-code ─────────────────────
+router.post("/request-email-code", async (req, res) => {
+  const userId = req.user.sub;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, id: true, workspaceId: true },
+  });
+
+  if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
+
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      twoFactorCode: code,
+      twoFactorCodeExpires: expires,
+    },
+  });
+
+  try {
+    const { renderEmailTemplate, sendEmail } = await import("../../ia_models/email/email-service.js");
+    const html = renderEmailTemplate({
+      title: "Votre code de sécurité",
+      content: `
+        <p>Vous avez demandé une modification de vos paramètres de sécurité (2FA).</p>
+        <p>Veuillez utiliser le code de vérification suivant :</p>
+        <div class="verification-code">${code}</div>
+        <p>Ce code est valable pendant 10 minutes. Si vous n'êtes pas à l'origine de cette demande, ignorez cet email.</p>
+      `,
+    });
+
+    await sendEmail({
+      userId: user.id,
+      workspaceId: user.workspaceId,
+      to: user.email,
+      subject: `[Sellsia] Votre code de vérification : ${code}`,
+      html,
+    });
+
+    return res.json({ success: true, message: "Code envoyé par email" });
+  } catch (err) {
+    console.error("[2FA] Email failed:", err);
+    return res.status(500).json({ error: "Échec de l'envoi de l'email" });
+  }
+});
+
+// ─── POST /api/2fa/confirm-email-code ─────────────────────
+const confirmEmailCodeSchema = z.object({
+  code: z.string().length(6),
+  action: z.enum(["enable", "disable"]),
+});
+
+router.post("/confirm-email-code", async (req, res) => {
+  const parsed = confirmEmailCodeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Données invalides" });
+  }
+
+  const userId = req.user.sub;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { twoFactorCode: true, twoFactorCodeExpires: true, twoFactorEnabled: true },
+  });
+
+  if (!user || user.twoFactorCode !== parsed.data.code) {
+    return res.status(401).json({ error: "Code incorrect" });
+  }
+
+  if (user.twoFactorCodeExpires < new Date()) {
+    return res.status(401).json({ error: "Code expiré" });
+  }
+
+  // Clear code
+  await prisma.user.update({
+    where: { id: userId },
+    data: { twoFactorCode: null, twoFactorCodeExpires: null },
+  });
+
+  if (parsed.data.action === "disable") {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorEnabled: false, twoFactorSecret: null },
+    });
+    return res.json({ success: true, message: "2FA désactivé" });
+  } else {
+    // Action 'enable' doesn't enable yet, but grants permission to see the QR code
+    // In our simplified flow, we'll return a success status
+    return res.json({ success: true, message: "Email vérifié" });
+  }
 });
 
 export default router;

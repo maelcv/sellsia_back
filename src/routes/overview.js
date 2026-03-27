@@ -282,6 +282,7 @@ router.get("/quotas", requireAuth, requireRole("admin"), async (req, res) => {
            cp.sellsy_connection_status as "sellsyStatus",
            p.name as "planName", p.monthly_token_limit as "tokenLimit",
            p.price_eur_month as "priceEur",
+           -- TODO: optimize N+1 — replace correlated subqueries with GROUP BY aggregates joined to this query
            (SELECT COUNT(*)::int FROM conversations c WHERE c.user_id = u.id) as "conversationCount",
            (SELECT COUNT(*)::int FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.user_id = u.id) as "messageCount",
            (SELECT COUNT(*)::int FROM user_agent_access uaa WHERE uaa.user_id = u.id AND uaa.status = 'granted') as "agentsGranted"

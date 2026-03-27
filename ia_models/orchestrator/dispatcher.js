@@ -230,37 +230,86 @@ function fallbackClassification(message, allowedAgents = null) {
 }
 
 /**
- * Instancie un agent specialise (local ou remote Mistral).
+ * Safely parse a JSON string. Returns fallback on error.
  */
-async function createAgent(agentId, provider, clientId) {
-  // 1) Check if it's a mistral-remote agent in the database
+function safeJson(str, fallback = []) {
+  if (!str) return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+/**
+ * Instancie un agent specialise (local ou remote Mistral).
+ * Charge la configuration de l'agent depuis la DB pour les agents workspace-scoped.
+ *
+ * @param {string} agentId
+ * @param {Object} provider
+ * @param {number} clientId
+ * @param {string|null} workspaceId - Current workspace (for isolation enforcement)
+ */
+async function createAgent(agentId, provider, clientId, workspaceId = null) {
+  // 1) Fetch full agent config from DB
   try {
     const agentRow = await prisma.agent.findUnique({
       where: { id: agentId },
-      select: { id: true, name: true, agentType: true, mistralAgentId: true }
+      select: {
+        id: true,
+        name: true,
+        agentType: true,
+        mistralAgentId: true,
+        workspaceId: true,
+        allowedSubAgents: true,
+        allowedTools: true,
+        agentPrompts: { where: { isActive: true }, take: 1, select: { systemPrompt: true } }
+      }
     });
 
-    if (agentRow && agentRow.agentType === "mistral_remote" && agentRow.mistralAgentId) {
-      return new RemoteAgent({
-        provider,
-        mistralAgentId: agentRow.mistralAgentId,
-        agentName: agentRow.name
-      });
+    if (agentRow) {
+      // Security: workspace-scoped agents can only be used from their own workspace
+      if (agentRow.workspaceId && workspaceId && agentRow.workspaceId !== workspaceId) {
+        console.warn(
+          `[Dispatcher] SECURITY: agent ${agentId} belongs to workspace ${agentRow.workspaceId}, ` +
+          `but called from workspace ${workspaceId}. Blocking.`
+        );
+        return null;
+      }
+
+      if (agentRow.agentType === "mistral_remote" && agentRow.mistralAgentId) {
+        return new RemoteAgent({
+          provider,
+          mistralAgentId: agentRow.mistralAgentId,
+          agentName: agentRow.name
+        });
+      }
+
+      // Custom DB-stored system prompt overrides the default for non-class agents
+      const dbSystemPrompt = agentRow.agentPrompts?.[0]?.systemPrompt;
+      const agentConfig = {
+        allowedSubAgents: safeJson(agentRow.allowedSubAgents),
+        allowedTools: safeJson(agentRow.allowedTools),
+      };
+
+      const AgentClass = AGENT_CLASSES[agentId];
+      if (AgentClass) {
+        const systemPrompt = await loadPrompt(agentId, clientId);
+        return new AgentClass({ provider, systemPrompt, agentConfig });
+      }
+
+      // Generic workspace/custom agent
+      const systemPrompt = dbSystemPrompt || await loadPrompt(agentId, clientId);
+      return new BaseAgent({ agentId, provider, systemPrompt, agentConfig });
     }
   } catch (err) {
     console.warn("[createAgent] Could not fetch agent from DB:", err.message);
   }
 
-  // 2) Local agent classes (hardcoded for base agents)
+  // 2) Fallback for base agents not yet in DB (hardcoded classes)
   const AgentClass = AGENT_CLASSES[agentId];
   const systemPrompt = await loadPrompt(agentId, clientId);
 
-  // Use hardcoded agent class if available, otherwise use BaseAgent as fallback
   if (AgentClass) {
     return new AgentClass({ provider, systemPrompt });
   }
 
-  // Fallback: generic BaseAgent for dynamically created agents (e.g., admin, custom agents)
   return new BaseAgent({ agentId, provider, systemPrompt });
 }
 
@@ -344,7 +393,7 @@ export async function orchestrate({
   const userLanguage = detectUserLanguage(userMessage);
 
   // Step 4: Create and execute the agent
-  const agent = await createAgent(agentId, provider, clientId);
+  const agent = await createAgent(agentId, provider, clientId, tenantId);
 
   if (!agent) {
     return {
@@ -501,11 +550,11 @@ export async function* orchestrateStream({
   // Step 4: Detect user language (once, propagated to agents and sub-agents)
   const userLanguage = detectUserLanguage(userMessage);
 
-  // Step 5: Create the agent
-  const agent = await createAgent(agentId, provider, clientId);
+  // Step 5: Create the agent (pass tenantId for workspace isolation)
+  const agent = await createAgent(agentId, provider, clientId, tenantId);
   if (!agent) {
-    yield { type: "chunk", content: "Agent non disponible." };
-    yield { type: "done", content: "Agent non disponible.", toolsUsed: [], sourcesUsed: { web: [], sellsy: [], files: [] } };
+    yield { type: "chunk", content: "Agent non disponible ou accès refusé." };
+    yield { type: "done", content: "Agent non disponible ou accès refusé.", toolsUsed: [], sourcesUsed: { web: [], sellsy: [], files: [] } };
     return;
   }
 
@@ -523,20 +572,34 @@ export async function* orchestrateStream({
     : { agentId, tenantId };
 
   // Step 6: Stream from the agent (which internally manages sub-agents)
-  for await (const event of agent.executeStream({
-    userMessage,
-    conversationHistory,
-    sellsyData,
-    pageContext,
-    knowledgeContext,
-    tools,
-    toolContext: enrichedToolContext,
-    thinkingMode,
-    clientId,
-    conversationId,
-    activeSkillBlock,
-    userLanguage
-  })) {
-    yield event;
+  try {
+    for await (const event of agent.executeStream({
+      userMessage,
+      conversationHistory,
+      sellsyData,
+      pageContext,
+      knowledgeContext,
+      tools,
+      toolContext: enrichedToolContext,
+      thinkingMode,
+      clientId,
+      conversationId,
+      activeSkillBlock,
+      userLanguage
+    })) {
+      yield event;
+    }
+  } catch (error) {
+    console.error(`[Dispatcher] Agent stream error in conversation ${conversationId}:`, error);
+    yield {
+      type: "agent_thinking",
+      content: `Oups ! Une erreur est survenue lors de l'exécution de l'agent : ${error.message}.`
+    };
+    yield {
+      type: "done",
+      content: `Je m'excuse, mais j'ai rencontré une difficulté technique en traitant votre demande (${error.message}). Veuillez réessayer ou contacter le support si le problème persiste.`,
+      toolsUsed: [],
+      sourcesUsed: { web: [], sellsy: [], files: [] }
+    };
   }
 }

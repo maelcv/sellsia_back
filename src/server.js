@@ -38,6 +38,7 @@ import integrationsRoutes from "./routes/integrations.js";
 import setupProgressRoutes from "./routes/setup-progress.js";
 import clientOnboardingRoutes from "./routes/client-onboarding.js";
 import agentsManagementRoutes from "./routes/agents-management.js";
+import subAgentsRoutes from "./routes/sub-agents.js";
 import aiProvidersRoutes from "./routes/ai-providers.js";
 import orgchartRoutes from "./routes/orgchart.js";
 import profileSecurityRoutes from "./routes/profile-security.js";
@@ -155,6 +156,7 @@ app.use("/api/setup", setupRoutes);
 app.use("/api/setup", setupProgressRoutes);
 app.use("/api/onboarding", clientOnboardingRoutes);
 app.use("/api/agents-management", agentsManagementRoutes);
+app.use("/api/sub-agents", subAgentsRoutes);
 app.use("/api/ai-providers", aiProvidersRoutes);
 app.use("/api/onboarding/orgchart", orgchartRoutes);
 app.use("/api/profile", profileSecurityRoutes);
@@ -163,12 +165,16 @@ app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
   // Enrich with fields not in JWT (like twoFactorEnabled)
   const dbUser = await prisma.user.findUnique({
     where: { id: req.user.sub },
-    select: { twoFactorEnabled: true },
+    select: { twoFactorEnabled: true, workspaceId: true },
   });
   res.json({
-    user: { ...req.user, twoFactorEnabled: dbUser?.twoFactorEnabled ?? false },
-    workspacePlan: req.workspacePlan,
-    workspaceParentId: req.workspaceParentId
+    user: { 
+      ...req.user, 
+      twoFactorEnabled: dbUser?.twoFactorEnabled ?? false,
+      workspaceId: dbUser?.workspaceId || null
+    },
+    tenantPlan: req.workspacePlan,
+    tenantParentId: req.workspaceParentId
   });
 });
 

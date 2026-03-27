@@ -6,29 +6,19 @@ import { requireWorkspaceContext } from "../middleware/tenant.js";
 
 const router = express.Router();
 
-// Toutes les clés de permissions features supportées
+/**
+ * Permissions Features Plan-Dependent (SIMPLIFIÉES)
+ *
+ * SEULEMENT 3 permissions contrôlent les FEATURES du workspace.
+ * Les INTÉGRATIONS sont configurables par l'admin au niveau workspace (indépendantes du plan).
+ *
+ * Voir: AUTHORIZATION_MODEL.md & INTEGRATIONS_ACCESS_MODEL.md
+ */
 const PERMISSION_KEYS = [
-  "ai_provider",
-  "agents_local",
-  "agents_cloud",
-  "knowledge_base",
-  "feedback",
-  "logs",
-  "crm_services",
-  "channel_services",
-  "sub_clients",
-  "user_profiles",
-  "reminders",
-  "usage_stats",
-  "orchestration_logs",
-  "email_service",
-  "calendar",
-  "documents",
-  "data_enrichment",
-  "mass_import",
-  "analytics",
-  "custom_fields",
-  "external_connections",
+  // AI & Agents (SEULES PERMISSIONS)
+  "ai_provider",               // Custom AI Provider — Configurer son propre fournisseur IA
+  "agents_local",              // Local Agent Maker — Créer un agent custom dans son workspace
+  "agents_cloud",              // Cloud Agent Importer — Importer un agent cloud (requires ai_provider)
 ];
 
 const ALL_TRUE_PERMISSIONS = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true]));

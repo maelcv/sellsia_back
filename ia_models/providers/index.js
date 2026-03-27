@@ -202,11 +202,39 @@ export async function getProviderForUser(userId) {
 
 /**
  * Récupère les credentials Sellsy actives pour un client.
+ * Priorité : 
+ * 1. UserIntegration (personnel)
+ * 2. ClientServiceLink (legacy user)
+ * 3. Cascade Workspace UserIntegration
+ * 4. Cascade Workspace ClientServiceLink
+ * 
  * @param {number} userId
- * @returns {Promise<{ token: string, type: 'token'|'oauth' } | null>}
+ * @returns {Promise<{ token: string, type: 'token'|'oauth' } | { clientId: string, clientSecret: string, type: 'oauth' } | null>}
  */
 export async function getSellsyCredentials(userId) {
-  const links = await prisma.$queryRaw`
+  // 1. User's own Sellsy credentials (Modern - UserIntegration)
+  const userIntegrations = await prisma.$queryRaw`
+    SELECT ui.encrypted_credentials, it.name
+    FROM user_integrations ui
+    JOIN integration_types it ON it.id = ui.integration_type_id
+    WHERE ui.user_id = ${userId}
+      AND it.name = 'Sellsy'
+      AND it.category = 'crm'
+    LIMIT 1
+  `;
+
+  if (userIntegrations[0]) {
+    try {
+      const creds = JSON.parse(decryptSecret(userIntegrations[0].encrypted_credentials));
+      if (creds.token) return { token: creds.token, type: "token" };
+      if (creds.clientId && creds.clientSecret) return { clientId: creds.clientId, clientSecret: creds.clientSecret, type: "oauth" };
+    } catch (e) {
+      console.error("[getSellsyCredentials] Failed to parse UserIntegration:", e.message);
+    }
+  }
+
+  // 2. User's own Sellsy credentials (Legacy - ClientServiceLink)
+  const legacyLinks = await prisma.$queryRaw`
     SELECT csl.api_key_encrypted, csl.api_secret_encrypted, es.code
     FROM client_service_links csl
     JOIN external_services es ON es.id = csl.service_id
@@ -217,19 +245,100 @@ export async function getSellsyCredentials(userId) {
     LIMIT 1
   `;
 
-  const link = links[0] || null;
-
-  if (!link) return null;
-
-  if (link.code === "sellsy-token") {
-    const token = link.api_key_encrypted ? decryptSecret(link.api_key_encrypted) : "";
-    return token ? { token, type: "token" } : null;
+  if (legacyLinks[0]) {
+    const link = legacyLinks[0];
+    if (link.code === "sellsy-token") {
+      const token = link.api_key_encrypted ? decryptSecret(link.api_key_encrypted) : "";
+      if (token) return { token, type: "token" };
+    }
+    if (link.code === "sellsy-oauth") {
+      const clientId = link.api_key_encrypted ? decryptSecret(link.api_key_encrypted) : "";
+      const clientSecret = link.api_secret_encrypted ? decryptSecret(link.api_secret_encrypted) : "";
+      if (clientId && clientSecret) return { clientId, clientSecret, type: "oauth" };
+    }
   }
 
-  if (link.code === "sellsy-oauth") {
-    const clientId = link.api_key_encrypted ? decryptSecret(link.api_key_encrypted) : "";
-    const clientSecret = link.api_secret_encrypted ? decryptSecret(link.api_secret_encrypted) : "";
-    return clientId && clientSecret ? { clientId, clientSecret, type: "oauth" } : null;
+  // 3. Cascade to Workspace Level
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { workspaceId: true }
+  });
+
+  if (user?.workspaceId) {
+    // 3a. Workspace-wide Integration (Modern - WorkspaceIntegration)
+    // This is the shared configuration for the entire workspace
+    const workspaceIntegrations = await prisma.$queryRaw`
+      SELECT wi.encrypted_config, it.name
+      FROM workspace_integrations wi
+      JOIN integration_types it ON it.id = wi.integration_type_id
+      WHERE wi.workspace_id = ${user.workspaceId}
+        AND it.name = 'Sellsy'
+        AND it.category = 'crm'
+        AND wi.is_enabled = true
+      LIMIT 1
+    `;
+
+    if (workspaceIntegrations[0]) {
+      try {
+        const creds = JSON.parse(decryptSecret(workspaceIntegrations[0].encrypted_config));
+        if (creds.token) return { token: creds.token, type: "token" };
+        if (creds.clientId && creds.clientSecret) return { clientId: creds.clientId, clientSecret: creds.clientSecret, type: "oauth" };
+      } catch (e) {
+        console.error("[getSellsyCredentials] Failed to parse WorkspaceIntegration:", e.message);
+      }
+    }
+
+    // 3b. Workspace UserIntegration (any client in workspace)
+    const wsUserIntegrations = await prisma.$queryRaw`
+      SELECT ui.encrypted_credentials, it.name
+      FROM user_integrations ui
+      JOIN integration_types it ON it.id = ui.integration_type_id
+      JOIN users u ON u.id = ui.user_id
+      WHERE u.workspace_id = ${user.workspaceId}
+        AND it.name = 'Sellsy'
+        AND it.category = 'crm'
+        AND u.role IN ('client', 'sub_client')
+      ORDER BY u.role ASC, ui.linked_at DESC
+      LIMIT 1
+    `;
+
+    if (wsUserIntegrations[0]) {
+      try {
+        const creds = JSON.parse(decryptSecret(wsUserIntegrations[0].encrypted_credentials));
+        if (creds.token) return { token: creds.token, type: "token" };
+        if (creds.clientId && creds.clientSecret) return { clientId: creds.clientId, clientSecret: creds.clientSecret, type: "oauth" };
+      } catch (e) {
+        console.error("[getSellsyCredentials] Failed to parse WS UserIntegration:", e.message);
+      }
+    }
+
+    // 3c. Workspace legacy links
+    const wsLegacyLinks = await prisma.$queryRaw`
+      SELECT csl.api_key_encrypted, csl.api_secret_encrypted, es.code
+      FROM client_service_links csl
+      JOIN external_services es ON es.id = csl.service_id
+      JOIN users u ON u.id = csl.owner_user_id
+      WHERE u.workspace_id = ${user.workspaceId}
+        AND u.role IN ('client', 'sub_client')
+        AND csl.status = 'active'
+        AND es.code IN ('sellsy-token', 'sellsy-oauth')
+        AND es.is_active = true
+      ORDER BY u.role ASC, csl.updated_at DESC
+      LIMIT 1
+    `;
+
+    if (wsLegacyLinks[0]) {
+      const link = wsLegacyLinks[0];
+      if (link.code === "sellsy-token") {
+        const token = link.api_key_encrypted ? decryptSecret(link.api_key_encrypted) : "";
+        if (token) return { token, type: "token" };
+      }
+      if (link.code === "sellsy-oauth") {
+        const clientId = link.api_key_encrypted ? decryptSecret(link.api_key_encrypted) : "";
+        const clientSecret = link.api_secret_encrypted ? decryptSecret(link.api_secret_encrypted) : "";
+        if (clientId && clientSecret) return { clientId, clientSecret, type: "oauth" };
+      }
+    }
   }
 
   return null;

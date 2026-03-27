@@ -24,7 +24,11 @@ const adminAgentSchema = z.object({
 const workspaceAgentSchema = z.object({
   name: z.string().min(2).max(120),
   description: z.string().min(8).max(500),
-  isActive: z.boolean().optional().default(true)
+  isActive: z.boolean().optional().default(true),
+  imageUrl: z.string().url().max(512).optional(),
+  systemPrompt: z.string().max(20000).optional(),
+  allowedSubAgents: z.array(z.string()).optional().default([]),
+  allowedTools: z.array(z.string()).optional().default([]),
 });
 
 const importAgentSchema = z.object({
@@ -37,7 +41,11 @@ const importAgentSchema = z.object({
 const updateWorkspaceAgentSchema = z.object({
   name: z.string().min(2).max(120).optional(),
   description: z.string().min(8).max(500).optional(),
-  isActive: z.boolean().optional()
+  isActive: z.boolean().optional(),
+  imageUrl: z.string().url().max(512).optional(),
+  systemPrompt: z.string().max(20000).optional(),
+  allowedSubAgents: z.array(z.string()).optional(),
+  allowedTools: z.array(z.string()).optional(),
 });
 
 // Map API agent type values to Prisma enum values
@@ -227,7 +235,7 @@ router.post(
       }
     }
 
-    const { name, description, isActive } = parse.data;
+    const { name, description, isActive, imageUrl, systemPrompt, allowedSubAgents, allowedTools } = parse.data;
     const agentId = `workspace-${req.workspaceId?.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
 
     const agent = await prisma.agent.create({
@@ -238,9 +246,24 @@ router.post(
         isActive,
         agentType: "local",
         workspaceId: req.workspaceId,
-        ownerId: req.user.sub
+        ownerId: req.user.sub,
+        imageUrl: imageUrl || null,
+        allowedSubAgents: JSON.stringify(allowedSubAgents),
+        allowedTools: JSON.stringify(allowedTools),
       }
     });
+
+    if (systemPrompt) {
+      await prisma.agentPrompt.create({
+        data: {
+          agentId: agent.id,
+          systemPrompt,
+          version: 1,
+          isActive: true,
+          workspaceId: req.workspaceId,
+        }
+      });
+    }
 
     return res.status(201).json({ message: "Agent créé", agent: formatAgent(agent) });
   }
@@ -317,12 +340,30 @@ router.patch(
       return res.status(403).json({ error: "Vous ne pouvez modifier que les agents de votre workspace" });
     }
 
+    const { name, description, isActive, imageUrl, systemPrompt, allowedSubAgents, allowedTools } = parse.data;
     const updateData = {};
-    if (parse.data.name !== undefined) updateData.name = parse.data.name;
-    if (parse.data.description !== undefined) updateData.description = parse.data.description;
-    if (parse.data.isActive !== undefined) updateData.isActive = parse.data.isActive;
+    if (name !== undefined) updateData.name = name;
+    if (description !== undefined) updateData.description = description;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
+    if (allowedSubAgents !== undefined) updateData.allowedSubAgents = JSON.stringify(allowedSubAgents);
+    if (allowedTools !== undefined) updateData.allowedTools = JSON.stringify(allowedTools);
 
     const agent = await prisma.agent.update({ where: { id: req.params.id }, data: updateData });
+
+    if (systemPrompt !== undefined) {
+      const existingPrompt = await prisma.agentPrompt.findFirst({
+        where: { agentId: req.params.id, isActive: true }
+      });
+      if (existingPrompt) {
+        await prisma.agentPrompt.update({ where: { id: existingPrompt.id }, data: { systemPrompt } });
+      } else {
+        await prisma.agentPrompt.create({
+          data: { agentId: req.params.id, systemPrompt, version: 1, isActive: true, workspaceId: req.workspaceId }
+        });
+      }
+    }
+
     return res.json({ message: "Agent mis à jour", agent: formatAgent(agent) });
   }
 );
@@ -352,7 +393,7 @@ router.delete(
  * POST /api/agents/workspace/toggle
  * Permet à un workspace d'activer/désactiver un agent autorisé par son plan
  */
-router.post("/workspace/toggle", requireAuth, requireWorkspaceContext, async (req, res) => {
+router.post("/workspace/toggle", requireAuth, requireRole("client", "admin"), requireWorkspaceContext, async (req, res) => {
   const parse = toggleWorkspaceAgentSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Données invalides" });

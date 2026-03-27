@@ -158,4 +158,46 @@ router.patch("/tasks/:taskId", async (req, res) => {
   res.json(updated);
 });
 
+// ── Enrichissement SIRET en batch ─────────────────────────────
+
+router.post("/enrich/batch", requireFeature("data_enrichment"), async (req, res) => {
+  const { sirets } = z.object({
+    sirets: z.array(z.string().regex(/^\d{14}$/)).max(500),
+  }).parse(req.body);
+
+  const jobs = await Promise.all(
+    sirets.map((siret) =>
+      prisma.siretEnrichment.upsert({
+        where: { siret },
+        update: {},
+        create: {
+          userId: req.user.sub,
+          workspaceId: req.workspaceId,
+          siret,
+          status: "pending",
+        },
+      })
+    )
+  );
+
+  res.status(201).json({ count: jobs.length, jobs });
+});
+
+router.get("/enrich/batch-status", requireFeature("data_enrichment"), async (req, res) => {
+  let sirets = req.query.sirets || [];
+  if (!Array.isArray(sirets)) {
+    sirets = [sirets];
+  }
+  if (sirets.length === 0) {
+    return res.status(400).json({ error: "Veuillez fournir au moins un SIRET" });
+  }
+
+  const items = await prisma.siretEnrichment.findMany({
+    where: { siret: { in: sirets } },
+  });
+
+  const done = items.filter((i) => i.status === "completed").length;
+  res.json({ total: items.length, done, items });
+});
+
 export default router;

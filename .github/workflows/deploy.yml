@@ -1,0 +1,44 @@
+name: CI/CD Backend Express
+
+on:
+  push:
+    branches: [ "cicd" ] # Se déclenche au push sur la branche cicd
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Récupération du code
+        uses: actions/checkout@v3
+
+      - name: ⚙️ Configuration de Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18' # Mets la version que tu utilises
+
+      - name: 🏗️ Installation et vérification (Build)
+        run: |
+          npm ci
+          # npm run build # Décommente cette ligne si tu utilises TypeScript
+
+      - name: 🚀 Déploiement des fichiers sur le serveur
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "."
+          target: "/var/www/mon_api"
+
+      - name: 🔄 Redémarrage de l'API avec PM2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /var/www/mon_api
+            npm install --production
+            # Si l'app existe, on restart, sinon on la crée
+            pm2 restart api-express || pm2 start index.js --name "api-express"
+            pm2 save

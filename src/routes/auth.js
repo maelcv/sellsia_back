@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { randomBytes } from "crypto";
+import { TOTP } from "otplib";
 import { prisma, hasAnyUsers, logAudit } from "../prisma.js";
 import { config } from "../config.js";
 import { authRateLimit } from "../middleware/security.js";
@@ -11,6 +12,7 @@ import { encryptSecret, maskSecret } from "../security/secrets.js";
 import { sendEmail } from "../../ia_models/email/email-service.js";
 
 const router = express.Router();
+const totp = new TOTP();
 
 // ── 2FA Email Codes (In-Memory Storage) ────────────────────────
 // Map: userId -> { code, expiresAt, email }
@@ -25,10 +27,6 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000);
-
-function generateCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 /**
  * Generate a unique workspace slug, retrying with numeric suffix if collision detected.
@@ -268,44 +266,8 @@ router.post("/login", authRateLimit, async (req, res) => {
     return res.status(401).json({ error: "Invalid credentials" });
   }
 
-  // 2FA EMAIL: si activé, générer un code et l'envoyer par email
-  // (Vérifier si l'utilisateur a une préférence pour 2FA email)
-  // Pour maintenant, on supposera que twoFactorEnabled = TOTP
-  // Mais on peut ajouter un code email comme option
-
-  // Générer un code 2FA email et l'envoyer
-  const code2FA = generateCode();
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-  twoFactorCodes.set(user.id, {
-    code: code2FA,
-    expiresAt,
-    email: user.email,
-    type: "email"
-  });
-
-  // Envoyer le code par email
-  try {
-    await sendEmail({
-      userId: user.id,
-      workspaceId: user.workspaceId,
-      to: user.email,
-      subject: "Votre code de vérification Sellsia",
-      html: `
-        <h2>Vérification de sécurité</h2>
-        <p>Votre code de vérification est:</p>
-        <h1 style="letter-spacing: 5px; font-family: monospace;">${code2FA}</h1>
-        <p>Ce code expires dans 10 minutes.</p>
-        <p>Si vous n'avez pas tenté de vous connecter, ignorez cet email.</p>
-      `
-    });
-  } catch (emailErr) {
-    console.error("[Auth] Failed to send 2FA email:", emailErr.message);
-    // Continue anyway - user can still verify with the code
-  }
-
-  // Retourner requires2FA
+  // Si 2FA TOTP est activée, demander le code TOTP
   if (user.twoFactorEnabled) {
-    // TOTP 2FA
     const tempToken = jwt.sign(
       { sub: user.id, purpose: "2fa", type: "totp" },
       config.jwtSecret,
@@ -314,23 +276,18 @@ router.post("/login", authRateLimit, async (req, res) => {
     return res.json({ requires2FA: true, tempToken, type: "totp" });
   }
 
-  // EMAIL 2FA - toujours envoyer un code
-  const tempToken = jwt.sign(
-    { sub: user.id, purpose: "2fa", type: "email" },
-    config.jwtSecret,
-    { expiresIn: "10m" }
-  );
-  return res.json({ requires2FA: true, tempToken, type: "email", message: "Un code a été envoyé à votre email" });
-
+  // Sinon, login direct (pas de 2FA)
   const token = jwt.sign(
     { sub: user.id, email: user.email, role: user.role, companyName: user.companyName, workspaceId: user.workspaceId },
     config.jwtSecret,
     { expiresIn: config.jwtExpiresIn }
   );
 
+  await logAudit(user.id, "LOGIN_SUCCESS", { email: user.email });
+
   return res.json({
     token,
-    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone, workspaceId: user.workspaceId }
+    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone, workspaceId: user.workspaceId, twoFactorEnabled: user.twoFactorEnabled }
   });
 });
 
@@ -375,8 +332,7 @@ router.post("/verify-2fa", authRateLimit, async (req, res) => {
       return res.status(401).json({ error: "2FA TOTP non configuré" });
     }
 
-    const { authenticator } = await import("otplib");
-    const isValid = authenticator.check(code, user.twoFactorSecret);
+    const isValid = totp.verify({ secret: user.twoFactorSecret, encoding: "ascii", token: code });
 
     if (!isValid) {
       await logAudit(user.id, "2FA_FAILED", { email: user.email, type: "totp" });
@@ -419,7 +375,7 @@ router.post("/verify-2fa", authRateLimit, async (req, res) => {
 
   return res.json({
     token,
-    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone, workspaceId: user.workspaceId }
+    user: { id: user.id, email: user.email, role: user.role, companyName: user.companyName, whatsappPhone: user.whatsappPhone, workspaceId: user.workspaceId, twoFactorEnabled: user.twoFactorEnabled }
   });
 });
 
@@ -723,20 +679,24 @@ router.post("/forgot-password", authRateLimit, async (req, res) => {
     const resetUrl = `${process.env.APP_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
 
     try {
+      const { renderEmailTemplate, sendEmail } = await import("../../ia_models/email/email-service.js");
+
+      const html = renderEmailTemplate({
+        title: "Réinitialisation de mot de passe",
+        content: `
+          <p>Vous avez demandé la réinitialisation de votre mot de passe Sellsia.</p>
+          <p>Cliquez sur le bouton ci-dessous pour choisir un nouveau mot de passe :</p>
+        `,
+        buttonLabel: "Réinitialiser mon mot de passe",
+        buttonUrl: resetUrl
+      });
+
       await sendEmail({
         userId: user.id,
         workspaceId: user.workspaceId,
         to: user.email,
-        subject: "Réinitialiser votre mot de passe Sellsia",
-        html: `
-          <h2>Réinitialisation de mot de passe</h2>
-          <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
-          <p><a href="${resetUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Réinitialiser mon mot de passe</a></p>
-          <p>Ou copiez ce lien:</p>
-          <p><code>${resetUrl}</code></p>
-          <p>Ce lien expire dans 1 heure.</p>
-          <p>Si vous n'avez pas demandé cela, ignorez cet email.</p>
-        `
+        subject: "Réinitialisation de votre mot de passe Sellsia",
+        html
       });
     } catch (err) {
       console.error("[Auth] Failed to send password reset email:", err.message);
@@ -808,16 +768,30 @@ router.post("/reset-password", authRateLimit, async (req, res) => {
 
     // Send confirmation email
     try {
+      const { renderEmailTemplate, sendEmail } = await import("../../ia_models/email/email-service.js");
+
+      const html = renderEmailTemplate({
+        title: "Mot de passe réinitialisé",
+        content: `
+          <p>Votre mot de passe Sellsia a été réinitialisé avec succès.</p>
+          <p>Vous pouvez maintenant vous connecter à votre tableau de bord.</p>
+        `,
+        buttonLabel: "Se connecter",
+        buttonUrl: `${process.env.APP_URL || 'http://localhost:5173'}/login`
+      });
+
+      // Fetch workspaceId for the user whose password was reset
+      const user = await prisma.user.findUnique({
+        where: { id: resetData.userId },
+        select: { workspaceId: true }
+      });
+
       await sendEmail({
         userId: resetData.userId,
+        workspaceId: user?.workspaceId, // Use optional chaining in case user is null (though it shouldn't be here)
         to: resetData.email,
         subject: "Votre mot de passe a été réinitialisé",
-        html: `
-          <h2>Réinitialisation de mot de passe réussie</h2>
-          <p>Votre mot de passe Sellsia a été réinitialisé avec succès.</p>
-          <p>Vous pouvez maintenant <a href="${process.env.APP_URL || 'http://localhost:5173'}/login">vous connecter</a> avec votre nouveau mot de passe.</p>
-          <p>Si vous n'avez pas effectué cette action, veuillez <a href="${process.env.APP_URL || 'http://localhost:5173'}/forgot-password">contacter le support</a>.</p>
-        `
+        html
       });
     } catch (err) {
       console.error("[Auth] Failed to send reset confirmation:", err.message);

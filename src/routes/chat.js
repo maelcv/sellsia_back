@@ -341,7 +341,7 @@ function estimateTokens(text = "") {
 
 // ── Helper : build tool context for agent tool-calling ──
 
-async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tenantId = null, features = {}) {
+async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tenantId = null, features = {}, userRole = null, agentId = null) {
   const sellsyClient = await getSellsyClient(userId);
   const referenceSitesByTopic = {
     company: ["pappers.fr", "societe.com", "wikipedia.org"],
@@ -354,10 +354,14 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tena
     ? toolPrefs.referenceSites
     : referenceSitesByTopic.generic;
 
+  const isAdmin = userRole === "admin";
+
   const context = {
     userId,           // Nécessaire pour le tool schedule_reminder, send_email, create_calendar_event
     tenantId,         // Nécessaire pour les tools email + calendar
     features,         // Feature flags du tenant (email_service, calendar, etc.)
+    isAdmin,          // Flag admin pour get_platform_stats
+    agentId,          // ID agent pour schedule_reminder
     sellsyClient,
     tavilyApiKey: config.tavilyApiKey || null,
     uploadedFiles: uploadedFiles || [],
@@ -509,10 +513,10 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     const historyForLLM = conversationHistory.slice(0, -1);
 
     // 5. Charger la knowledge base
-    const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId);
+    const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId, 3, req.workspaceId);
 
     // 6. Build tool context
-    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {});
+    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {}, userRole, requestedAgentId);
 
     // 7. Orchestrer (with tools)
     const result = await orchestrate({
@@ -569,8 +573,10 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
       responseTimeMs: result.responseTimeMs
     });
 
-    // 9. MAJ compteurs tokens (fire-and-forget)
-    updateTokenUsage(userId, result.tokensInput || 0, result.tokensOutput || 0);
+    // 9. MAJ compteurs tokens
+    updateTokenUsage(userId, result.tokensInput || 0, result.tokensOutput || 0).catch(err =>
+      console.error("[chat/ask] Token usage update failed:", err.message)
+    );
 
     // 10. Réponse
     const toolCategories = {
@@ -722,10 +728,10 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     const isFirstMessage = historyForLLM.length === 0;
 
     // 3. Knowledge base
-    const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId);
+    const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId, 3, req.workspaceId);
 
     // 3b. Build tool context for agent tool-calling
-    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {});
+    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {}, userRole, requestedAgentId);
 
     // 4. Enrich pipeline data if directeur might be involved
     if (
@@ -1069,8 +1075,10 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     // Backfill all unlinked reasoning steps to this message
     linkReasoningStepsToMessage(conversationId, messageId);
 
-    // Fire-and-forget: update token counters
-    updateTokenUsage(userId, tokensInput, tokensOutput);
+    // Update token counters
+    updateTokenUsage(userId, tokensInput, tokensOutput).catch(err =>
+      console.error("[chat/stream] Token usage update failed:", err.message)
+    );
 
     const inferredMode = collectedAgentIds.length > 1 ? "multi-agent" : "single-agent";
 

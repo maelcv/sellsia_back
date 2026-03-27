@@ -129,26 +129,47 @@ export async function enrichWithPipelineData(userId) {
  * @param {number} [limit=3] - Nombre de docs à retourner
  * @returns {Promise<string|null>} - Contenu concaténé des docs pertinents
  */
-export async function loadKnowledgeContext(query, agentId, clientId = null, limit = 3) {
-  // Normalize query for simple search
+/**
+ * Load knowledge context with strict workspace isolation.
+ *
+ * A user can only access:
+ *   1. Global platform docs (clientId=null AND agentId=null)
+ *   2. Docs belonging to users in their workspace (via wsUserIds)
+ *   3. Docs linked to the specific agent being used
+ *
+ * @param {string} query
+ * @param {string} agentId
+ * @param {number|null} clientId
+ * @param {number} limit
+ * @param {string|null} workspaceId - If set, restricts search to workspace scope
+ */
+export async function loadKnowledgeContext(query, agentId, clientId = null, limit = 3, workspaceId = null) {
   const normalizedQuery = (query || "").toLowerCase();
-  
-  // Recherche simple : documents actifs pour cet agent/client
-  // Filtrage par contenu ou titre contenant des mots-clés (recherche basique)
+
+  // Build allowed clientId list for workspace isolation
+  let wsUserIds = clientId ? [clientId] : [];
+  if (workspaceId) {
+    try {
+      const wsUsers = await prisma.user.findMany({
+        where: { workspaceId },
+        select: { id: true }
+      });
+      wsUserIds = wsUsers.map(u => u.id);
+    } catch { /* non-blocking */ }
+  }
+
   const docs = await prisma.knowledgeDocument.findMany({
     where: {
       isActive: true,
       OR: [
-        { agentId: null },
-        { agentId }
+        // Global platform docs (no owner, no agent = truly global)
+        { clientId: null, agentId: null },
+        // Agent-specific docs (if agent is accessible from this workspace)
+        { agentId },
+        // Docs from workspace users
+        ...(wsUserIds.length > 0 ? [{ clientId: { in: wsUserIds } }] : []),
       ],
       AND: [
-        {
-          OR: [
-            { clientId: null },
-            { clientId }
-          ]
-        },
         {
           OR: [
             { title: { contains: normalizedQuery, mode: "insensitive" } },
@@ -157,7 +178,7 @@ export async function loadKnowledgeContext(query, agentId, clientId = null, limi
         }
       ]
     },
-    select: { title: true, content: true },
+    select: { title: true, content: true, agentId: true, clientId: true },
     orderBy: { updatedAt: "desc" },
     take: limit
   });

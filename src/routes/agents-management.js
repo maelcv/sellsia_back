@@ -1,100 +1,47 @@
 import { Router } from "express";
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = Router();
 
+import { 
+  seedAgents, 
+  seedSubAgents, 
+  seedIntegrations 
+} from "../lib/seed-lib.js";
+
 /**
  * POST /api/agents-management/seed-base-agents
- * Create default agents (Admin, Director, Technical, Commercial)
+ * Create default agents, sub-agents, and integrations
+ * Note: Does NOT seed AI providers as requested by the user
  * Admin only
  */
 router.post("/seed-base-agents", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    console.log("[agents-management] Seeding base agents...");
-    const baseAgents = [
-      {
-        id: "agent-admin",
-        name: "Admin",
-        description: "Agent administratif pour la gestion plateforme",
-        agentType: "local",
-        isActive: true,
-        workspaceId: null // Global
-      },
-      {
-        id: "agent-director",
-        name: "Directeur",
-        description: "Agent pour la direction et les décisions stratégiques",
-        agentType: "local",
-        isActive: true,
-        workspaceId: null // Global
-      },
-      {
-        id: "agent-technical",
-        name: "Technique",
-        description: "Agent pour les questions techniques et l'implémentation",
-        agentType: "local",
-        isActive: true,
-        workspaceId: null // Global
-      },
-      {
-        id: "agent-commercial",
-        name: "Commercial",
-        description: "Agent pour les questions commerciales et les ventes",
-        agentType: "local",
-        isActive: true,
-        workspaceId: null // Global
-      }
-    ];
+    console.log("[agents-management] Seeding plateforme entities (agents, sub-agents, integrations)...");
+    
+    const agentsCount = await seedAgents();
+    const subAgentsCount = await seedSubAgents();
+    const integrationsCount = await seedIntegrations();
 
-    const agentPrompts = {
-      "agent-admin": "Tu es un assistant administratif expert. Tu aides à la gestion des workflows et des processus administratifs.",
-      "agent-director": "Tu es un conseiller stratégique expert. Tu aides à la prise de décision et à la planification stratégique.",
-      "agent-technical": "Tu es un expert technique senior. Tu aides à la résolution de problèmes techniques et à l'implémentation de solutions.",
-      "agent-commercial": "Tu es un expert commercial chevronné. Tu aides aux stratégies de vente, aux négociations et aux relations clients."
-    };
-
-    const created = [];
-    for (const agentData of baseAgents) {
-      console.log(`[agents-management] Checking agent ${agentData.id}...`);
-      const existing = await prisma.agent.findUnique({
-        where: { id: agentData.id }
-      });
-
-      if (!existing) {
-        console.log(`[agents-management] Creating agent ${agentData.id}...`);
-        const agent = await prisma.agent.create({
-          data: agentData
-        });
-        console.log(`[agents-management] Created agent ${agent.id}`);
-
-        // Create default AgentPrompt
-        await prisma.agentPrompt.create({
-          data: {
-            agentId: agent.id,
-            systemPrompt: agentPrompts[agent.id] || "",
-            version: 1,
-            isActive: true
-          }
-        });
-
-        created.push(agent);
-      } else {
-        console.log(`[agents-management] Agent ${agentData.id} already exists, skipping`);
-      }
-    }
-
-    // Return ALL base agents (not just newly created ones)
-    const allBaseAgents = await prisma.agent.findMany({
-      where: { id: { in: baseAgents.map(a => a.id) } }
+    // Fetch all base agents to return in response
+    const baseAgents = await prisma.agent.findMany({
+      where: { workspaceId: null, isActive: true }
     });
 
-    console.log(`[agents-management] Seed complete: created ${created.length}, total: ${allBaseAgents.length} agents`);
+    console.log(`[agents-management] Seed complete: agents=${agentsCount}, subAgents=${subAgentsCount}, integrations=${integrationsCount}`);
+    
     return res.json({
       success: true,
-      created: created.length,
-      agents: allBaseAgents
+      message: "Plateforme initialisée avec succès (Agents, Sous-agents, Intégrations). Les providers IA n'ont pas été modifiés.",
+      counts: {
+        agents: agentsCount,
+        subAgents: subAgentsCount,
+        integrations: integrationsCount
+      },
+      agents: baseAgents
     });
   } catch (err) {
     console.error("[agents-management] Seed error:", err);
@@ -103,13 +50,71 @@ router.post("/seed-base-agents", requireAuth, requireRole("admin"), async (req, 
 });
 
 /**
+ * POST /api/agents-management
+ * Create a brand-new global agent with full configuration (admin only)
+ */
+router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const createSchema = z.object({
+      name: z.string().min(2).max(120),
+      description: z.string().min(8).max(500),
+      isActive: z.boolean().optional().default(true),
+      agentType: z.enum(["local", "mistral-remote", "openai-remote"]).optional().default("local"),
+      mistralAgentId: z.string().max(256).optional(),
+      imageUrl: z.string().url().max(512).optional(),
+      systemPrompt: z.string().max(20000).optional(),
+      allowedSubAgents: z.array(z.string()).optional().default([]),
+      allowedTools: z.array(z.string()).optional().default([]),
+    });
+    const parse = createSchema.safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({ error: "Données invalides", details: parse.error.flatten() });
+    }
+    const { name, description, isActive, agentType, mistralAgentId, imageUrl, systemPrompt, allowedSubAgents, allowedTools } = parse.data;
+    const agentId = `agent-${randomUUID().slice(0, 12)}`;
+    const prismaAgentType = agentType === "mistral-remote" ? "mistral_remote" : agentType === "openai-remote" ? "openai_remote" : "local";
+
+    const agent = await prisma.agent.create({
+      data: {
+        id: agentId,
+        name,
+        description,
+        isActive,
+        agentType: prismaAgentType,
+        mistralAgentId: mistralAgentId || null,
+        imageUrl: imageUrl || null,
+        allowedSubAgents: JSON.stringify(allowedSubAgents),
+        allowedTools: JSON.stringify(allowedTools),
+        workspaceId: null, // global
+      }
+    });
+
+    if (systemPrompt) {
+      await prisma.agentPrompt.create({
+        data: { agentId: agent.id, systemPrompt, version: 1, isActive: true }
+      });
+    }
+
+    const created = await prisma.agent.findUnique({
+      where: { id: agent.id },
+      include: { agentPrompts: { where: { isActive: true }, take: 1 } }
+    });
+
+    return res.status(201).json({ success: true, agent: created });
+  } catch (err) {
+    console.error("[agents-management] Create error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * PATCH /api/agents-management/:agentId
- * Update agent details + system prompt (admin only)
+ * Update agent details + system prompt + image + sub-agents/tools (admin only)
  */
 router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const { agentId } = req.params;
-    const { name, description, isActive, systemPrompt } = req.body;
+    const { name, description, isActive, systemPrompt, imageUrl, allowedSubAgents, allowedTools } = req.body;
 
     const agent = await prisma.agent.findUnique({ where: { id: agentId } });
     if (!agent) return res.status(404).json({ error: "Agent not found" });
@@ -120,6 +125,9 @@ router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) =>
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
         ...(isActive !== undefined && { isActive }),
+        ...(imageUrl !== undefined && { imageUrl }),
+        ...(allowedSubAgents !== undefined && { allowedSubAgents: JSON.stringify(allowedSubAgents) }),
+        ...(allowedTools !== undefined && { allowedTools: JSON.stringify(allowedTools) }),
       }
     });
 
@@ -152,6 +160,24 @@ router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) =>
 });
 
 /**
+ * DELETE /api/agents-management/:agentId
+ * Delete a global agent (admin only)
+ */
+router.delete("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } });
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+
+    await prisma.agent.delete({ where: { id: agentId } });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[agents-management] Delete error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/agents-management/:agentId
  * Get single agent with prompt (admin only)
  */
@@ -177,6 +203,11 @@ router.get("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
 router.get("/workspace/:workspaceId/available", requireAuth, async (req, res) => {
   try {
     const { workspaceId } = req.params;
+
+    // Security: non-admins can only query their own workspace
+    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+      return res.status(403).json({ error: "Accès refusé à ce workspace" });
+    }
 
     // Get all agents (global + workspace-scoped)
     const agents = await prisma.agent.findMany({
@@ -229,6 +260,11 @@ router.post("/workspace/:workspaceId/agent/:agentId/toggle", requireAuth, async 
     const { workspaceId, agentId } = req.params;
     const { isEnabled } = req.body;
 
+    // Security: non-admins can only toggle agents in their own workspace
+    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+      return res.status(403).json({ error: "Accès refusé à ce workspace" });
+    }
+
     // Find or create access record
     let access = await prisma.workspaceAgentAccess.findUnique({
       where: { workspaceId_agentId: { workspaceId, agentId } }
@@ -266,12 +302,24 @@ router.get("/workspace/:workspaceId/knowledge", requireAuth, async (req, res) =>
   try {
     const { workspaceId } = req.params;
 
+    // Security: ensure requestor belongs to this workspace (unless admin)
+    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+      return res.status(403).json({ error: "Accès refusé" });
+    }
+
+    // Get workspace users to find their knowledge docs
+    const wsUsers = await prisma.user.findMany({
+      where: { workspaceId },
+      select: { id: true }
+    });
+    const wsUserIds = wsUsers.map(u => u.id);
+
     const knowledge = await prisma.knowledgeDocument.findMany({
       where: {
         isActive: true,
         OR: [
-          { clientId: null }, // Global knowledge
-          { clientId: { gt: 0 } } // Local knowledge
+          { clientId: null, agentId: null }, // Global platform knowledge
+          { clientId: { in: wsUserIds } },   // Knowledge from workspace users
         ]
       },
       select: {
@@ -308,6 +356,11 @@ const knowledgeSchema = z.object({
 router.post("/workspace/:workspaceId/knowledge", requireAuth, async (req, res) => {
   try {
     const { workspaceId } = req.params;
+
+    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+      return res.status(403).json({ error: "Accès refusé à ce workspace" });
+    }
+
     const validated = knowledgeSchema.parse(req.body);
 
     if (validated.scope === "local" && !validated.agentId) {
@@ -341,15 +394,28 @@ router.post("/workspace/:workspaceId/knowledge", requireAuth, async (req, res) =
  */
 router.delete("/workspace/:workspaceId/knowledge/:docId", requireAuth, async (req, res) => {
   try {
-    const { docId } = req.params;
+    const { workspaceId, docId } = req.params;
+
+    // Security: non-admins can only modify knowledge in their own workspace
+    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+      return res.status(403).json({ error: "Accès refusé à ce workspace" });
+    }
+
+    const docIdInt = parseInt(docId, 10);
+    if (isNaN(docIdInt)) {
+      return res.status(400).json({ error: "ID de document invalide" });
+    }
 
     const doc = await prisma.knowledgeDocument.update({
-      where: { id: docId },
+      where: { id: docIdInt },
       data: { isActive: false }
     });
 
     return res.json({ success: true, document: doc });
   } catch (err) {
+    if (err.code === "P2025") {
+      return res.status(404).json({ error: "Document introuvable" });
+    }
     console.error("[agents-management] Delete knowledge error:", err);
     return res.status(500).json({ error: err.message });
   }

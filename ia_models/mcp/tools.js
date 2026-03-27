@@ -599,6 +599,695 @@ const sellsy_create_note = {
   }
 };
 
+// ── Sellsy — Recherche globale multi-entités ───────────
+
+const sellsy_global_search = {
+  name: "sellsy_global_search",
+  description:
+    "Recherche simultanément dans toutes les entités Sellsy (sociétés, contacts, opportunités) avec un seul terme. Utile quand on ne sait pas quel type d'entité chercher.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Terme de recherche (nom, email, téléphone, etc.)"
+      },
+      limit: {
+        type: "number",
+        description: "Nombre de résultats par catégorie (défaut 5)"
+      }
+    },
+    required: ["query"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    try {
+      const results = await context.sellsyClient.globalSearch(params.query, params.limit || 5);
+      return results;
+    } catch (err) {
+      return { error: `Erreur lors de la recherche globale : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Recherche de contacts ────────────────────
+
+const sellsy_search_contacts = {
+  name: "sellsy_search_contacts",
+  description:
+    "Recherche des contacts dans Sellsy par nom, prénom ou email. Retourne une liste de contacts correspondants.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "Terme de recherche (nom, prénom, email, téléphone)"
+      },
+      limit: {
+        type: "number",
+        description: "Nombre maximum de résultats (défaut 10)"
+      }
+    },
+    required: ["query"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    try {
+      const results = await context.sellsyClient.searchContacts(params.query, params.limit || 10);
+      return results;
+    } catch (err) {
+      return { error: `Erreur lors de la recherche de contacts : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Créer un contact ─────────────────────────
+
+const sellsy_create_contact = {
+  name: "sellsy_create_contact",
+  description:
+    "Crée un nouveau contact dans Sellsy. Fournir au minimum le prénom et le nom. RÈGLE : présenter d'abord un récapitulatif avec ask_user avant de créer.",
+  parameters: {
+    type: "object",
+    properties: {
+      first_name: { type: "string", description: "Prénom du contact" },
+      last_name: { type: "string", description: "Nom du contact" },
+      email: { type: "string", description: "Adresse email (optionnel)" },
+      phone_number: { type: "string", description: "Téléphone (optionnel)" },
+      mobile_number: { type: "string", description: "Mobile (optionnel)" },
+      position: { type: "string", description: "Poste/fonction (optionnel)" },
+      company_id: { type: "string", description: "ID de la société à lier (optionnel)" },
+      note: { type: "string", description: "Note libre (optionnel)" },
+      confirmed: { type: "boolean", description: "true = créer, false = afficher récapitulatif" }
+    },
+    required: ["first_name", "last_name"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "create_contact",
+        data: params,
+        message: `Récapitulatif du contact à créer :\n- Nom : ${params.first_name} ${params.last_name}\n- Email : ${params.email || "—"}\n- Téléphone : ${params.phone_number || "—"}\n- Poste : ${params.position || "—"}\n\nPrésente ce récapitulatif et demande confirmation avant de créer.`
+      };
+    }
+    try {
+      const payload = {
+        first_name: params.first_name,
+        last_name: params.last_name
+      };
+      if (params.email) payload.email = params.email;
+      if (params.phone_number) payload.phone_number = params.phone_number;
+      if (params.mobile_number) payload.mobile_number = params.mobile_number;
+      if (params.position) payload.position = params.position;
+      if (params.note) payload.note = params.note;
+      if (params.company_id) payload.company_id = Number(params.company_id);
+      const result = await context.sellsyClient.createContact(payload);
+      return { status: "success", message: `Contact ${params.first_name} ${params.last_name} créé (ID: ${result.id}).`, data: result };
+    } catch (err) {
+      return { error: `Erreur lors de la création du contact : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Mettre à jour un contact ────────────────
+
+const sellsy_update_contact = {
+  name: "sellsy_update_contact",
+  description:
+    "Modifie les champs d'un contact Sellsy. RÈGLE CRITIQUE : appelle d'abord sans `confirmed: true` pour obtenir un récapitulatif à valider.",
+  parameters: {
+    type: "object",
+    properties: {
+      contact_id: { type: "string", description: "Identifiant Sellsy du contact" },
+      changes: {
+        type: "object",
+        description: "Champs à modifier",
+        properties: {
+          first_name: { type: "string" },
+          last_name: { type: "string" },
+          email: { type: "string" },
+          phone_number: { type: "string" },
+          mobile_number: { type: "string" },
+          position: { type: "string" },
+          note: { type: "string" }
+        }
+      },
+      confirmed: { type: "boolean", description: "true uniquement après confirmation explicite" }
+    },
+    required: ["contact_id", "changes"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "update_contact",
+        contact_id: params.contact_id,
+        changes: params.changes,
+        message: `Récapitulatif des modifications pour le contact #${params.contact_id} :\n${Object.entries(params.changes).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n\nDemande confirmation avant d'appliquer.`
+      };
+    }
+    try {
+      const updated = await context.sellsyClient.updateContact(params.contact_id, params.changes);
+      return { status: "success", message: `Contact #${params.contact_id} mis à jour.`, data: updated };
+    } catch (err) {
+      return { error: `Erreur lors de la mise à jour : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Créer une société ────────────────────────
+
+const sellsy_create_company = {
+  name: "sellsy_create_company",
+  description:
+    "Crée une nouvelle société/entreprise dans Sellsy. RÈGLE : présenter un récapitulatif avec ask_user avant de créer.",
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Nom de la société" },
+      email: { type: "string", description: "Email principal (optionnel)" },
+      phone_number: { type: "string", description: "Téléphone (optionnel)" },
+      website: { type: "string", description: "Site web (optionnel)" },
+      siret: { type: "string", description: "SIRET 14 chiffres (optionnel)" },
+      type: { type: "string", enum: ["prospect", "client", "supplier", "partner"], description: "Type de société" },
+      note: { type: "string", description: "Note libre (optionnel)" },
+      confirmed: { type: "boolean", description: "true = créer, false = récapitulatif" }
+    },
+    required: ["name"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "create_company",
+        data: params,
+        message: `Récapitulatif de la société à créer :\n- Nom : ${params.name}\n- Type : ${params.type || "—"}\n- Email : ${params.email || "—"}\n- Site : ${params.website || "—"}\n\nDemande confirmation avant de créer.`
+      };
+    }
+    try {
+      const payload = { name: params.name };
+      if (params.email) payload.email = params.email;
+      if (params.phone_number) payload.phone_number = params.phone_number;
+      if (params.website) payload.website = params.website;
+      if (params.siret) payload.siret = params.siret;
+      if (params.type) payload.type = params.type;
+      if (params.note) payload.note = params.note;
+      const result = await context.sellsyClient.createCompany(payload);
+      return { status: "success", message: `Société "${params.name}" créée (ID: ${result.id}).`, data: result };
+    } catch (err) {
+      return { error: `Erreur lors de la création : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Créer une opportunité ────────────────────
+
+const sellsy_create_opportunity = {
+  name: "sellsy_create_opportunity",
+  description:
+    "Crée une nouvelle opportunité/deal dans Sellsy. RÈGLE : présenter un récapitulatif avant de créer.",
+  parameters: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Nom de l'opportunité" },
+      amount: { type: "number", description: "Montant estimé (optionnel)" },
+      probability: { type: "number", description: "Probabilité 0-100 (optionnel)" },
+      pipeline_id: { type: "string", description: "ID du pipeline (optionnel)" },
+      step_id: { type: "string", description: "ID de l'étape du pipeline (optionnel)" },
+      company_id: { type: "string", description: "ID de la société liée (optionnel)" },
+      contact_id: { type: "string", description: "ID du contact lié (optionnel)" },
+      due_date: { type: "string", description: "Date de clôture YYYY-MM-DD (optionnel)" },
+      note: { type: "string", description: "Note (optionnel)" },
+      confirmed: { type: "boolean", description: "true = créer, false = récapitulatif" }
+    },
+    required: ["name"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "create_opportunity",
+        data: params,
+        message: `Récapitulatif de l'opportunité à créer :\n- Nom : ${params.name}\n- Montant : ${params.amount != null ? params.amount + " €" : "—"}\n- Probabilité : ${params.probability != null ? params.probability + "%" : "—"}\n- Date clôture : ${params.due_date || "—"}\n\nDemande confirmation avant de créer.`
+      };
+    }
+    try {
+      const payload = { name: params.name };
+      if (params.amount != null) payload.amount = params.amount;
+      if (params.probability != null) payload.probability = params.probability;
+      if (params.pipeline_id) payload.pipeline_id = Number(params.pipeline_id);
+      if (params.step_id) payload.step_id = Number(params.step_id);
+      if (params.company_id) payload.company_id = Number(params.company_id);
+      if (params.contact_id) payload.contact_ids = [Number(params.contact_id)];
+      if (params.due_date) payload.due_date = params.due_date;
+      if (params.note) payload.note = params.note;
+      const result = await context.sellsyClient.createOpportunity(payload);
+      return { status: "success", message: `Opportunité "${params.name}" créée (ID: ${result.id}).`, data: result };
+    } catch (err) {
+      return { error: `Erreur lors de la création : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Créer un devis ───────────────────────────
+
+const sellsy_create_quote = {
+  name: "sellsy_create_quote",
+  description:
+    "Crée un nouveau devis/estimate dans Sellsy. RÈGLE : présenter les éléments avant de créer.",
+  parameters: {
+    type: "object",
+    properties: {
+      subject: { type: "string", description: "Objet/titre du devis" },
+      company_id: { type: "string", description: "ID de la société cliente" },
+      contact_id: { type: "string", description: "ID du contact (optionnel)" },
+      opportunity_id: { type: "string", description: "ID de l'opportunité liée (optionnel)" },
+      validity_date: { type: "string", description: "Date de validité YYYY-MM-DD (optionnel)" },
+      note: { type: "string", description: "Note/commentaire (optionnel)" },
+      confirmed: { type: "boolean", description: "true = créer, false = récapitulatif" }
+    },
+    required: ["subject", "company_id"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "create_quote",
+        data: params,
+        message: `Récapitulatif du devis à créer :\n- Objet : ${params.subject}\n- Société ID : ${params.company_id}\n- Validité : ${params.validity_date || "—"}\n\nDemande confirmation avant de créer.`
+      };
+    }
+    try {
+      const payload = { subject: params.subject, company_id: Number(params.company_id) };
+      if (params.contact_id) payload.contact_id = Number(params.contact_id);
+      if (params.opportunity_id) payload.related = { opportunity_id: Number(params.opportunity_id) };
+      if (params.validity_date) payload.validity_date = params.validity_date;
+      if (params.note) payload.note = params.note;
+      const result = await context.sellsyClient.createQuote(payload);
+      return { status: "success", message: `Devis "${params.subject}" créé (ID: ${result.id}).`, data: result };
+    } catch (err) {
+      return { error: `Erreur lors de la création : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Mettre à jour un devis ──────────────────
+
+const sellsy_update_quote = {
+  name: "sellsy_update_quote",
+  description:
+    "Modifie un devis Sellsy existant (objet, note, date de validité, statut). RÈGLE CRITIQUE : afficher récapitulatif avant modification.",
+  parameters: {
+    type: "object",
+    properties: {
+      quote_id: { type: "string", description: "Identifiant du devis" },
+      changes: {
+        type: "object",
+        description: "Champs à modifier",
+        properties: {
+          subject: { type: "string" },
+          note: { type: "string" },
+          validity_date: { type: "string" },
+          status: { type: "string", enum: ["draft", "sent", "accepted", "refused", "cancelled"] }
+        }
+      },
+      confirmed: { type: "boolean", description: "true uniquement après confirmation" }
+    },
+    required: ["quote_id", "changes"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "update_quote",
+        quote_id: params.quote_id,
+        changes: params.changes,
+        message: `Récapitulatif modifications devis #${params.quote_id} :\n${Object.entries(params.changes).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n\nDemande confirmation.`
+      };
+    }
+    try {
+      const updated = await context.sellsyClient.updateQuote(params.quote_id, params.changes);
+      return { status: "success", message: `Devis #${params.quote_id} mis à jour.`, data: updated };
+    } catch (err) {
+      return { error: `Erreur lors de la mise à jour : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Envoyer un devis par email ──────────────
+
+const sellsy_send_quote = {
+  name: "sellsy_send_quote",
+  description:
+    "Envoie un devis Sellsy par email au client. RÈGLE : demander confirmation avant l'envoi.",
+  parameters: {
+    type: "object",
+    properties: {
+      quote_id: { type: "string", description: "Identifiant du devis à envoyer" },
+      to_email: { type: "string", description: "Adresse email du destinataire" },
+      subject: { type: "string", description: "Objet de l'email (optionnel)" },
+      message: { type: "string", description: "Corps du message (optionnel)" },
+      confirmed: { type: "boolean", description: "true = envoyer, false = afficher récap" }
+    },
+    required: ["quote_id", "to_email"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        message: `Désirez-vous envoyer le devis #${params.quote_id} à ${params.to_email} ? Demande confirmation.`
+      };
+    }
+    try {
+      const emailPayload = { to: params.to_email };
+      if (params.subject) emailPayload.subject = params.subject;
+      if (params.message) emailPayload.message = params.message;
+      await context.sellsyClient.sendQuote(params.quote_id, emailPayload);
+      return { status: "success", message: `Devis #${params.quote_id} envoyé à ${params.to_email}.` };
+    } catch (err) {
+      return { error: `Erreur lors de l'envoi : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Catalogue produits/services ─────────────
+
+const sellsy_get_products = {
+  name: "sellsy_get_products",
+  description:
+    "Recherche et liste les produits/services du catalogue Sellsy. Utile pour construire des devis ou factures.",
+  parameters: {
+    type: "object",
+    properties: {
+      search: { type: "string", description: "Terme de recherche (optionnel)" },
+      limit: { type: "number", description: "Nombre max de résultats (défaut 25)" }
+    },
+    required: []
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    try {
+      const filters = params.search ? { search: params.search } : {};
+      const products = await context.sellsyClient.getProducts(filters, params.limit || 25);
+      return products;
+    } catch (err) {
+      return { error: `Erreur catalogue produits : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Créer une facture ───────────────────────
+
+const sellsy_create_invoice = {
+  name: "sellsy_create_invoice",
+  description:
+    "Crée une facture dans Sellsy liée à une société. RÈGLE : présenter récapitulatif et demander confirmation avant de créer.",
+  parameters: {
+    type: "object",
+    properties: {
+      subject: { type: "string", description: "Objet de la facture" },
+      company_id: { type: "string", description: "ID de la société cliente" },
+      contact_id: { type: "string", description: "ID du contact (optionnel)" },
+      note: { type: "string", description: "Note (optionnel)" },
+      due_date: { type: "string", description: "Date d'échéance YYYY-MM-DD (optionnel)" },
+      confirmed: { type: "boolean", description: "true = créer, false = récapitulatif" }
+    },
+    required: ["subject", "company_id"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        action: "create_invoice",
+        data: params,
+        message: `Récapitulatif facture à créer :\n- Objet : ${params.subject}\n- Société ID : ${params.company_id}\n- Échéance : ${params.due_date || "—"}\n\nDemande confirmation.`
+      };
+    }
+    try {
+      const payload = { subject: params.subject, company_id: Number(params.company_id) };
+      if (params.contact_id) payload.contact_id = Number(params.contact_id);
+      if (params.note) payload.note = params.note;
+      if (params.due_date) payload.due_date = params.due_date;
+      const result = await context.sellsyClient.createInvoice(payload);
+      return { status: "success", message: `Facture "${params.subject}" créée (ID: ${result.id}).`, data: result };
+    } catch (err) {
+      return { error: `Erreur lors de la création : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Envoyer une facture ─────────────────────
+
+const sellsy_send_invoice = {
+  name: "sellsy_send_invoice",
+  description:
+    "Envoie une facture Sellsy par email. RÈGLE : demander confirmation avant l'envoi.",
+  parameters: {
+    type: "object",
+    properties: {
+      invoice_id: { type: "string", description: "Identifiant de la facture" },
+      to_email: { type: "string", description: "Adresse email du destinataire" },
+      confirmed: { type: "boolean", description: "true = envoyer, false = afficher récap" }
+    },
+    required: ["invoice_id", "to_email"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return { status: "pending_confirmation", message: `Confirmer l'envoi de la facture #${params.invoice_id} à ${params.to_email} ?` };
+    }
+    try {
+      await context.sellsyClient.sendInvoice(params.invoice_id, { to: params.to_email });
+      return { status: "success", message: `Facture #${params.invoice_id} envoyée à ${params.to_email}.` };
+    } catch (err) {
+      return { error: `Erreur envoi facture : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Tâches ───────────────────────────────────
+
+const sellsy_get_tasks = {
+  name: "sellsy_get_tasks",
+  description:
+    "Liste les tâches dans Sellsy avec filtres optionnels (assignée, liée à une entité, statut).",
+  parameters: {
+    type: "object",
+    properties: {
+      limit: { type: "number", description: "Nombre max de résultats (défaut 25)" },
+      status: { type: "string", enum: ["todo", "in_progress", "done"], description: "Filtrer par statut (optionnel)" }
+    },
+    required: []
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    try {
+      const filters = {};
+      if (params.status) filters.status = params.status;
+      return await context.sellsyClient.getTasks(filters, params.limit || 25);
+    } catch (err) {
+      return { error: `Erreur lors de la récupération des tâches : ${err.message}` };
+    }
+  }
+};
+
+const sellsy_create_task = {
+  name: "sellsy_create_task",
+  description:
+    "Crée une tâche dans Sellsy, optionnellement liée à une société/contact/opportunité.",
+  parameters: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Titre de la tâche" },
+      description: { type: "string", description: "Description détaillée (optionnel)" },
+      due_date: { type: "string", description: "Date d'échéance ISO 8601 (optionnel)" },
+      priority: { type: "string", enum: ["low", "normal", "high"], description: "Priorité (optionnel)" },
+      entity_type: { type: "string", enum: ["company", "contact", "opportunity"], description: "Type d'entité liée (optionnel)" },
+      entity_id: { type: "string", description: "ID de l'entité liée (optionnel)" },
+      confirmed: { type: "boolean", description: "true = créer, false = récapitulatif" }
+    },
+    required: ["title"]
+  },
+  async execute(params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    if (params.confirmed !== true) {
+      return {
+        status: "pending_confirmation",
+        message: `Tâche à créer : "${params.title}"\n- Priorité : ${params.priority || "normal"}\n- Échéance : ${params.due_date || "—"}\n\nDemande confirmation.`
+      };
+    }
+    try {
+      const payload = { title: params.title };
+      if (params.description) payload.description = params.description;
+      if (params.due_date) payload.due_date = params.due_date;
+      if (params.priority) payload.priority = params.priority;
+      if (params.entity_type && params.entity_id) {
+        payload.related = [{ type: params.entity_type, id: Number(params.entity_id) }];
+      }
+      const result = await context.sellsyClient.createSellsyTask(payload);
+      return { status: "success", message: `Tâche "${params.title}" créée (ID: ${result.id}).`, data: result };
+    } catch (err) {
+      return { error: `Erreur création tâche : ${err.message}` };
+    }
+  }
+};
+
+// ── Sellsy — Stats CRM globales ───────────────────────
+
+const sellsy_get_crm_stats = {
+  name: "sellsy_get_crm_stats",
+  description:
+    "Retourne les statistiques globales du CRM Sellsy : nombre total de sociétés, contacts, opportunités, factures. Utile pour un bilan rapide.",
+  parameters: {
+    type: "object",
+    properties: {},
+    required: []
+  },
+  async execute(_params, context) {
+    if (!context.sellsyClient) return { error: "Sellsy non connecté" };
+    try {
+      return await context.sellsyClient.getCRMStats();
+    } catch (err) {
+      return { error: `Erreur stats CRM : ${err.message}` };
+    }
+  }
+};
+
+// ── Admin — Stats plateforme Sellsia ─────────────────
+
+const get_platform_stats = {
+  name: "get_platform_stats",
+  description:
+    "Interroge la base de données de la plateforme Sellsia pour retourner des métriques réelles : nombre d'utilisateurs, workspaces actifs, conversations, tokens consommés (global, par workspace, par utilisateur), agents actifs, providers IA configurés. RÉSERVÉ ADMIN. Utilise cet outil pour répondre à toute question sur l'état de la plateforme.",
+  parameters: {
+    type: "object",
+    properties: {
+      scope: {
+        type: "string",
+        enum: ["global", "users", "workspaces", "tokens", "agents", "conversations"],
+        description: "Scope de données : 'global' (tout), 'users', 'workspaces', 'tokens', 'agents', 'conversations'"
+      }
+    },
+    required: []
+  },
+  async execute(params, context) {
+    if (!context.isAdmin) {
+      return { error: "Accès refusé : cet outil est réservé aux administrateurs" };
+    }
+    try {
+      const { prisma } = await import("../../src/prisma.js");
+      const scope = params.scope || "global";
+
+      // ── Utilisateurs ───────────────────────────────
+      let usersData = null;
+      if (scope === "global" || scope === "users") {
+        const [totalUsers, byRole] = await Promise.all([
+          prisma.user.count(),
+          prisma.user.groupBy({ by: ["role"], _count: { id: true } })
+        ]);
+        usersData = {
+          total: totalUsers,
+          byRole: byRole.reduce((acc, r) => { acc[r.role] = r._count.id; return acc; }, {})
+        };
+      }
+
+      // ── Workspaces ─────────────────────────────────
+      let workspacesData = null;
+      if (scope === "global" || scope === "workspaces") {
+        const [total, active] = await Promise.all([
+          prisma.workspace.count(),
+          prisma.workspace.count({ where: { status: "active" } })
+        ]);
+        workspacesData = { total, active, inactive: total - active };
+      }
+
+      // ── Conversations ──────────────────────────────
+      let conversationsData = null;
+      if (scope === "global" || scope === "conversations") {
+        const [total, last7d, last30d] = await Promise.all([
+          prisma.conversation.count(),
+          prisma.conversation.count({ where: { startedAt: { gte: new Date(Date.now() - 7 * 86400000) } } }),
+          prisma.conversation.count({ where: { startedAt: { gte: new Date(Date.now() - 30 * 86400000) } } })
+        ]);
+        conversationsData = { total, last7Days: last7d, last30Days: last30d };
+      }
+
+      // ── Tokens ────────────────────────────────────
+      let tokensData = null;
+      if (scope === "global" || scope === "tokens") {
+        const globalRow = await prisma.$queryRaw`
+          SELECT COALESCE(SUM(tokens_input), 0)::int as input,
+                 COALESCE(SUM(tokens_output), 0)::int as output,
+                 COALESCE(SUM(tokens_input + tokens_output), 0)::int as total
+          FROM messages WHERE role = 'assistant'`;
+
+        const topUsers = await prisma.$queryRaw`
+          SELECT u.email, u.role,
+                 COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          JOIN users u ON u.id = c.user_id
+          WHERE m.role = 'assistant'
+          GROUP BY u.id, u.email, u.role
+          ORDER BY tokens DESC LIMIT 5`;
+
+        const topWorkspaces = await prisma.$queryRaw`
+          SELECT w.name, COALESCE(SUM(m.tokens_input + m.tokens_output), 0)::int as tokens
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          JOIN users u ON u.id = c.user_id
+          JOIN workspaces w ON w.id = u.workspace_id
+          WHERE m.role = 'assistant'
+          GROUP BY w.id, w.name
+          ORDER BY tokens DESC LIMIT 5`;
+
+        tokensData = {
+          global: {
+            input: Number(globalRow[0]?.input || 0),
+            output: Number(globalRow[0]?.output || 0),
+            total: Number(globalRow[0]?.total || 0)
+          },
+          topUsers: topUsers.map(r => ({ email: r.email, role: r.role, tokens: Number(r.tokens) })),
+          topWorkspaces: topWorkspaces.map(r => ({ workspace: r.name, tokens: Number(r.tokens) }))
+        };
+      }
+
+      // ── Agents ──────────────────────────────────
+      let agentsData = null;
+      if (scope === "global" || scope === "agents") {
+        const [total, active, global_agents] = await Promise.all([
+          prisma.agent.count(),
+          prisma.agent.count({ where: { isActive: true } }),
+          prisma.agent.count({ where: { workspaceId: null, isActive: true } })
+        ]);
+        agentsData = { total, active, globalPlatform: global_agents, workspaceScoped: total - global_agents };
+      }
+
+      return {
+        generatedAt: new Date().toISOString(),
+        scope,
+        users: usersData,
+        workspaces: workspacesData,
+        conversations: conversationsData,
+        tokens: tokensData,
+        agents: agentsData
+      };
+    } catch (err) {
+      console.error("[get_platform_stats] Error:", err);
+      return { error: `Erreur lors de la récupération des stats : ${err.message}` };
+    }
+  }
+};
+
 // ── File Processing Tools ─────────────────────────────
 
 const parse_pdf = {
@@ -1237,15 +1926,26 @@ const generate_report = {
 export const FILE_TOOLS = [parse_pdf, parse_csv, parse_excel, parse_word];
 
 export const SELLSY_TOOLS = [
+  // Read
   sellsy_get_company, sellsy_get_contact, sellsy_get_opportunity,
-  sellsy_search_companies, sellsy_get_pipeline, sellsy_get_activities,
-  sellsy_get_invoices, sellsy_get_quote, sellsy_get_opportunities,
-  sellsy_update_opportunity, sellsy_update_company, sellsy_create_note
+  sellsy_search_companies, sellsy_search_contacts, sellsy_get_pipeline,
+  sellsy_get_activities, sellsy_get_invoices, sellsy_get_quote,
+  sellsy_get_opportunities, sellsy_get_products, sellsy_get_tasks,
+  sellsy_get_crm_stats, sellsy_global_search,
+  // Write
+  sellsy_update_opportunity, sellsy_update_company, sellsy_update_contact,
+  sellsy_update_quote, sellsy_create_note,
+  sellsy_create_contact, sellsy_create_company, sellsy_create_opportunity,
+  sellsy_create_quote, sellsy_send_quote,
+  sellsy_create_invoice, sellsy_send_invoice,
+  sellsy_create_task,
 ];
 
 export const WEB_TOOLS = [web_search, web_scrape];
 
 export const INTERACTION_TOOLS = [ask_user, navigate_to];
+
+export const ADMIN_TOOLS = [get_platform_stats];
 
 // ── Tool Registry ─────────────────────────────────────
 
@@ -1255,19 +1955,18 @@ export const INTERACTION_TOOLS = [ask_user, navigate_to];
  */
 export const ALL_TOOLS = [
   // Sellsy CRM — read
-  sellsy_get_company,
-  sellsy_get_contact,
-  sellsy_get_opportunity,
-  sellsy_search_companies,
-  sellsy_get_pipeline,
-  sellsy_get_activities,
-  sellsy_get_invoices,
-  sellsy_get_quote,
-  sellsy_get_opportunities,
+  sellsy_get_company, sellsy_get_contact, sellsy_get_opportunity,
+  sellsy_search_companies, sellsy_search_contacts, sellsy_get_pipeline,
+  sellsy_get_activities, sellsy_get_invoices, sellsy_get_quote,
+  sellsy_get_opportunities, sellsy_get_products, sellsy_get_tasks,
+  sellsy_get_crm_stats, sellsy_global_search,
   // Sellsy CRM — write
-  sellsy_update_opportunity,
-  sellsy_update_company,
-  sellsy_create_note,
+  sellsy_update_opportunity, sellsy_update_company, sellsy_update_contact,
+  sellsy_update_quote, sellsy_create_note,
+  sellsy_create_contact, sellsy_create_company, sellsy_create_opportunity,
+  sellsy_create_quote, sellsy_send_quote,
+  sellsy_create_invoice, sellsy_send_invoice,
+  sellsy_create_task,
   // Interaction
   ask_user,
   navigate_to,
@@ -1281,15 +1980,17 @@ export const ALL_TOOLS = [
   parse_word,
   // Report generation
   generate_report,
-  // Reminders — planification de rappels par les agents IA
+  // Reminders
   schedule_reminder,
-  // Email — envoi d'emails par les agents IA
+  // Email
   send_email,
-  // Calendar — création d'événements calendrier
+  // Calendar
   create_calendar_event,
   // Phase 3 — CRM operations
   enrich_company_data,
   create_task,
+  // Admin platform stats
+  get_platform_stats,
 ];
 
 /**
@@ -1303,6 +2004,11 @@ export function getAvailableTools(context = {}, options = {}) {
     thinkingMode = "low"
   } = options;
 
+  // Admin platform stats — always first for admins
+  if (context.isAdmin) {
+    tools.push(get_platform_stats);
+  }
+
   // Interaction tools — always available
   tools.push(ask_user, navigate_to);
 
@@ -1310,19 +2016,18 @@ export function getAvailableTools(context = {}, options = {}) {
   if (context.sellsyClient) {
     tools.push(
       // Read
-      sellsy_get_company,
-      sellsy_get_contact,
-      sellsy_get_opportunity,
-      sellsy_search_companies,
-      sellsy_get_pipeline,
-      sellsy_get_activities,
-      sellsy_get_invoices,
-      sellsy_get_quote,
-      sellsy_get_opportunities,
+      sellsy_get_company, sellsy_get_contact, sellsy_get_opportunity,
+      sellsy_search_companies, sellsy_search_contacts, sellsy_get_pipeline,
+      sellsy_get_activities, sellsy_get_invoices, sellsy_get_quote,
+      sellsy_get_opportunities, sellsy_get_products, sellsy_get_tasks,
+      sellsy_get_crm_stats, sellsy_global_search,
       // Write
-      sellsy_update_opportunity,
-      sellsy_update_company,
-      sellsy_create_note
+      sellsy_update_opportunity, sellsy_update_company, sellsy_update_contact,
+      sellsy_update_quote, sellsy_create_note,
+      sellsy_create_contact, sellsy_create_company, sellsy_create_opportunity,
+      sellsy_create_quote, sellsy_send_quote,
+      sellsy_create_invoice, sellsy_send_invoice,
+      sellsy_create_task
     );
   }
 
@@ -1359,9 +2064,10 @@ export function getAvailableTools(context = {}, options = {}) {
     }
   }
 
-  // Low thinking mode keeps a constrained tool surface.
+  // Low thinking mode: keep constrained tool surface (but always include all sellsy + admin tools)
   if (thinkingMode === "low") {
     return tools.filter((tool) => {
+      if (tool.name === "get_platform_stats") return true;
       if (tool.name === "ask_user") return true;
       if (tool.name === "navigate_to") return true;
       if (tool.name === "web_search") return true;

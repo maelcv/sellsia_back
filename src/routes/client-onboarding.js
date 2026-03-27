@@ -6,6 +6,7 @@ import { prisma } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { sendEmail } from "../../ia_models/email/email-service.js";
 import { encryptSecret } from "../security/secrets.js";
+import { randomBytes } from "crypto";
 
 const router = Router();
 
@@ -151,7 +152,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
       });
 
       // 2. Create client user
-      const passwordHash = bcrypt.hashSync(Math.random().toString(36).slice(-10), 12);
+      const passwordHash = bcrypt.hashSync(randomBytes(16).toString('hex').slice(0, 16), 12);
       const clientUser = await tx.user.create({
         data: {
           email: validatedClient.email.toLowerCase(),
@@ -165,7 +166,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
       // 3. Create team members
       const teamMembers = [];
       for (const member of validatedTeam.members) {
-        const memberPassword = Math.random().toString(36).slice(-10);
+        const memberPassword = randomBytes(16).toString('hex').slice(0, 16);
         const memberHash = bcrypt.hashSync(memberPassword, 12);
 
         const teamMember = await tx.user.create({
@@ -247,7 +248,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
     const appUrl = process.env.APP_URL || "http://localhost:5173";
 
     // Send client welcome email with temp password
-    const clientTempPassword = Math.random().toString(36).slice(-10);
+    const clientTempPassword = randomBytes(16).toString('hex').slice(0, 16);
     const clientUpdateResult = await prisma.user.update({
       where: { id: result.client.id },
       data: {
@@ -389,7 +390,7 @@ router.post(
         }
       });
 
-      const passwordHash = bcrypt.hashSync(Math.random().toString(36).slice(-10), 12);
+      const passwordHash = bcrypt.hashSync(randomBytes(16).toString('hex').slice(0, 16), 12);
       const clientUser = await tx.user.create({
         data: {
           email: validatedClient.email.toLowerCase(),
@@ -402,7 +403,7 @@ router.post(
 
       const teamMembers = [];
       for (const member of validatedTeam.members) {
-        const memberPassword = Math.random().toString(36).slice(-10);
+        const memberPassword = randomBytes(16).toString('hex').slice(0, 16);
         const memberHash = bcrypt.hashSync(memberPassword, 12);
         const teamMember = await tx.user.create({
           data: {
@@ -492,7 +493,7 @@ router.post(
 
     // Send invitation emails
     const appUrl = process.env.APP_URL || "http://localhost:5173";
-    const clientTempPassword = Math.random().toString(36).slice(-10);
+    const clientTempPassword = randomBytes(16).toString('hex').slice(0, 16);
     await prisma.user.update({
       where: { id: result.client.id },
       data: { passwordHash: bcrypt.hashSync(clientTempPassword, 12) }

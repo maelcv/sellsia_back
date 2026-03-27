@@ -19,6 +19,7 @@ import { TaskListSubAgent } from "./task-list.js";
 import { TaskCreatorSubAgent } from "./task-creator.js";
 import { ImageReaderSubAgent } from "./image-reader.js";
 import { AdminPlatformSubAgent } from "./admin-platform.js";
+import { DynamicSubAgent } from "./dynamic-sub-agent.js";
 
 /**
  * Execute the sub-agent pipeline.
@@ -106,6 +107,18 @@ export async function executePipeline({
       currentContext = _enrichContext(currentContext, webResults.results, "Informations web");
       totalTokensInput += webResults.tokensInput;
       totalTokensOutput += webResults.tokensOutput;
+      subAgentCount += tasksToRun.length;
+    }
+
+    // Phase 5: DB-defined custom sub-agents (type starts with "db:")
+    const dbTasks = plan.filter((t) => typeof t.type === "string" && t.type.startsWith("db:"));
+    if (dbTasks.length > 0 && subAgentCount < maxSubAgents) {
+      const tasksToRun = dbTasks.slice(0, maxSubAgents - subAgentCount);
+      const dbResults = await _runDynamicSubAgentPhase(tasksToRun, provider, toolContext, currentContext, thinkingMode, onEvent, toolContext._workspaceId || null);
+      allResults.push(...dbResults.results);
+      currentContext = _enrichContext(currentContext, dbResults.results, "Sous-agents personnalisés");
+      totalTokensInput += dbResults.tokensInput;
+      totalTokensOutput += dbResults.tokensOutput;
       subAgentCount += tasksToRun.length;
     }
 
@@ -234,6 +247,85 @@ async function _runSubAgentPhase(type, tasks, provider, toolContext, currentCont
 }
 
 /**
+ * Run DB-defined dynamic sub-agents in parallel.
+ * Each task must have type = "db:<subAgentDefinitionId>"
+ */
+async function _runDynamicSubAgentPhase(tasks, provider, toolContext, currentContext, thinkingMode, onEvent, workspaceId) {
+  let tokensInput = 0;
+  let tokensOutput = 0;
+
+  const promises = tasks.map(async (task, index) => {
+    const definitionId = task.type.slice(3); // strip "db:" prefix
+    const agentId = `db-${definitionId}-${index}`;
+
+    const subAgent = await DynamicSubAgent.fromId(definitionId, provider, workspaceId);
+
+    if (!subAgent) {
+      console.warn(`[Pipeline] DynamicSubAgent not found or blocked: ${definitionId}`);
+      return {
+        demande: task.instruction,
+        contexte: currentContext,
+        think: `Sous-agent ${definitionId} introuvable ou accès refusé.`,
+        output: "",
+        sources: [],
+        tokensInput: 0,
+        tokensOutput: 0,
+      };
+    }
+
+    const agentName = subAgent.definition.name;
+
+    if (onEvent) {
+      onEvent({
+        type: "sub_agent_start",
+        agentId,
+        agentName,
+        subAgentType: task.type,
+        task: task.instruction?.slice(0, 80) || null,
+        operation: "read",
+      });
+    }
+
+    try {
+      const result = await subAgent.execute({
+        demande: task.instruction,
+        contexte: currentContext,
+        toolContext,
+        thinkingMode,
+        onEvent: onEvent
+          ? (evt) => {
+              let mappedType = evt.type;
+              if (evt.type === "tool_call") mappedType = "sub_agent_tool_call";
+              if (evt.type === "tool_result") mappedType = "sub_agent_tool_result";
+              onEvent({ ...evt, type: mappedType, agentId, agentName });
+            }
+          : null,
+      });
+
+      if (onEvent) {
+        onEvent({ type: "sub_agent_end", agentId, agentName, subAgentType: task.type, success: true, summary: result.output?.slice(0, 200) || "" });
+      }
+
+      return result;
+    } catch (error) {
+      console.error(`[Pipeline] DynamicSubAgent ${agentId} error:`, error.message);
+      if (onEvent) {
+        onEvent({ type: "sub_agent_end", agentId, agentName, subAgentType: task.type, success: false, error: error.message });
+      }
+      return { demande: task.instruction, contexte: currentContext, think: `Erreur: ${error.message}`, output: "", sources: [], tokensInput: 0, tokensOutput: 0 };
+    }
+  });
+
+  const results = await Promise.all(promises);
+  for (const r of results) {
+    tokensInput += r.tokensInput || 0;
+    tokensOutput += r.tokensOutput || 0;
+  }
+
+  return { results, tokensInput, tokensOutput };
+}
+
+/**
  * Enrich the global context with sub-agent results.
  */
 function _enrichContext(currentContext, results, sectionTitle) {
@@ -273,6 +365,8 @@ function _getSubAgentLabel(type, index) {
     "image-reader": "Analyse Image",
     "admin-platform": "Statistiques Plateforme"
   };
+  // DB dynamic sub-agents: label is resolved at runtime (see _runDynamicSubAgentPhase)
+  if (type?.startsWith("db:")) return `Sous-agent personnalisé`;
   const base = labels[type] || type;
   return index > 0 ? `${base} #${index + 1}` : base;
 }
