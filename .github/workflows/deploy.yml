@@ -28,7 +28,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "."
-          target: "/var/www/mon_api"
+          target: "/var/www/ceremia/api"
 
       - name: 🔄 Redémarrage de l'API avec PM2
         uses: appleboy/ssh-action@master
@@ -37,7 +37,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /var/www/mon_api
+            cd /var/www/ceremia/api
             npm install --production
             # Si l'app existe, on restart, sinon on la crée
             pm2 restart api-express || pm2 start index.js --name "api-express"
