@@ -499,12 +499,16 @@ OBLIGATOIRE :
 
     const formattedTools = this._formatToolsForProvider(tools);
 
-    // Build initial messages — filter out invalid assistant messages (empty
-    // content without tool_calls) that Mistral/OpenAI would reject.
+    // Build initial messages.
+    // Empty assistant messages (from failed previous turns) cause Mistral 400.
+    // Replace them with a placeholder so the conversation alternation stays valid.
     const messages = [
-      ...conversationHistory
-        .map((m) => ({ role: m.role, content: m.content || "" }))
-        .filter((m) => m.role !== "assistant" || m.content.trim() !== ""),
+      ...conversationHistory.map((m) => ({
+        role: m.role,
+        content: m.role === "assistant" && !m.content?.trim()
+          ? "(Réponse non disponible)"
+          : (m.content || "")
+      })),
       { role: "user", content: userMessage }
     ];
 
