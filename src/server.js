@@ -198,6 +198,28 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
+// ── Global Error Handler (Prisma, Database, etc.) ──
+app.use((err, req, res, next) => {
+  console.error("[ERROR]", err?.code || err?.name || "Unknown", err.message);
+
+  // Prisma errors
+  if (err?.code === "P2002") {
+    return res.status(409).json({ error: "Unique constraint violation" });
+  }
+  if (err?.code === "P2025") {
+    return res.status(404).json({ error: "Record not found" });
+  }
+  if (err?.message?.includes("Tenant or user not found")) {
+    return res.status(403).json({ error: "Access denied: insufficient permissions" });
+  }
+
+  // Default 500 error
+  return res.status(500).json({
+    error: "Internal Server Error",
+    message: process.env.NODE_ENV === "development" ? err.message : "An unexpected error occurred"
+  });
+});
+
 app.listen(config.port, () => {
   console.log(`Sellsia dashboard API listening on http://localhost:${config.port}`);
   // Démarrer tous les workers après que le serveur est prêt
