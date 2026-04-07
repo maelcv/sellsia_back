@@ -12,8 +12,16 @@ export const prisma = new PrismaClient({
 // ── Helper functions ──
 
 export async function hasAnyUsers() {
-  const count = await prisma.user.count();
-  return count > 0;
+  try {
+    const count = await prisma.user.count();
+    return count > 0;
+  } catch (err) {
+    // If RLS policies prevent access due to missing tenant/user context, assume no users exist
+    if (err?.message?.includes("Tenant or user not found") || err?.message?.includes("FATAL")) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 export async function logAudit(actorUserId, action, details = null) {

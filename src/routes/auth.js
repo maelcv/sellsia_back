@@ -78,15 +78,32 @@ const onboardSchema = z.object({
 });
 
 router.get("/bootstrap-status", async (_req, res) => {
-  const hasUsers = await hasAnyUsers();
-  const setupSetting = await prisma.systemSetting.findUnique({ where: { key: "setup_completed" } });
-  const setupComplete = setupSetting?.value === "true";
+  try {
+    const hasUsers = await hasAnyUsers();
+    let setupComplete = false;
+    try {
+      const setupSetting = await prisma.systemSetting.findUnique({ where: { key: "setup_completed" } });
+      setupComplete = setupSetting?.value === "true";
+    } catch (err) {
+      // Skip if RLS policies prevent access
+      if (!err?.message?.includes("Tenant or user not found") && !err?.message?.includes("FATAL")) {
+        throw err;
+      }
+    }
 
-  return res.json({ 
-    hasUsers, 
-    setupComplete,
-    needsOnboarding: !hasUsers || !setupComplete 
-  });
+    return res.json({
+      hasUsers,
+      setupComplete,
+      needsOnboarding: !hasUsers || !setupComplete
+    });
+  } catch (err) {
+    console.error("[auth] bootstrap-status error:", err.message);
+    return res.json({
+      hasUsers: false,
+      setupComplete: false,
+      needsOnboarding: true
+    });
+  }
 });
 
 router.post("/onboard", authRateLimit, async (req, res) => {

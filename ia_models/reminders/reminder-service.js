@@ -94,19 +94,28 @@ function isTransientError(err) {
  * Appelée toutes les minutes par le cron.
  */
 async function processReminders() {
-  // Récupère tous les rappels PENDING dont l'heure est passée (en UTC)
-  const dueReminders = await prisma.reminder.findMany({
-    where: {
-      status: "PENDING",
-      scheduledAt: {
-        lte: new Date(), // <= maintenant (UTC)
+  let dueReminders;
+  try {
+    // Récupère tous les rappels PENDING dont l'heure est passée (en UTC)
+    dueReminders = await prisma.reminder.findMany({
+      where: {
+        status: "PENDING",
+        scheduledAt: {
+          lte: new Date(), // <= maintenant (UTC)
+        },
       },
-    },
-    take: BATCH_SIZE,
-    orderBy: {
-      scheduledAt: "asc", // Les plus anciens en premier
-    },
-  });
+      take: BATCH_SIZE,
+      orderBy: {
+        scheduledAt: "asc", // Les plus anciens en premier
+      },
+    });
+  } catch (err) {
+    // Skip if RLS policies prevent access due to missing tenant/user context
+    if (err?.message?.includes("Tenant or user not found") || err?.message?.includes("FATAL")) {
+      return;
+    }
+    throw err;
+  }
 
   if (dueReminders.length === 0) return; // Rien à faire
 
