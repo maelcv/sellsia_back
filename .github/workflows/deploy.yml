@@ -41,6 +41,7 @@ jobs:
             cd /var/www/ceremia/api
             npm install --production
             npm install -g pm2
+            source ~/.bashrc 
             # Si l'app existe, on restart, sinon on la crée
             pm2 restart api-express || pm2 start index.js --name "api-express"
             pm2 save
