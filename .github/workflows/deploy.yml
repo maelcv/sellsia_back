@@ -37,11 +37,12 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            source ~/.bashrc
             cd /var/www/ceremia/api
+            npm -v
+            node -v
             npm install --production
             npm install -g pm2
             source ~/.bashrc 
             # Si l'app existe, on restart, sinon on la crée
-            pm2 restart api-express || pm2 start index.js --name "api-express"
-            pm2 save
+            npx pm2 restart api-express || npx pm2 start index.js --name "api-express"
+            npx pm2 save
