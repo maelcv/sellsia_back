@@ -808,11 +808,13 @@ OBLIGATOIRE :
         }
 
         const content = result.content || "";
-        // Yield content progressively (word-by-word for natural feel)
-        const words = content.split(/(\s+)/);
-        for (const word of words) {
-          if (word) {
-            yield { chunk: word, done: false };
+        // Yield content in sentence-sized chunks. Word-by-word floods SSE buffers
+        // and causes the client parser to drop events; sentence batches keep the
+        // streaming feel while staying parseable.
+        const sentences = content.split(/(?<=[.!?\n])\s+/);
+        for (const sentence of sentences) {
+          if (sentence) {
+            yield { chunk: sentence + " ", done: false };
           }
         }
         yield { chunk: "", done: true, toolsUsed, sourcesUsed };

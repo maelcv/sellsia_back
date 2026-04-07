@@ -6,6 +6,175 @@
 import { prisma } from "../../src/prisma.js";
 import crypto from "crypto";
 
+function safeParseJson(input) {
+  try {
+    return JSON.parse(input || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function buildActionsFromReasoningSteps(steps = []) {
+  const actions = [];
+  const subAgentById = new Map();
+
+  for (const step of steps) {
+    const data = safeParseJson(step.dataJson);
+
+    if (step.stepType === "classification") {
+      let action = actions.find((a) => a.type === "orchestrator");
+      if (!action) {
+        action = {
+          id: `orch-${step.id}`,
+          type: "orchestrator",
+          status: "done",
+          thinkings: []
+        };
+        actions.push(action);
+      }
+      if (data.orchestratorThinking) action.thinkings.push(String(data.orchestratorThinking));
+      continue;
+    }
+
+    if (step.stepType === "agent_thinking") {
+      let action = actions.find((a) => a.type === "agent_thinking");
+      if (!action) {
+        action = {
+          id: `athink-${step.id}`,
+          type: "agent_thinking",
+          status: "done",
+          thinkings: []
+        };
+        actions.push(action);
+      }
+      if (data.content) action.thinkings.push(String(data.content));
+      continue;
+    }
+
+    if (step.stepType === "agent_plan") {
+      actions.push({
+        id: `aplan-${step.id}`,
+        type: "agent_plan",
+        status: "done",
+        plan: Array.isArray(data.plan) ? data.plan : []
+      });
+      continue;
+    }
+
+    if (step.stepType === "agent_pre_response_thinking") {
+      actions.push({
+        id: `apre-${step.id}`,
+        type: "agent_pre_response",
+        status: "done",
+        content: data.content ? String(data.content) : ""
+      });
+      continue;
+    }
+
+    if (step.stepType === "sub_agent_start") {
+      const agentId = step.agentId || `sub-${step.id}`;
+      const action = {
+        id: `sa-${step.id}`,
+        type: "sub_agent",
+        agentId,
+        agentName: data.agentName || step.agentId || "Sous-agent",
+        status: "done",
+        task: data.task || null,
+        tools: [],
+        thinkings: []
+      };
+      subAgentById.set(agentId, action);
+      actions.push(action);
+      continue;
+    }
+
+    if (step.stepType === "sub_agent_thinking") {
+      const agentId = step.agentId || "agent-main";
+      let action = subAgentById.get(agentId);
+      if (!action) {
+        action = {
+          id: `sa-fallback-${step.id}`,
+          type: "sub_agent",
+          agentId,
+          agentName: data.agentName || "Agent",
+          status: "done",
+          task: null,
+          tools: [],
+          thinkings: []
+        };
+        subAgentById.set(agentId, action);
+        actions.push(action);
+      }
+      if (data.content) action.thinkings.push(String(data.content));
+      continue;
+    }
+
+    if (step.stepType === "tool_call" || step.stepType === "tool_result") {
+      const agentId = step.agentId || "agent-main";
+      let action = subAgentById.get(agentId);
+      if (!action) {
+        action = {
+          id: `sa-tools-${step.id}`,
+          type: "sub_agent",
+          agentId,
+          agentName: agentId === "agent-main" ? "Agent" : agentId,
+          status: "done",
+          task: null,
+          tools: [],
+          thinkings: []
+        };
+        subAgentById.set(agentId, action);
+        actions.push(action);
+      }
+
+      action.tools = action.tools || [];
+
+      if (step.stepType === "tool_call") {
+        action.tools.push({
+          id: `tool-${step.id}`,
+          toolName: data.toolName || "tool",
+          operation: "call",
+          entityType: data.entityType,
+          status: "active",
+          iteration: data.iteration
+        });
+      } else {
+        const toolName = data.toolName;
+        const pending = [...action.tools].reverse().find((t) => t.status === "active" && (!toolName || t.toolName === toolName));
+        if (pending) {
+          pending.status = data.success === false ? "error" : "done";
+          pending.success = data.success !== false;
+        } else {
+          action.tools.push({
+            id: `toolr-${step.id}`,
+            toolName: toolName || "tool",
+            operation: "result",
+            entityType: data.entityType,
+            status: data.success === false ? "error" : "done",
+            success: data.success !== false,
+            iteration: data.iteration
+          });
+        }
+      }
+      continue;
+    }
+
+    if (step.stepType === "sub_agent_end") {
+      const agentId = step.agentId || "agent-main";
+      const action = subAgentById.get(agentId);
+      if (action) {
+        action.status = data.success === false ? "error" : "done";
+      }
+    }
+  }
+
+  for (const action of actions) {
+    if (action.status === "active") action.status = "done";
+  }
+
+  return actions;
+}
+
 /**
  * Crée une nouvelle conversation.
  * @param {number} userId
@@ -164,6 +333,33 @@ export async function getConversationMessages(conversationId, userId) {
     orderBy: { createdAt: "asc" }
   });
 
+  const messageIds = rows.map((row) => row.id);
+  const reasoningRows = messageIds.length > 0
+    ? await prisma.reasoningStep.findMany({
+        where: {
+          conversationId,
+          messageId: { in: messageIds }
+        },
+        select: {
+          id: true,
+          messageId: true,
+          stepType: true,
+          agentId: true,
+          dataJson: true,
+          createdAt: true
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+      })
+    : [];
+
+  const reasoningByMessageId = new Map();
+  for (const step of reasoningRows) {
+    if (!reasoningByMessageId.has(step.messageId)) {
+      reasoningByMessageId.set(step.messageId, []);
+    }
+    reasoningByMessageId.get(step.messageId).push(step);
+  }
+
   return rows.map((row) => {
     let sourcesUsed = null;
     if (row.sourcesJson) {
@@ -173,6 +369,10 @@ export async function getConversationMessages(conversationId, userId) {
         sourcesUsed = null;
       }
     }
+
+    const actions = row.role === "assistant"
+      ? buildActionsFromReasoningSteps(reasoningByMessageId.get(row.id) || [])
+      : [];
 
     return {
       id: row.id,
@@ -184,7 +384,8 @@ export async function getConversationMessages(conversationId, userId) {
       provider: row.provider,
       model: row.model,
       createdAt: row.createdAt,
-      sourcesUsed
+      sourcesUsed,
+      actions
     };
   });
 }

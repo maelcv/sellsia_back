@@ -4,8 +4,83 @@ import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security/secrets.js";
+import { SellsyClient } from "../../ia_models/sellsy/client.js";
 
 const router = express.Router();
+
+async function testIntegrationConnection(integrationType, credentials = {}, protocol) {
+  const normalizedType = String(integrationType || "").toLowerCase();
+
+  if (normalizedType === "smtp custom") {
+    if (!credentials?.email || !credentials?.password) {
+      throw new Error("Email et mot de passe requis");
+    }
+    if (!String(credentials.email).includes("@")) {
+      throw new Error("Email invalide");
+    }
+    return { success: true, message: "Connexion valide" };
+  }
+
+  if (normalizedType.includes("sellsy")) {
+    const token = credentials.token || credentials.apiToken || credentials.api_token || credentials.accessToken || credentials.access_token;
+    const tokenKey = credentials.key || credentials.apiSecret || credentials.api_secret;
+    const clientId = credentials.clientId || credentials.client_id;
+    const clientSecret = credentials.clientSecret || credentials.client_secret;
+    const refreshToken = credentials.refreshToken || credentials.refresh_token;
+    const accessToken = credentials.accessToken || credentials.access_token;
+
+    let sellsyCreds = null;
+    if (clientId && clientSecret) {
+      sellsyCreds = {
+        type: "oauth",
+        clientId,
+        clientSecret,
+        ...(refreshToken && { refreshToken }),
+        ...(accessToken && { accessToken }),
+      };
+    } else if (token) {
+      sellsyCreds = { type: "token", token };
+    }
+
+    if (!sellsyCreds) {
+      throw new Error("Identifiants Sellsy incomplets (token ou OAuth requis)");
+    }
+
+    try {
+      const client = new SellsyClient(sellsyCreds);
+      // Lightweight call to validate auth.
+      await client.getOpportunities({}, 1);
+      return { success: true, message: "Connexion Sellsy valide" };
+    } catch (err) {
+      const msg = String(err?.message || "Erreur de connexion Sellsy");
+      // Fallback for "Token + Key" legacy mode: try OAuth client_credentials.
+      if (token && tokenKey) {
+        try {
+          const r = await fetch("https://login.sellsy.com/oauth2/access-tokens", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              grant_type: "client_credentials",
+              client_id: token,
+              client_secret: tokenKey,
+            }),
+          });
+          if (r.ok) {
+            return { success: true, message: "Connexion Sellsy valide (mode Token + Cle API)" };
+          }
+        } catch {
+          // Continue with canonical error handling below.
+        }
+      }
+      if (msg.includes("401") || msg.toLowerCase().includes("revoked") || msg.toLowerCase().includes("unauthorized")) {
+        throw new Error("Sellsy API 401: Access token has been revoked");
+      }
+      throw err;
+    }
+  }
+
+  return { success: true, message: "Type d'intégration non testé spécifiquement" };
+}
 
 // ====== Admin Routes: IntegrationType CRUD ======
 
@@ -537,6 +612,49 @@ router.post(
 );
 
 /**
+ * POST /api/users/me/integrations/:id/test
+ * User: Test saved personal integration credentials
+ */
+router.post(
+  "/me/:id/test",
+  requireAuth,
+  requireWorkspaceContext,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const integration = await prisma.userIntegration.findUnique({
+        where: { id },
+        include: { integrationType: true },
+      });
+
+      if (!integration) {
+        return res.status(404).json({ error: "Integration not found" });
+      }
+
+      if (integration.userId !== req.user.sub && req.user.role !== "admin") {
+        return res.status(403).json({ error: "Not authorized" });
+      }
+
+      let credentials = {};
+      try {
+        credentials = JSON.parse(decryptSecret(integration.encryptedCredentials));
+      } catch {
+        return res.status(400).json({ error: "Credentials invalides" });
+      }
+
+      const result = await testIntegrationConnection(integration.integrationType.name, credentials);
+      return res.json(result);
+    } catch (err) {
+      console.error("[POST /users/me/integrations/:id/test] Error:", err);
+      const message = err?.message || "Erreur lors du test";
+      const status = message.includes("401") ? 400 : 500;
+      return res.status(status).json({ error: message });
+    }
+  }
+);
+
+/**
  * DELETE /api/users/me/integrations/:id
  * User: Unlink personal integration
  */
@@ -774,39 +892,16 @@ router.post("/test-connection", requireAuth, async (req, res) => {
       credentials: z.record(z.any()).optional(),
       protocol: z.string().optional(),
     }).parse(req.body);
-
-    // Validate SMTP configuration
-    if (integrationType === "SMTP Custom") {
-      if (config) {
-        // Testing workspace config
-        if (!config.smtpHost || !config.smtpPort) {
-          return res.status(400).json({ error: "Hôte et port SMTP requis" });
-        }
-      }
-
-      if (credentials) {
-        // Testing user auth
-        if (!credentials.email || !credentials.password) {
-          return res.status(400).json({ error: "Email et mot de passe requis" });
-        }
-
-        // In a real scenario, you would validate credentials here
-        // For now, we just do basic validation
-        if (!credentials.email.includes("@")) {
-          return res.status(400).json({ error: "Email invalide" });
-        }
-      }
-    }
-
-    // For other integration types, add similar validations as needed
-
-    res.json({ success: true, message: "Connexion valide" });
+    const result = await testIntegrationConnection(integrationType, credentials || {}, protocol);
+    res.json(result);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "Données invalides", issues: err.errors });
     }
     console.error("[POST /test-connection] Error:", err);
-    res.status(500).json({ error: "Erreur lors du test de connexion" });
+    const message = err?.message || "Erreur lors du test de connexion";
+    const status = message.includes("401") ? 400 : 500;
+    res.status(status).json({ error: message });
   }
 });
 

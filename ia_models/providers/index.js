@@ -215,10 +215,38 @@ export async function getSellsyCredentials(userId) {
   // Helper: extract token or OAuth credentials from a decrypted credentials object.
   // Supports multiple field name conventions used by different frontend versions.
   function extractCreds(creds) {
-    const token = creds.token || creds.accessToken || creds.access_token || creds.apiToken || creds.api_token || creds.apiKey || creds.api_key;
-    if (token) return { token, type: "token" };
+    const token = creds.token || creds.apiToken || creds.api_token || creds.apiKey || creds.api_key;
+    const key = creds.key || creds.apiSecret || creds.api_secret;
     const clientId = creds.clientId || creds.client_id;
     const clientSecret = creds.clientSecret || creds.client_secret || creds.clientKey || creds.client_key;
+
+    const refreshToken = creds.refreshToken || creds.refresh_token;
+    const accessToken = creds.accessToken || creds.access_token;
+
+    // Prefer OAuth bundle when available, otherwise OAuth cannot refresh and will fail silently later.
+    if (clientId && clientSecret && (refreshToken || accessToken)) {
+      return {
+        type: "oauth",
+        clientId,
+        clientSecret,
+        ...(refreshToken && { refreshToken }),
+        ...(accessToken && { accessToken }),
+      };
+    }
+
+    // Legacy "Token + Key" mode can behave like OAuth client credentials.
+    if (token && key) {
+      return {
+        type: "oauth",
+        clientId: token,
+        clientSecret: key,
+      };
+    }
+
+    const plainToken = token || accessToken;
+    if (plainToken) return { token: plainToken, type: "token" };
+
+    // Last resort: OAuth client credentials alone (legacy setup).
     if (clientId && clientSecret) return { clientId, clientSecret, type: "oauth" };
     return null;
   }
@@ -233,6 +261,7 @@ export async function getSellsyCredentials(userId) {
     WHERE ui.user_id = ${userId}
       AND LOWER(it.name) LIKE '%sellsy%'
       AND it.category = 'crm'
+    ORDER BY ui.linked_at DESC
     LIMIT 1
   `;
 

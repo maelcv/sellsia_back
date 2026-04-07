@@ -47,8 +47,14 @@ function normalizeEstimateTotal(estimate) {
 export class SellsyClient {
   constructor(credentials) {
     this.credentials = credentials;
-    this._accessToken = credentials.type === "token" ? credentials.token : null;
-    this._tokenExpiry = 0;
+    if (credentials.type === "token") {
+      this._accessToken = credentials.token;
+      this._tokenExpiry = Number.MAX_SAFE_INTEGER;
+    } else {
+      this._accessToken = credentials.accessToken || credentials.access_token || null;
+      // If expiry is unknown but access token exists, assume short-lived validity window.
+      this._tokenExpiry = this._accessToken ? Date.now() + 50 * 60 * 1000 : 0;
+    }
   }
 
   /**
@@ -67,6 +73,32 @@ export class SellsyClient {
     }
 
     const refreshToken = this.credentials.refreshToken || this.credentials.refresh_token;
+    // If we only have an access token (no refresh token), try using it as-is.
+    if (!refreshToken && this._accessToken) {
+      return this._accessToken;
+    }
+
+    // Legacy fallback: some Sellsy setups use client_id/client_secret as direct credentials
+    // and rely on client_credentials grant.
+    if (!refreshToken && this.credentials.clientId && this.credentials.clientSecret) {
+      const clientCredentialsResponse = await fetch("https://login.sellsy.com/oauth2/access-tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: this.credentials.clientId,
+          client_secret: this.credentials.clientSecret,
+        }),
+      });
+
+      if (clientCredentialsResponse.ok) {
+        const data = await clientCredentialsResponse.json();
+        this._accessToken = data.access_token;
+        this._tokenExpiry = Date.now() + ((data.expires_in || 3600) - 60) * 1000;
+        return this._accessToken;
+      }
+    }
+
     if (!refreshToken) {
       throw new Error(
         "Sellsy OAuth: no refresh token available. " +
@@ -96,6 +128,7 @@ export class SellsyClient {
     const data = await response.json();
     this._accessToken = data.access_token;
     this._tokenExpiry = Date.now() + ((data.expires_in || 3600) - 60) * 1000;
+    this.credentials.accessToken = data.access_token;
     // Update stored refresh token if a new one was issued
     if (data.refresh_token) {
       this.credentials.refreshToken = data.refresh_token;

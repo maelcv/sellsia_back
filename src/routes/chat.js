@@ -20,6 +20,7 @@ import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { chatRateLimit } from "../middleware/security.js";
+import { decryptSecret } from "../security/secrets.js";
 import { getProviderForUser, getActiveProviderCode } from "../../ia_models/providers/index.js";
 import { orchestrate, orchestrateStream } from "../../ia_models/orchestrator/dispatcher.js";
 import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
@@ -343,6 +344,64 @@ function estimateTokens(text = "") {
 
 async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tenantId = null, features = {}, userRole = null, agentId = null) {
   const sellsyClient = await getSellsyClient(userId);
+
+  const resolveWebSearchApiKey = async () => {
+    const extractApiKey = (rawEncrypted, source) => {
+      if (!rawEncrypted) return null;
+      try {
+        const parsed = JSON.parse(decryptSecret(rawEncrypted));
+        const key = parsed.tavilyApiKey || parsed.tavily_key || parsed.apiKey || parsed.api_key || parsed.token;
+        if (key) {
+          console.log(`[chat] Using web search API key from ${source}`);
+          return key;
+        }
+      } catch (err) {
+        console.warn(`[chat] Failed to decrypt ${source} web integration credentials:`, err.message);
+      }
+      return null;
+    };
+
+    try {
+      const userInt = await prisma.$queryRaw`
+        SELECT ui.encrypted_credentials
+        FROM user_integrations ui
+        JOIN integration_types it ON it.id = ui.integration_type_id
+        WHERE ui.user_id = ${userId}
+          AND (
+            LOWER(it.name) LIKE '%tavily%'
+            OR LOWER(it.name) LIKE '%web%'
+            OR LOWER(it.name) LIKE '%custom api%'
+          )
+        ORDER BY ui.linked_at DESC
+        LIMIT 1
+      `;
+      const userKey = extractApiKey(userInt[0]?.encrypted_credentials, `user ${userId}`);
+      if (userKey) return userKey;
+
+      if (!tenantId) return null;
+
+      const wsInt = await prisma.$queryRaw`
+        SELECT wi.encrypted_config
+        FROM workspace_integrations wi
+        JOIN integration_types it ON it.id = wi.integration_type_id
+        WHERE wi.workspace_id = ${tenantId}
+          AND wi.is_enabled = true
+          AND (
+            LOWER(it.name) LIKE '%tavily%'
+            OR LOWER(it.name) LIKE '%web%'
+            OR LOWER(it.name) LIKE '%custom api%'
+          )
+        ORDER BY wi.configured_at DESC
+        LIMIT 1
+      `;
+      return extractApiKey(wsInt[0]?.encrypted_config, `workspace ${tenantId}`);
+    } catch (err) {
+      console.warn("[chat] resolveWebSearchApiKey failed, fallback to env key:", err.message);
+      return null;
+    }
+  };
+
+  const resolvedWebApiKey = await resolveWebSearchApiKey();
   const referenceSitesByTopic = {
     company: ["pappers.fr", "societe.com", "wikipedia.org"],
     location: ["google.com/maps", "wikipedia.org"],
@@ -363,7 +422,7 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tena
     isAdmin,          // Flag admin pour get_platform_stats
     agentId,          // ID agent pour schedule_reminder
     sellsyClient,
-    tavilyApiKey: config.tavilyApiKey || null,
+    tavilyApiKey: resolvedWebApiKey || config.tavilyApiKey || null,
     uploadedFiles: uploadedFiles || [],
     thinkingMode: toolPrefs.thinking || "low",
     priorityDomains: selectedReferenceSites,
@@ -1027,12 +1086,21 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       }
     }
 
-    // Clean up heartbeat interval
-    clearInterval(heartbeatInterval);
-
     // Normaliser une seule fois et réutiliser
     const normalizedSources = normalizeSourcesUsed(streamSourcesUsed, pageContext, uploadedFiles);
     res.write(`data: ${JSON.stringify({ type: "tools", toolsUsed: streamToolsUsed, sourcesUsed: normalizedSources })}\n\n`);
+
+    // Guarantee a visible assistant response even when provider/tools produced no text.
+    if (!String(fullContent || "").trim()) {
+      const failedTool = (streamToolsUsed || []).find((t) => t?.success === false);
+      if (failedTool?.name?.startsWith("sellsy_")) {
+        fullContent = "Je n'ai pas pu recuperer vos donnees Sellsy avec la connexion actuelle. Verifiez votre integration Sellsy (token revoque ou expire), puis reconnectez-la depuis votre profil.";
+      } else if (failedTool) {
+        fullContent = `Je n'ai pas pu terminer la recuperation des donnees (outil en erreur: ${failedTool.name}). Veuillez verifier vos integrations et reessayer.`;
+      } else {
+        fullContent = "Je n'ai pas pu produire une reponse complete cette fois. Veuillez reessayer.";
+      }
+    }
 
     // 8. Save the complete message
     const tokensInput = estimateTokens(message) + estimateTokens(JSON.stringify(historyForLLM));
@@ -1114,9 +1182,6 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     }
     res.end();
   } catch (error) {
-    // Clean up heartbeat interval even on error
-    clearInterval(heartbeatInterval);
-
     console.error("[Chat Stream] Error:", error);
     if (!clientDisconnected && res.writable) {
       res.write(`data: ${JSON.stringify({ type: "error", error: error.message })}\n\n`);
@@ -1124,6 +1189,9 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     if (res.writable) {
       res.end();
     }
+  } finally {
+    // Always clean up heartbeat to avoid zombie timers leaking memory.
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
   }
 });
 
