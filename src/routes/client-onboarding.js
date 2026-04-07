@@ -257,22 +257,28 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
     });
 
     try {
+      const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+      const html = renderEmailTemplate({
+        title: "Bienvenue sur Sellsia",
+        content: `
+          <p>Bienvenue ${validatedClient.firstName}!</p>
+          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Sellsia.</p>
+          <p><strong>Accès initial :</strong></p>
+          <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
+            <li>Email : <strong>${result.client.email}</strong></li>
+            <li>Mot de passe temporaire : <strong>${clientTempPassword}</strong></li>
+          </ul>
+          <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
+        `,
+        buttonLabel: "Se connecter à Sellsia",
+        buttonUrl: `${appUrl}/login`
+      });
       await sendEmail({
         userId: result.client.id,
         workspaceId: result.workspace.id,
         to: result.client.email,
         subject: `Bienvenue sur Sellsia - Votre workspace est prêt`,
-        html: `
-          <h2>Bienvenue ${validatedClient.firstName}!</h2>
-          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Sellsia.</p>
-          <p><strong>Accès initial:</strong></p>
-          <ul>
-            <li>Email: ${result.client.email}</li>
-            <li>Mot de passe temporaire: ${clientTempPassword}</li>
-          </ul>
-          <p><a href="${appUrl}/login">Se connecter</a></p>
-          <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
-        `
+        html
       });
     } catch (emailErr) {
       console.warn("[onboarding] Failed to send client email:", emailErr.message);
@@ -281,21 +287,27 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
     // Send team member invitations
     for (const member of result.teamMembers) {
       try {
+        const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+        const html = renderEmailTemplate({
+          title: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
+          content: `
+            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong> sur Sellsia.</p>
+            <p><strong>Vos identifiants :</strong></p>
+            <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
+              <li>Email : <strong>${member.user.email}</strong></li>
+              <li>Mot de passe temporaire : <strong>${member.tempPassword}</strong></li>
+            </ul>
+            <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
+          `,
+          buttonLabel: "Accepter l'invitation",
+          buttonUrl: `${appUrl}/login`
+        });
         await sendEmail({
           userId: result.client.id,
           workspaceId: result.workspace.id,
           to: member.user.email,
           subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName} sur Sellsia`,
-          html: `
-            <h2>Vous êtes invité!</h2>
-            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong>.</p>
-            <p><strong>Vos identifiants:</strong></p>
-            <ul>
-              <li>Email: ${member.user.email}</li>
-              <li>Mot de passe temporaire: ${member.tempPassword}</li>
-            </ul>
-            <p><a href="${appUrl}/login">Se connecter</a></p>
-          `
+          html
         });
       } catch (emailErr) {
         console.warn(`[onboarding] Failed to send team member email to ${member.user.email}:`, emailErr.message);
@@ -500,12 +512,28 @@ router.post(
     });
 
     try {
+      const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+      const html = renderEmailTemplate({
+        title: "Bienvenue sur Sellsia",
+        content: `
+          <p>Bienvenue ${validatedClient.firstName}!</p>
+          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Sellsia.</p>
+          <p><strong>Accès initial :</strong></p>
+          <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
+            <li>Email : <strong>${result.client.email}</strong></li>
+            <li>Mot de passe temporaire : <strong>${clientTempPassword}</strong></li>
+          </ul>
+          <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
+        `,
+        buttonLabel: "Se connecter à Sellsia",
+        buttonUrl: `${appUrl}/login`
+      });
       await sendEmail({
         userId: result.client.id,
         workspaceId: result.workspace.id,
         to: result.client.email,
         subject: `Bienvenue sur Sellsia - Votre workspace est prêt`,
-        html: `<h2>Bienvenue ${validatedClient.firstName}!</h2><p>Workspace: ${validatedWorkspace.workspaceName}</p><p>Email: ${result.client.email}</p><p>Mot de passe: ${clientTempPassword}</p><p><a href="${appUrl}/login">Se connecter</a></p>`
+        html
       });
     } catch (emailErr) {
       console.warn("[onboarding] Failed to send client email:", emailErr.message);
@@ -513,12 +541,27 @@ router.post(
 
     for (const member of result.teamMembers) {
       try {
+        const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+        const html = renderEmailTemplate({
+          title: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
+          content: `
+            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong> sur Sellsia.</p>
+            <p><strong>Vos identifiants :</strong></p>
+            <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
+              <li>Email : <strong>${member.user.email}</strong></li>
+              <li>Mot de passe temporaire : <strong>${member.tempPassword}</strong></li>
+            </ul>
+            <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
+          `,
+          buttonLabel: "Accepter l'invitation",
+          buttonUrl: `${appUrl}/login`
+        });
         await sendEmail({
           userId: result.client.id,
           workspaceId: result.workspace.id,
           to: member.user.email,
-          subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
-          html: `<h2>Invitation!</h2><p>Email: ${member.user.email}</p><p>Mot de passe: ${member.tempPassword}</p><p><a href="${appUrl}/login">Se connecter</a></p>`
+          subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName} sur Sellsia`,
+          html
         });
       } catch (emailErr) {
         console.warn(`[onboarding] Failed to send email to ${member.user.email}:`, emailErr.message);
