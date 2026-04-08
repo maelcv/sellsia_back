@@ -16,6 +16,24 @@ import { prisma } from "../prisma.js";
 
 const router = Router();
 
+const PRIVATE_VISIBILITY_MARKER = "[PRIVATE]";
+
+function isPrivateDescription(description) {
+  return String(description || "").trim().toUpperCase().startsWith(PRIVATE_VISIBILITY_MARKER);
+}
+
+function stripVisibilityPrefix(description) {
+  return String(description || "").replace(/^\[PRIVATE\]\s*/i, "").trim() || null;
+}
+
+function applyVisibilityPrefix(description, visibility) {
+  const clean = stripVisibilityPrefix(description);
+  if (visibility === "private") {
+    return clean ? `[PRIVATE] ${clean}` : "[PRIVATE]";
+  }
+  return clean;
+}
+
 // ── Schémas ──────────────────────────────────────────────────
 
 const eventSchema = z.object({
@@ -25,6 +43,7 @@ const eventSchema = z.object({
   endAt:       z.string().datetime(),
   timezone:    z.string().default("Europe/Paris"),
   location:    z.string().optional(),
+  visibility:  z.enum(["public", "private"]).optional().default("public"),
 });
 
 // ── Routes authentifiées ──────────────────────────────────────
@@ -35,33 +54,57 @@ router.get("/events", async (req, res) => {
   const from = req.query.from ? new Date(req.query.from) : new Date(new Date().setDate(1));
   const to   = req.query.to   ? new Date(req.query.to)   : new Date(new Date().setMonth(new Date().getMonth() + 2));
 
-  const events = await prisma.calendarEvent.findMany({
+  const isSubClient = req.user.role === "sub_client";
+  const scopeFilter = isSubClient
+    ? { userId: req.user.sub }
+    : req.workspaceId
+      ? { workspaceId: req.workspaceId }
+      : {};
+
+  let events = await prisma.calendarEvent.findMany({
     where: {
-      userId: req.user.sub,
+      ...scopeFilter,
       startAt: { gte: from, lte: to },
     },
     orderBy: { startAt: "asc" },
   });
 
-  res.json({ events });
+  if (req.user.role !== "admin" && req.user.role !== "client") {
+    events = events.filter((event) => !isPrivateDescription(event.description) || event.userId === req.user.sub);
+  }
+
+  res.json({
+    events: events.map((event) => ({
+      ...event,
+      visibility: isPrivateDescription(event.description) ? "private" : "public",
+      description: stripVisibilityPrefix(event.description),
+    })),
+  });
 });
 
 // POST /api/calendar/events
 router.post("/events", async (req, res) => {
   const body = eventSchema.parse(req.body);
+  const description = applyVisibilityPrefix(body.description ?? "", body.visibility || "public");
   const event = await prisma.calendarEvent.create({
     data: {
       user:        { connect: { id: req.user.sub } },
       workspace:   req.workspaceId ? { connect: { id: req.workspaceId } } : undefined,
       title:       body.title,
-      description: body.description ?? null,
+      description: description || null,
       startAt:     new Date(body.startAt),
       endAt:       new Date(body.endAt),
       timezone:    body.timezone,
       location:    body.location ?? null,
     },
   });
-  res.status(201).json({ event });
+  res.status(201).json({
+    event: {
+      ...event,
+      visibility: isPrivateDescription(event.description) ? "private" : "public",
+      description: stripVisibilityPrefix(event.description),
+    },
+  });
 });
 
 // PATCH /api/calendar/events/:id
@@ -75,14 +118,25 @@ router.patch("/events/:id", async (req, res) => {
     where: { id },
     data: {
       ...(body.title       !== undefined && { title: body.title }),
-      ...(body.description !== undefined && { description: body.description }),
+      ...((body.description !== undefined || body.visibility !== undefined) && {
+        description: applyVisibilityPrefix(
+          body.description !== undefined ? body.description : existing.description,
+          body.visibility || (isPrivateDescription(existing.description) ? "private" : "public")
+        )
+      }),
       ...(body.startAt     !== undefined && { startAt: new Date(body.startAt) }),
       ...(body.endAt       !== undefined && { endAt: new Date(body.endAt) }),
       ...(body.timezone    !== undefined && { timezone: body.timezone }),
       ...(body.location    !== undefined && { location: body.location }),
     },
   });
-  res.json({ event });
+  res.json({
+    event: {
+      ...event,
+      visibility: isPrivateDescription(event.description) ? "private" : "public",
+      description: stripVisibilityPrefix(event.description),
+    },
+  });
 });
 
 // DELETE /api/calendar/events/:id

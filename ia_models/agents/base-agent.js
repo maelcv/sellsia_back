@@ -112,7 +112,12 @@ export class BaseAgent {
     const contextBlock = this.buildContextBlock(sellsyData, pageContext);
     const pageContextBlock = this.buildPageContextBlock(pageContext);
 
-    let fullSystemPrompt = this.systemPrompt;
+    const now = new Date();
+    const currentDateStr = now.toLocaleDateString("fr-FR", { timeZone: "Europe/Paris", weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    const currentTimeStr = now.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit" });
+    const currentDateISO = now.toISOString();
+
+    let fullSystemPrompt = this.systemPrompt + `\n\n--- DATE ET HEURE ACTUELLES ---\nAujourd'hui : ${currentDateStr}, ${currentTimeStr} (heure de Paris)\nDate UTC ISO : ${currentDateISO}\nIMPORTANT : Utilise TOUJOURS cette date comme référence pour planifier des rappels, des événements ou estimer des délais. Ne génère JAMAIS de dates dans le passé.`;
     if (pageContextBlock) {
       fullSystemPrompt += `\n\n--- CONTEXTE PAGE SELLSY ---\n${pageContextBlock}\n\nIMPORTANT : Quand l'utilisateur mentionne "la société", "l'entreprise", "la boite", "le client", "le compte", "l'opportunité" ou tout synonyme sans autre précision, il fait TOUJOURS référence à l'entité affichée sur cette page Sellsy — jamais à Sellsy lui-même.`;
     }

@@ -202,7 +202,7 @@ export class SellsyClient {
     const data = await this.request("/companies/search", {
       method: "POST",
       body: {
-        filters: { search: query },
+        filters: { search: { contains: query } },
         limit,
         order: [{ direction: "desc", field: "updated" }]
       }
@@ -525,7 +525,7 @@ export class SellsyClient {
     const data = await this.request("/contacts/search", {
       method: "POST",
       body: {
-        filters: { search: query },
+        filters: { search: { contains: query } },
         limit,
         order: [{ direction: "desc", field: "updated" }]
       }

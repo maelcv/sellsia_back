@@ -819,6 +819,8 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     let streamSourcesUsed = { web: [], sellsy: [], files: [] };
     let activeAgentId = null;
     const collectedAgentIds = [];
+    let pendingAskUserQuestion = "";
+    let pendingAskUserSuggestions = [];
 
     // ── Setup heartbeat to keep SSE connection alive (every 30s) ──
     let lastHeartbeat = Date.now();
@@ -1027,7 +1029,19 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
 
       // Interaction events (ask_user, navigate) — forwarded to frontend
       if (event.type === "ask_user") {
-        res.write(`data: ${JSON.stringify({ type: "ask_user", question: event.question, suggestions: event.suggestions || [], context: event.context || null })}\n\n`);
+        const suggestions = Array.isArray(event.suggestions)
+          ? event.suggestions.map((s) => String(s).trim()).filter(Boolean)
+          : typeof event.suggestions === "string"
+            ? event.suggestions
+                .split(/\n|,|;/)
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : [];
+
+        pendingAskUserQuestion = String(event.question || "").trim();
+        pendingAskUserSuggestions = suggestions;
+
+        res.write(`data: ${JSON.stringify({ type: "ask_user", question: event.question, suggestions, context: event.context || null })}\n\n`);
         continue;
       }
 
@@ -1097,6 +1111,11 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
         fullContent = "Je n'ai pas pu recuperer vos donnees Sellsy avec la connexion actuelle. Verifiez votre integration Sellsy (token revoque ou expire), puis reconnectez-la depuis votre profil.";
       } else if (failedTool) {
         fullContent = `Je n'ai pas pu terminer la recuperation des donnees (outil en erreur: ${failedTool.name}). Veuillez verifier vos integrations et reessayer.`;
+      } else if (pendingAskUserQuestion) {
+        fullContent = pendingAskUserQuestion;
+        if (pendingAskUserSuggestions.length > 0) {
+          fullContent += "\n\nSuggestions: " + pendingAskUserSuggestions.join(" | ");
+        }
       } else {
         fullContent = "Je n'ai pas pu produire une reponse complete cette fois. Veuillez reessayer.";
       }

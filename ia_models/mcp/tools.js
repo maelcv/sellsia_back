@@ -1460,6 +1460,16 @@ const parse_word = {
 
 // ── Reminder Tool ────────────────────────────────────
 
+const PRIVATE_VISIBILITY_MARKER = "[PRIVATE] ";
+
+function applyVisibilityPrefix(text, visibility) {
+  const clean = String(text || "").replace(/^\[PRIVATE\]\s*/i, "").trim();
+  if (visibility === "private") {
+    return clean ? `${PRIVATE_VISIBILITY_MARKER}${clean}` : PRIVATE_VISIBILITY_MARKER.trim();
+  }
+  return clean;
+}
+
 /**
  * Tool permettant aux agents IA de planifier un rappel pour l'utilisateur.
  *
@@ -1488,7 +1498,7 @@ const schedule_reminder = {
       },
       scheduled_at: {
         type: "string",
-        description: "Date et heure en UTC, format ISO 8601 (ex: '2025-03-25T09:00:00Z')"
+        description: "Date et heure en UTC, format ISO 8601 (ex: '2026-04-15T09:00:00Z'). Utilise TOUJOURS une date future basée sur la date actuelle fournie dans le contexte système."
       },
       channel: {
         type: "string",
@@ -1506,6 +1516,11 @@ const schedule_reminder = {
       timezone: {
         type: "string",
         description: "Fuseau horaire de l'utilisateur (ex: 'Europe/Paris'). Utilisé pour l'affichage dans le récapitulatif."
+      },
+      visibility: {
+        type: "string",
+        enum: ["public", "private"],
+        description: "Visibilité de la tâche créée dans le workspace. 'public' = visible dans le workspace, 'private' = réservé aux admins (plateforme/workspace)."
       },
       confirmed: {
         type: "boolean",
@@ -1539,6 +1554,7 @@ const schedule_reminder = {
     }
 
     const timezone = params.timezone || "Europe/Paris";
+    const visibility = params.visibility === "private" ? "private" : "public";
 
     // Formate la date dans le fuseau horaire de l'utilisateur pour l'affichage
     const formattedDate = scheduledDate.toLocaleString("fr-FR", {
@@ -1571,6 +1587,7 @@ const schedule_reminder = {
           `- 📋 Tâche : ${params.task_description}\n` +
           `- 📅 Date / heure : ${formattedDate}\n` +
           `- 📣 Canal : ${channelLabel}\n\n` +
+          `- 🔒 Visibilité : ${visibility === "private" ? "Privée" : "Publique"}\n\n` +
           `INSTRUCTION : Appelle immédiatement le tool ask_user avec :\n` +
           `  question: "Souhaitez-vous confirmer la planification de ce rappel ?"\n` +
           `  suggestions: ["Valider", "Modifier", "Annuler"]\n` +
@@ -1586,6 +1603,11 @@ const schedule_reminder = {
     try {
       const { prisma } = await import("../../src/prisma.js");
 
+      const workspaceId = context.tenantId || null;
+      if (!workspaceId) {
+        return { error: "Impossible de créer une tâche: workspace manquant dans le contexte" };
+      }
+
       const reminder = await prisma.reminder.create({
         data: {
           userId,
@@ -1600,12 +1622,31 @@ const schedule_reminder = {
         },
       });
 
+      const taskDescription = applyVisibilityPrefix(
+        `Rappel planifié le ${formattedDate} via ${channelLabel}`,
+        visibility
+      );
+
+      const task = await prisma.taskAssignment.create({
+        data: {
+          userId,
+          workspaceId,
+          title: params.task_description,
+          description: taskDescription,
+          dueDate: scheduledDate,
+          status: "pending",
+          priority: "medium",
+        },
+      });
+
       return {
         status: "scheduled",
         reminderId: reminder.id,
+        taskId: task.id,
+        visibility,
         scheduledAt: reminder.scheduledAt,
         channel: reminder.channel,
-        message: `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Réf. #${reminder.id})`
+        message: `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Rappel #${reminder.id}, Tâche #${task.id})`
       };
     } catch (err) {
       console.error("[schedule_reminder tool] Erreur:", err);
@@ -1704,11 +1745,11 @@ const create_calendar_event = {
       },
       start_at: {
         type: "string",
-        description: "Date et heure de début en ISO 8601 UTC, ex: '2025-04-15T09:00:00Z'"
+        description: "Date et heure de début en ISO 8601 UTC, ex: '2026-04-15T09:00:00Z'. Utilise TOUJOURS une date future basée sur la date actuelle fournie dans le contexte."
       },
       end_at: {
         type: "string",
-        description: "Date et heure de fin en ISO 8601 UTC, ex: '2025-04-15T10:00:00Z'"
+        description: "Date et heure de fin en ISO 8601 UTC, ex: '2026-04-15T10:00:00Z'. Doit être postérieure à start_at."
       },
       timezone: {
         type: "string",
@@ -1717,6 +1758,11 @@ const create_calendar_event = {
       location: {
         type: "string",
         description: "Lieu de l'événement (optionnel)"
+      },
+      visibility: {
+        type: "string",
+        enum: ["public", "private"],
+        description: "Visibilité de l'événement dans le workspace. 'public' = visible workspace, 'private' = réservé aux admins."
       }
     },
     required: ["title", "start_at", "end_at"]
@@ -1726,16 +1772,28 @@ const create_calendar_event = {
       return { error: "Contexte utilisateur manquant" };
     }
 
+    const startAt = new Date(params.start_at);
+    const endAt = new Date(params.end_at);
+    if (isNaN(startAt.getTime()) || isNaN(endAt.getTime())) {
+      return { error: "Dates invalides pour l'événement" };
+    }
+    if (endAt <= startAt) {
+      return { error: "La date de fin doit être postérieure à la date de début" };
+    }
+
+    const visibility = params.visibility === "private" ? "private" : "public";
+    const storedDescription = applyVisibilityPrefix(params.description ?? "", visibility) || null;
+
     try {
       const { prisma } = await import("../../src/prisma.js");
       const event = await prisma.calendarEvent.create({
         data: {
           userId:      context.userId,
-          tenantId:    context.tenantId,
+          workspaceId: context.tenantId,
           title:       params.title,
-          description: params.description ?? null,
-          startAt:     new Date(params.start_at),
-          endAt:       new Date(params.end_at),
+          description: storedDescription,
+          startAt,
+          endAt,
           timezone:    params.timezone ?? "Europe/Paris",
           location:    params.location ?? null,
         },
@@ -1743,6 +1801,7 @@ const create_calendar_event = {
       return {
         status: "created",
         eventId: event.id,
+        visibility,
         message: `Événement "${params.title}" créé le ${new Date(params.start_at).toLocaleString("fr-FR", { timeZone: params.timezone || "Europe/Paris" })}.`,
       };
     } catch (err) {
@@ -1833,6 +1892,11 @@ const create_task = {
         enum: ["low", "medium", "high"],
         description: "Priorité de la tâche"
       },
+      visibility: {
+        type: "string",
+        enum: ["public", "private"],
+        description: "Visibilité de la tâche dans le workspace. 'public' = visible workspace, 'private' = réservé aux admins."
+      },
       entity_type: {
         type: "string",
         description: "Type d'entité liée : 'company', 'contact', 'opportunity' (optionnel)"
@@ -1851,12 +1915,14 @@ const create_task = {
 
     try {
       const { prisma } = await import("../../src/prisma.js");
+      const visibility = params.visibility === "private" ? "private" : "public";
+      const storedDescription = applyVisibilityPrefix(params.description || "", visibility) || null;
       const task = await prisma.taskAssignment.create({
         data: {
           userId: context.userId,
-          tenantId: context.tenantId,
+          workspaceId: context.tenantId,
           title: params.title,
-          description: params.description || null,
+          description: storedDescription,
           dueDate: params.due_date ? new Date(params.due_date) : null,
           priority: params.priority || "medium",
           entityType: params.entity_type || null,
@@ -1867,6 +1933,7 @@ const create_task = {
       return {
         status: "created",
         taskId: task.id,
+        visibility,
         message: `Tâche créée: "${params.title}" (ID: ${task.id})`
       };
     } catch (err) {

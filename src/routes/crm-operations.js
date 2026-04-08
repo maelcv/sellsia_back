@@ -15,6 +15,24 @@ import { prisma } from "../prisma.js";
 const router = Router();
 router.use(requireAuth, requireWorkspaceContext);
 
+const PRIVATE_VISIBILITY_MARKER = "[PRIVATE]";
+
+function isPrivateDescription(description) {
+  return String(description || "").trim().toUpperCase().startsWith(PRIVATE_VISIBILITY_MARKER);
+}
+
+function stripVisibilityPrefix(description) {
+  return String(description || "").replace(/^\[PRIVATE\]\s*/i, "").trim() || null;
+}
+
+function applyVisibilityPrefix(description, visibility) {
+  const clean = stripVisibilityPrefix(description);
+  if (visibility === "private") {
+    return clean ? `[PRIVATE] ${clean}` : "[PRIVATE]";
+  }
+  return clean;
+}
+
 // ── Enrichissement SIRET ─────────────────────────────────
 
 router.post("/enrich/siret", requireFeature("data_enrichment"), async (req, res) => {
@@ -101,12 +119,14 @@ router.post("/import/:jobId/process", requireFeature("mass_import"), async (req,
 // ── Tâches assignées ─────────────────────────────────────
 
 router.post("/tasks", async (req, res) => {
-  const { title, dueDate, assignedToId, entityType, entityId } = z.object({
+  const { title, description, dueDate, assignedToId, entityType, entityId, visibility } = z.object({
     title: z.string().min(1),
+    description: z.string().optional(),
     dueDate: z.string().datetime().optional(),
     assignedToId: z.number().optional(),
     entityType: z.string().optional(),
     entityId: z.string().optional(),
+    visibility: z.enum(["public", "private"]).optional(),
   }).parse(req.body);
 
   const task = await prisma.taskAssignment.create({
@@ -114,6 +134,7 @@ router.post("/tasks", async (req, res) => {
       userId: req.user.sub,
       workspaceId: req.workspaceId,
       title,
+      description: applyVisibilityPrefix(description, visibility || "public"),
       dueDate: dueDate ? new Date(dueDate) : null,
       assignedToId: assignedToId ?? null,
       entityType,
@@ -122,20 +143,43 @@ router.post("/tasks", async (req, res) => {
     },
   });
 
-  res.status(201).json(task);
+  res.status(201).json({
+    ...task,
+    visibility: isPrivateDescription(task.description) ? "private" : "public",
+    description: stripVisibilityPrefix(task.description),
+  });
 });
 
 router.get("/tasks", async (req, res) => {
   const status = req.query.status || "pending";
-  const tasks = await prisma.taskAssignment.findMany({
+  const isSubClient = req.user.role === "sub_client";
+
+  const scopeFilter = isSubClient
+    ? { userId: req.user.sub }
+    : req.workspaceId
+      ? { workspaceId: req.workspaceId }
+      : {};
+
+  let tasks = await prisma.taskAssignment.findMany({
     where: {
-      userId: req.user.sub,
+      ...scopeFilter,
       ...(status !== "all" && { status }),
     },
-    orderBy: { dueDate: "asc" },
+    orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
     take: 100,
   });
-  res.json({ tasks });
+
+  if (req.user.role !== "admin" && req.user.role !== "client") {
+    tasks = tasks.filter((task) => !isPrivateDescription(task.description) || task.userId === req.user.sub);
+  }
+
+  res.json({
+    tasks: tasks.map((task) => ({
+      ...task,
+      visibility: isPrivateDescription(task.description) ? "private" : "public",
+      description: stripVisibilityPrefix(task.description),
+    })),
+  });
 });
 
 router.patch("/tasks/:taskId", async (req, res) => {
@@ -148,14 +192,31 @@ router.patch("/tasks/:taskId", async (req, res) => {
   const updates = z.object({
     status: z.enum(["pending", "in_progress", "completed"]).optional(),
     title: z.string().optional(),
+    description: z.string().optional(),
+    visibility: z.enum(["public", "private"]).optional(),
   }).parse(req.body);
+
+  const data = {
+    ...(updates.status !== undefined && { status: updates.status }),
+    ...(updates.title !== undefined && { title: updates.title }),
+    ...(updates.description !== undefined && {
+      description: applyVisibilityPrefix(updates.description, updates.visibility || (isPrivateDescription(task.description) ? "private" : "public")),
+    }),
+    ...(updates.visibility !== undefined && updates.description === undefined && {
+      description: applyVisibilityPrefix(task.description, updates.visibility),
+    }),
+  };
 
   const updated = await prisma.taskAssignment.update({
     where: { id: taskId },
-    data: updates,
+    data,
   });
 
-  res.json(updated);
+  res.json({
+    ...updated,
+    visibility: isPrivateDescription(updated.description) ? "private" : "public",
+    description: stripVisibilityPrefix(updated.description),
+  });
 });
 
 // ── Enrichissement SIRET en batch ─────────────────────────────

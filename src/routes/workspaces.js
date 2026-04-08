@@ -534,13 +534,18 @@ router.post(
  * Lister les tâches d'un workspace (admin seulement)
  */
 router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => {
-  const tasks = await prisma.taskAssignment.findMany({
-    where: { workspaceId: req.params.id },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    include: { user: { select: { id: true, email: true } } },
-  });
-  res.json({ tasks });
+  try {
+    const tasks = await prisma.taskAssignment.findMany({
+      where: { workspaceId: req.params.id },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: { user: { select: { id: true, email: true } } },
+    });
+    return res.json({ tasks });
+  } catch (err) {
+    console.error("[workspaces] Failed to load workspace tasks:", err);
+    return res.status(500).json({ error: "Impossible de charger les taches du workspace" });
+  }
 });
 
 /**
@@ -548,13 +553,18 @@ router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => 
  * Lister les événements calendrier d'un workspace (admin seulement)
  */
 router.get("/:id/events", requireAuth, requireRole("admin"), async (req, res) => {
-  const events = await prisma.calendarEvent.findMany({
-    where: { workspaceId: req.params.id },
-    orderBy: { startAt: "desc" },
-    take: 100,
-    include: { user: { select: { id: true, email: true } } },
-  });
-  res.json({ events });
+  try {
+    const events = await prisma.calendarEvent.findMany({
+      where: { workspaceId: req.params.id },
+      orderBy: { startAt: "desc" },
+      take: 100,
+      include: { user: { select: { id: true, email: true } } },
+    });
+    return res.json({ events });
+  } catch (err) {
+    console.error("[workspaces] Failed to load workspace events:", err);
+    return res.status(500).json({ error: "Impossible de charger les evenements du workspace" });
+  }
 });
 
 /**
