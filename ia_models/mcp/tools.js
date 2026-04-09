@@ -1470,6 +1470,16 @@ function applyVisibilityPrefix(text, visibility) {
   return clean;
 }
 
+function normalizeReminderChannel(rawChannel) {
+  const value = String(rawChannel || "").trim().toLowerCase();
+  if (!value) return null;
+  if (["chat", "in-app", "in app", "app"].includes(value)) return "chat";
+  if (["email", "mail", "e-mail"].includes(value)) return "email";
+  if (["whatsapp", "wa", "wpp"].includes(value)) return "whatsapp";
+  if (["push", "push_notif", "push notif", "push_notification", "notification", "notif"].includes(value)) return "push";
+  return null;
+}
+
 /**
  * Tool permettant aux agents IA de planifier un rappel pour l'utilisateur.
  *
@@ -1502,8 +1512,8 @@ const schedule_reminder = {
       },
       channel: {
         type: "string",
-        enum: ["chat", "whatsapp", "email"],
-        description: "Canal de livraison : 'chat' (notification dans la plateforme), 'whatsapp' (message WhatsApp) ou 'email' (envoi par email)"
+        enum: ["chat", "email", "push", "whatsapp"],
+        description: "Canal de livraison : 'chat', 'email', 'push' (notification in-app) ou 'whatsapp'."
       },
       target_phone: {
         type: "string",
@@ -1545,7 +1555,24 @@ const schedule_reminder = {
       return { error: "La date de rappel ne peut pas être dans le passé" };
     }
 
-    const channel = params.channel || "chat";
+    const channel = normalizeReminderChannel(params.channel);
+
+    if (!channel) {
+      return {
+        status: "pending_channel",
+        action: "schedule_reminder",
+        task_description: params.task_description,
+        scheduled_at: params.scheduled_at,
+        formatted_date: formattedDate,
+        message:
+          `INSTRUCTION : Appelle immédiatement le tool ask_user avec :\n` +
+          `  question: "Par quel canal souhaitez-vous recevoir ce rappel ?"\n` +
+          `  suggestions: ["Chat", "Email", "Push notif", "WhatsApp"]\n` +
+          `  context: "Rappel prévu le ${formattedDate} — ${params.task_description}"\n` +
+          `Ensuite, rappelle schedule_reminder avec le canal choisi.`
+      };
+    }
+
     if (channel === "whatsapp" && !params.target_phone) {
       return { error: "target_phone est requis pour le canal whatsapp" };
     }
@@ -1567,6 +1594,8 @@ const schedule_reminder = {
       ? `WhatsApp (${params.target_phone})`
       : channel === "email"
       ? `Email (${params.target_email})`
+      : channel === "push"
+      ? "push notification (in-app)"
       : "notification dans la plateforme";
 
     // ── Phase 1 : Récapitulatif + demande de confirmation via ask_user ─
@@ -1612,11 +1641,13 @@ const schedule_reminder = {
         data: {
           userId,
           agentId: context.agentId || null,
+          workspaceId,
           taskDescription: params.task_description,
           scheduledAt: scheduledDate,
           timezone,
           status: "PENDING",
-          channel,
+          // DB enum does not include "push" yet; push reminders are delivered via in-app SSE like chat.
+          channel: channel === "push" ? "chat" : channel,
           targetPhone: params.target_phone || null,
           targetEmail: params.target_email || null,
         },
@@ -1634,6 +1665,8 @@ const schedule_reminder = {
           title: params.task_description,
           description: taskDescription,
           dueDate: scheduledDate,
+          entityType: "reminder",
+          entityId: String(reminder.id),
           status: "pending",
           priority: "medium",
         },
@@ -1645,7 +1678,7 @@ const schedule_reminder = {
         taskId: task.id,
         visibility,
         scheduledAt: reminder.scheduledAt,
-        channel: reminder.channel,
+        channel,
         message: `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Rappel #${reminder.id}, Tâche #${task.id})`
       };
     } catch (err) {

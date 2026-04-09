@@ -98,7 +98,7 @@ const createReminderSchema = z.object({
     .default("Europe/Paris"),
 
   channel: z
-    .enum(["chat", "whatsapp", "email"])
+    .enum(["chat", "whatsapp", "email", "push"])
     .default("chat"),
 
   targetPhone: z
@@ -163,16 +163,17 @@ router.post("/", requireAuth, requireWorkspaceContext, createReminderRateLimit, 
   }
 
   const { taskDescription, scheduledAt, timezone, channel, targetPhone, targetEmail, agentId } = parsed.data;
+  const effectiveChannel = channel === "push" ? "chat" : channel;
 
   // Règle métier : targetPhone obligatoire si canal WhatsApp
-  if (channel === "whatsapp" && !targetPhone) {
+  if (effectiveChannel === "whatsapp" && !targetPhone) {
     return res.status(400).json({
       error: "targetPhone est requis pour le canal whatsapp",
     });
   }
 
   // Règle métier : targetEmail obligatoire si canal email
-  if (channel === "email" && !targetEmail) {
+  if (effectiveChannel === "email" && !targetEmail) {
     return res.status(400).json({
       error: "targetEmail est requis pour le canal email",
     });
@@ -221,7 +222,7 @@ router.post("/", requireAuth, requireWorkspaceContext, createReminderRateLimit, 
         scheduledAt: scheduledDate,
         timezone,
         status: "PENDING",
-        channel,
+        channel: effectiveChannel,
         targetPhone: targetPhone || null,
         targetEmail: targetEmail || null,
       },
@@ -326,6 +327,16 @@ router.patch("/:id/cancel", requireAuth, requireWorkspaceContext, cancelReminder
     const updated = await prisma.reminder.update({
       where: { id: reminderId },
       data: { status: "CANCELLED" },
+    });
+
+    await prisma.taskAssignment.updateMany({
+      where: {
+        userId: req.user.sub,
+        entityType: "reminder",
+        entityId: String(reminderId),
+        status: { in: ["pending", "in_progress"] },
+      },
+      data: { status: "cancelled" },
     });
 
     return res.json({

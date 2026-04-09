@@ -541,7 +541,81 @@ router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => 
       take: 100,
       include: { user: { select: { id: true, email: true } } },
     });
-    return res.json({ tasks });
+
+    const reminderIds = tasks
+      .filter((task) => task.entityType === "reminder" && task.entityId && /^\d+$/.test(String(task.entityId)))
+      .map((task) => Number(task.entityId));
+
+    const reminders = reminderIds.length > 0
+      ? await prisma.reminder.findMany({
+          where: { id: { in: reminderIds } },
+          select: {
+            id: true,
+            status: true,
+            channel: true,
+            scheduledAt: true,
+            sentAt: true,
+            failedAt: true,
+            errorMessage: true,
+            retryCount: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        })
+      : [];
+
+    const remindersById = new Map(reminders.map((r) => [r.id, r]));
+    const mapTaskStatus = (taskStatus) => {
+      if (taskStatus === "completed") return "finish";
+      return "pending";
+    };
+    const mapReminderStatus = (reminderStatus) => {
+      if (reminderStatus === "SENT") return "finish";
+      if (reminderStatus === "FAILED") return "fail";
+      if (reminderStatus === "CANCELLED") return "cancelled";
+      return "pending";
+    };
+
+    const buildLogs = (reminder) => {
+      if (!reminder) return [];
+      if (reminder.status === "SENT") {
+        return [{ status: "success", at: reminder.sentAt || reminder.updatedAt || reminder.createdAt, message: "Rappel envoyé avec succès" }];
+      }
+      if (reminder.status === "FAILED") {
+        return [{ status: "fail", at: reminder.failedAt || reminder.updatedAt || reminder.createdAt, message: reminder.errorMessage || "Échec de l'envoi du rappel" }];
+      }
+      if (reminder.status === "CANCELLED") {
+        return [{ status: "cancelled", at: reminder.updatedAt || reminder.createdAt, message: "Rappel annulé" }];
+      }
+      return [{ status: "pending", at: reminder.scheduledAt, message: "Rappel en attente d'exécution" }];
+    };
+
+    const enrichedTasks = tasks.map((task) => {
+      const reminderId = task.entityType === "reminder" && /^\d+$/.test(String(task.entityId || ""))
+        ? Number(task.entityId)
+        : null;
+      const reminder = reminderId ? remindersById.get(reminderId) || null : null;
+
+      return {
+        ...task,
+        displayStatus: reminder ? mapReminderStatus(reminder.status) : mapTaskStatus(task.status),
+        reminder: reminder
+          ? {
+              id: reminder.id,
+              channel: reminder.channel,
+              status: reminder.status,
+              scheduledAt: reminder.scheduledAt,
+              sentAt: reminder.sentAt,
+              failedAt: reminder.failedAt,
+              errorMessage: reminder.errorMessage,
+              retryCount: reminder.retryCount,
+            }
+          : null,
+        reminderLogs: buildLogs(reminder),
+      };
+    });
+
+    return res.json({ tasks: enrichedTasks });
   } catch (err) {
     console.error("[workspaces] Failed to load workspace tasks:", err);
     return res.status(500).json({ error: "Impossible de charger les taches du workspace" });

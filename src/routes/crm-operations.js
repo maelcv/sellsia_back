@@ -33,6 +33,114 @@ function applyVisibilityPrefix(description, visibility) {
   return clean;
 }
 
+function mapTaskDisplayStatus(taskStatus) {
+  if (taskStatus === "completed") return "finish";
+  if (taskStatus === "cancelled") return "cancelled";
+  if (taskStatus === "failed") return "fail";
+  return "pending";
+}
+
+function mapReminderDisplayStatus(reminderStatus) {
+  if (reminderStatus === "SENT") return "finish";
+  if (reminderStatus === "FAILED") return "fail";
+  if (reminderStatus === "CANCELLED") return "cancelled";
+  return "pending";
+}
+
+function buildReminderLogs(reminder) {
+  const logs = [];
+
+  if (!reminder) return logs;
+
+  if (reminder.status === "SENT") {
+    logs.push({
+      status: "success",
+      at: reminder.sentAt || reminder.updatedAt || reminder.createdAt,
+      message: "Rappel envoyé avec succès",
+    });
+  } else if (reminder.status === "FAILED") {
+    logs.push({
+      status: "fail",
+      at: reminder.failedAt || reminder.updatedAt || reminder.createdAt,
+      message: reminder.errorMessage || "Échec de l'envoi du rappel",
+    });
+  } else if (reminder.status === "CANCELLED") {
+    logs.push({
+      status: "cancelled",
+      at: reminder.updatedAt || reminder.createdAt,
+      message: "Rappel annulé",
+    });
+  } else {
+    logs.push({
+      status: "pending",
+      at: reminder.scheduledAt,
+      message: "Rappel en attente d'exécution",
+    });
+  }
+
+  return logs;
+}
+
+async function enrichTasksWithReminder(tasks) {
+  const reminderIdSet = new Set();
+
+  for (const task of tasks) {
+    if (task.entityType === "reminder" && task.entityId && /^\d+$/.test(String(task.entityId))) {
+      reminderIdSet.add(Number(task.entityId));
+    }
+  }
+
+  const reminders = reminderIdSet.size > 0
+    ? await prisma.reminder.findMany({
+        where: { id: { in: Array.from(reminderIdSet) } },
+        select: {
+          id: true,
+          status: true,
+          channel: true,
+          scheduledAt: true,
+          sentAt: true,
+          failedAt: true,
+          errorMessage: true,
+          retryCount: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      })
+    : [];
+
+  const remindersById = new Map(reminders.map((r) => [r.id, r]));
+
+  return tasks.map((task) => {
+    const reminderId = task.entityType === "reminder" && /^\d+$/.test(String(task.entityId || ""))
+      ? Number(task.entityId)
+      : null;
+    const reminder = reminderId ? remindersById.get(reminderId) || null : null;
+    const displayStatus = reminder
+      ? mapReminderDisplayStatus(reminder.status)
+      : mapTaskDisplayStatus(task.status);
+
+    return {
+      ...task,
+      visibility: isPrivateDescription(task.description) ? "private" : "public",
+      description: stripVisibilityPrefix(task.description),
+      displayStatus,
+      reminder: reminder
+        ? {
+            id: reminder.id,
+            channel: reminder.channel,
+            status: reminder.status,
+            scheduledAt: reminder.scheduledAt,
+            sentAt: reminder.sentAt,
+            failedAt: reminder.failedAt,
+            errorMessage: reminder.errorMessage,
+            retryCount: reminder.retryCount,
+          }
+        : null,
+      reminderLogs: buildReminderLogs(reminder),
+    };
+  });
+}
+
 // ── Enrichissement SIRET ─────────────────────────────────
 
 router.post("/enrich/siret", requireFeature("data_enrichment"), async (req, res) => {
@@ -173,13 +281,8 @@ router.get("/tasks", async (req, res) => {
     tasks = tasks.filter((task) => !isPrivateDescription(task.description) || task.userId === req.user.sub);
   }
 
-  res.json({
-    tasks: tasks.map((task) => ({
-      ...task,
-      visibility: isPrivateDescription(task.description) ? "private" : "public",
-      description: stripVisibilityPrefix(task.description),
-    })),
-  });
+  const enrichedTasks = await enrichTasksWithReminder(tasks);
+  res.json({ tasks: enrichedTasks });
 });
 
 router.patch("/tasks/:taskId", async (req, res) => {

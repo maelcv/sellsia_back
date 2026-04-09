@@ -32,6 +32,126 @@ const BATCH_SIZE = 50;
 /** Référence à la tâche cron, utilisée pour l'arrêt propre */
 let cronTask = null;
 
+async function appendReminderConversationMessage(reminder, status, details = null) {
+  const conversationId = `reminders-${reminder.userId}`;
+  const workspaceId = reminder.workspaceId || null;
+
+  await prisma.conversation.upsert({
+    where: { id: conversationId },
+    update: {
+      updatedAt: new Date(),
+      workspaceId,
+    },
+    create: {
+      id: conversationId,
+      userId: reminder.userId,
+      channel: "chrome",
+      title: "Rappels automatiques",
+      contextType: "reminders",
+      workspaceId,
+    },
+  });
+
+  const scheduledAtLabel = reminder.scheduledAt
+    ? reminder.scheduledAt.toLocaleString("fr-FR", {
+        timeZone: reminder.timezone || "Europe/Paris",
+        dateStyle: "short",
+        timeStyle: "short",
+      })
+    : "—";
+
+  const channelLabel = reminder.channel === "email"
+    ? "email"
+    : reminder.channel === "whatsapp"
+      ? "whatsapp"
+      : "chat";
+
+  const icon = status === "success" ? "✅" : status === "failed" ? "❌" : "ℹ️";
+  const base = `${icon} Rappel ${status === "success" ? "envoyé" : status === "failed" ? "en échec" : "mis à jour"} (${channelLabel})\n` +
+    `Tâche: ${reminder.taskDescription}\n` +
+    `Échéance: ${scheduledAtLabel}`;
+
+  const content = details ? `${base}\nDétail: ${details}` : base;
+
+  await prisma.message.create({
+    data: {
+      conversationId,
+      role: "system",
+      content,
+      workspaceId,
+      provider: "reminder-worker",
+      model: "internal",
+    },
+  });
+
+  await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { updatedAt: new Date() },
+  });
+}
+
+function mapReminderStatusToTaskStatus(reminderStatus) {
+  if (reminderStatus === "SENT") return "completed";
+  if (reminderStatus === "FAILED") return "failed";
+  if (reminderStatus === "CANCELLED") return "cancelled";
+  return "pending";
+}
+
+async function reconcileOverdueTasks() {
+  const now = new Date();
+  const overdueTasks = await prisma.taskAssignment.findMany({
+    where: {
+      dueDate: { lte: now },
+      status: { in: ["pending", "in_progress"] },
+    },
+    take: 500,
+    orderBy: { dueDate: "asc" },
+  });
+
+  for (const task of overdueTasks) {
+    let reminder = null;
+
+    if (task.entityType === "reminder" && task.entityId && /^\d+$/.test(String(task.entityId))) {
+      reminder = await prisma.reminder.findUnique({ where: { id: Number(task.entityId) } });
+    } else if (task.dueDate) {
+      // Backward compatibility: recover missing links for legacy tasks created before reminder linkage.
+      reminder = await prisma.reminder.findFirst({
+        where: {
+          userId: task.userId,
+          taskDescription: task.title,
+          scheduledAt: task.dueDate,
+        },
+        orderBy: { id: "desc" },
+      });
+    }
+
+    if (!reminder) continue;
+
+    const targetStatus = mapReminderStatusToTaskStatus(reminder.status);
+    const patch = {};
+
+    if (task.entityType !== "reminder" || String(task.entityId || "") !== String(reminder.id)) {
+      patch.entityType = "reminder";
+      patch.entityId = String(reminder.id);
+    }
+
+    if (task.status !== targetStatus) {
+      patch.status = targetStatus;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await prisma.taskAssignment.update({ where: { id: task.id }, data: patch });
+    }
+
+    if (!reminder.workspaceId && task.workspaceId) {
+      await prisma.reminder.update({
+        where: { id: reminder.id },
+        data: { workspaceId: task.workspaceId },
+      });
+    }
+  }
+}
+
 // --- Envoi WhatsApp ----------------------------------------------------
 
 /**
@@ -162,6 +282,19 @@ async function processReminders() {
         // Canal inconnu — on considère quand même comme SENT pour ne pas bloquer
         console.warn(`[ReminderWorker] Canal inconnu "${reminder.channel}" pour rappel #${reminder.id}`);
       }
+
+      await appendReminderConversationMessage(reminder, "success");
+
+      // Keep workspace task list aligned with reminder execution status.
+      await prisma.taskAssignment.updateMany({
+        where: {
+          userId: reminder.userId,
+          entityType: "reminder",
+          entityId: String(reminder.id),
+          status: { in: ["pending", "in_progress"] },
+        },
+        data: { status: "completed" },
+      });
     } catch (err) {
       // --- Étape 3 : Gestion des erreurs ---
       console.error(`[ReminderWorker] Erreur rappel #${reminder.id}:`, err.message);
@@ -199,6 +332,18 @@ async function processReminders() {
             errorMessage: err.message,
             failedAt: new Date(),
           },
+        });
+
+        await appendReminderConversationMessage(reminder, "failed", err.message || "Erreur inconnue");
+
+        await prisma.taskAssignment.updateMany({
+          where: {
+            userId: reminder.userId,
+            entityType: "reminder",
+            entityId: String(reminder.id),
+            status: { in: ["pending", "in_progress"] },
+          },
+          data: { status: "failed" },
         });
 
         // Notify user that reminder failed
@@ -283,11 +428,22 @@ export function startReminderWorker() {
 
   console.log("[ReminderWorker] Démarrage du worker de rappels (toutes les minutes)");
 
+  // Immediate catch-up at startup: execute due reminders and reconcile overdue tasks now.
+  (async () => {
+    try {
+      await processReminders();
+      await reconcileOverdueTasks();
+    } catch (err) {
+      console.error("[ReminderWorker] Startup catch-up failed:", err);
+    }
+  })();
+
   cronTask = cron.schedule(
     "* * * * *", // Chaque minute
     async () => {
       try {
         await processReminders();
+        await reconcileOverdueTasks();
       } catch (err) {
         // On attrape ici pour éviter que le cron ne s'arrête sur une erreur inattendue
         console.error("[ReminderWorker] Erreur inattendue dans processReminders:", err);
