@@ -1,36 +1,14 @@
 /**
  * Source engine — executes API / scraper source configs.
- * Ported from cgiraud/src/data/fetchers/source_engine.js.
- * Now loads sources from the database (MarketSource) instead of filesystem.
+ * Scraping uses external APIs (Firecrawl, WebScraping.ai) + cheerio for parsing.
+ * Puppeteer is only used as last resort when no API key is available (local dev).
  */
-import fs from "fs";
-import { execSync } from "child_process";
 import axios from "axios";
-import puppeteer from "puppeteer";
+import * as cheerio from "cheerio";
 import { prisma } from "../../../src/prisma.js";
-
-function findChromiumExecutable() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
-  const candidates = [
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/google-chrome",
-    "/snap/bin/chromium",
-  ];
-  for (const p of candidates) {
-    try { if (fs.existsSync(p)) return p; } catch {}
-  }
-  try {
-    const found = execSync("which chromium-browser 2>/dev/null || which chromium 2>/dev/null", { stdio: ["pipe", "pipe", "ignore"] }).toString().trim();
-    if (found) return found;
-  } catch {}
-  return undefined; // Puppeteer bundled Chrome
-}
 
 /**
  * Load enabled sources from DB for a workspace.
- * Returns array of { id, type, content_type, config } (cgiraud-compatible shape).
  */
 export async function loadSourcesForWorkspace(workspaceId) {
   const rows = await prisma.marketSource.findMany({
@@ -44,7 +22,7 @@ export async function loadSourcesForWorkspace(workspaceId) {
       label: r.label,
       type: r.type,
       content_type: r.contentType,
-      config: cfg.config || cfg, // support both shapes
+      config: cfg.config || cfg,
     };
   });
 }
@@ -83,7 +61,84 @@ export async function executeApiSource(sourceConfig, variables = {}) {
 }
 
 /**
- * Execute a scraping source via headless Puppeteer (with optional Firecrawl fallback).
+ * Fetch page HTML via Firecrawl API.
+ */
+async function fetchViaFirecrawl(url) {
+  const key = process.env.FIRECRAWL_API_KEY;
+  if (!key || key.startsWith("your_")) return null;
+  try {
+    const res = await axios.post(
+      "https://api.firecrawl.dev/v1/scrape",
+      { url, formats: ["rawHtml"] },
+      { headers: { Authorization: `Bearer ${key}` }, timeout: 25000 }
+    );
+    return res.data?.success && res.data?.data?.rawHtml ? res.data.data.rawHtml : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch page HTML via WebScraping.ai API.
+ */
+async function fetchViaWebScrapingAI(url) {
+  const key = process.env.WEBSCRAPING_AI_API_KEY;
+  if (!key || key.startsWith("your_")) return null;
+  try {
+    const res = await axios.get("https://api.webscraping.ai/html", {
+      params: { api_key: key, url, js: true, timeout: 15000 },
+      timeout: 25000,
+    });
+    return typeof res.data === "string" && res.data.length > 0 ? res.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse HTML with cheerio using the extraction selectors from the source config.
+ * Mirrors the Puppeteer page.evaluate logic — no browser required.
+ */
+function parseHtmlWithCheerio(html, selectors) {
+  const $ = cheerio.load(html);
+
+  if (selectors.items) {
+    const results = [];
+    $(selectors.items).slice(0, 5).each((_, el) => {
+      const getVal = (sel, attr) => {
+        if (!sel) return null;
+        const target = $(el).is(sel) ? $(el) : $(el).find(sel).first();
+        if (!target.length) return null;
+        return attr ? target.attr(attr) : target.text().trim();
+      };
+      results.push({
+        title: getVal(selectors.item_title) || "Sans titre",
+        description: getVal(selectors.item_description) || "",
+        url: getVal(selectors.item_url, "href") || "#",
+        source: selectors.source_name || "",
+        publishedAt: new Date().toISOString(),
+      });
+    });
+    return results;
+  }
+
+  // Price extraction
+  const getVal = (sel) => {
+    if (!sel) return null;
+    const text = $(sel).first().text().trim();
+    return text.replace(/,(?=\d{3}(?:[.\s]|$))/g, "").replace(",", ".") || null;
+  };
+
+  return {
+    price: getVal(selectors.price),
+    variation: getVal(selectors.variation),
+    variation_percent: getVal(selectors.variation_percent),
+  };
+}
+
+/**
+ * Execute a scraping source.
+ * Priority: Firecrawl → WebScraping.ai → Puppeteer (last resort, local dev only).
  */
 export async function executeScrapingSource(sourceConfig, targetId) {
   const cfg = sourceConfig.config;
@@ -91,79 +146,62 @@ export async function executeScrapingSource(sourceConfig, targetId) {
   if (!target) return null;
 
   const url = `${cfg.base_url.replace(/\/$/, "")}/${target.path.replace(/^\//, "")}`;
-  const firecrawlKey = process.env.FIRECRAWL_API_KEY;
-  let rawHtml = null;
+  const selectors = cfg.extraction_selectors;
 
-  if (firecrawlKey && !firecrawlKey.startsWith("your_")) {
+  // 1. Try Firecrawl
+  let html = await fetchViaFirecrawl(url);
+
+  // 2. Try WebScraping.ai
+  if (!html) html = await fetchViaWebScrapingAI(url);
+
+  // 3. Parse with cheerio if any API returned HTML
+  if (html) {
     try {
-      const res = await axios.post(
-        "https://api.firecrawl.dev/v1/scrape",
-        { url, formats: ["rawHtml"] },
-        { headers: { Authorization: `Bearer ${firecrawlKey}` }, timeout: 20000 }
-      );
-      if (res.data?.success && res.data?.data?.rawHtml) rawHtml = res.data.data.rawHtml;
+      return parseHtmlWithCheerio(html, selectors);
     } catch {
-      // Fall through to Puppeteer
+      return null;
     }
   }
 
-  let browser;
+  // 4. Last resort: Puppeteer (local dev without API keys)
   try {
-    browser = await puppeteer.launch({
+    const puppeteer = await import("puppeteer");
+    const browser = await puppeteer.default.launch({
       headless: true,
-      executablePath: findChromiumExecutable(),
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
     });
-    const page = await browser.newPage();
-    if (rawHtml) {
-      await page.setContent(rawHtml, { waitUntil: "domcontentloaded" });
-    } else {
+    try {
+      const page = await browser.newPage();
       if (cfg.navigation?.user_agent) await page.setUserAgent(cfg.navigation.user_agent);
       const navTimeout = cfg.navigation?.timeout || 30000;
       page.setDefaultNavigationTimeout(navTimeout);
-      await page.goto(url, {
-        waitUntil: cfg.navigation?.wait_until || "networkidle2",
-        timeout: navTimeout,
-      });
+      await page.goto(url, { waitUntil: cfg.navigation?.wait_until || "networkidle2", timeout: navTimeout });
       if (cfg.navigation?.wait_for_selector) {
-        await page
-          .waitForSelector(cfg.navigation.wait_for_selector, { timeout: 10000 })
-          .catch(() => {});
+        await page.waitForSelector(cfg.navigation.wait_for_selector, { timeout: 10000 }).catch(() => {});
       }
-    }
-
-    return await page.evaluate((selectors) => {
-      if (selectors.items) {
-        const elements = Array.from(document.querySelectorAll(selectors.items)).slice(0, 5);
-        return elements.map((el) => {
-          const getVal = (sel, attr) => {
-            if (!sel) return null;
-            const t = el.matches(sel) ? el : el.querySelector(sel);
-            if (!t) return null;
-            return attr ? t.getAttribute(attr) : t.innerText.trim();
-          };
-          return {
-            title: getVal(selectors.item_title) || "Sans titre",
-            description: getVal(selectors.item_description) || "",
-            url: getVal(selectors.item_url, "href") || window.location.href,
-            source: selectors.source_name || window.location.hostname,
+      return await page.evaluate((sel) => {
+        const getVal = (s, attr) => {
+          if (!s) return null;
+          const t = document.querySelector(s);
+          if (!t) return null;
+          return attr ? t.getAttribute(attr) : t.innerText.trim().replace(/,(?=\d{3}(?:[.\s]|$))/g, "").replace(",", ".");
+        };
+        if (sel.items) {
+          return Array.from(document.querySelectorAll(sel.items)).slice(0, 5).map((el) => ({
+            title: (el.querySelector(sel.item_title) || el).innerText.trim() || "Sans titre",
+            description: el.querySelector(sel.item_description)?.innerText.trim() || "",
+            url: el.querySelector(sel.item_url)?.getAttribute("href") || window.location.href,
+            source: sel.source_name || window.location.hostname,
             publishedAt: new Date().toISOString(),
-          };
-        });
-      }
-      const getVal = (sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return null;
-        return el.innerText.trim().replace(/,(?=\d{3}(?:[.\s]|$))/g, "").replace(",", ".");
-      };
-      return {
-        price: getVal(selectors.price),
-        variation: getVal(selectors.variation),
-        variation_percent: getVal(selectors.variation_percent),
-      };
-    }, cfg.extraction_selectors);
-  } finally {
-    if (browser) await browser.close().catch(() => {});
+          }));
+        }
+        return { price: getVal(sel.price), variation: getVal(sel.variation), variation_percent: getVal(sel.variation_percent) };
+      }, selectors);
+    } finally {
+      await browser.close().catch(() => {});
+    }
+  } catch {
+    return null;
   }
 }
 
