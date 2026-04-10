@@ -32,6 +32,24 @@ function fallbackSynthesis(articles, productName) {
   return { points, tendance: "neutre", niveau_risque: "modéré" };
 }
 
+async function mapWithConcurrency(items, limit, worker) {
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function runWorker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => runWorker());
+  await Promise.all(workers);
+  return results;
+}
+
 export async function synthesizeProduct(productName, articles, provider, { demoMode = false } = {}) {
   if (demoMode || !provider) return fallbackSynthesis(articles, productName);
 
@@ -71,11 +89,21 @@ export async function synthesizeAll(newsData, productNames, workspaceId, opts = 
     console.warn(`No AI provider configured for workspace ${workspaceId}, using fallback`);
   }
 
+  const entries = Object.entries(newsData || {});
+  if (entries.length === 0) return {};
+
+  const concurrency = Math.max(1, Number(opts?.concurrency) || 2);
+  const synthesized = await mapWithConcurrency(entries, concurrency, async ([key, articles]) => {
+    const name = (productNames && typeof productNames === "object" && !Array.isArray(productNames))
+      ? (productNames[key] || key)
+      : key;
+    const summary = await synthesizeProduct(name, articles, provider, opts);
+    return [key, summary];
+  });
+
   const result = {};
-  for (const [key, articles] of Object.entries(newsData)) {
-    const name = productNames[key] || key;
-    result[key] = await synthesizeProduct(name, articles, provider, opts);
-    await new Promise((r) => setTimeout(r, 300));
+  for (const [key, value] of synthesized) {
+    result[key] = value;
   }
   return result;
 }

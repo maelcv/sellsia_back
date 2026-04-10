@@ -456,4 +456,167 @@ router.get("/events", (req, res) => {
   });
 });
 
+const updateReminderSchema = z.object({
+  taskDescription: z
+    .string()
+    .min(1, "La description ne peut pas être vide")
+    .max(1000, "La description est trop longue (max 1000 caractères)")
+    .optional(),
+  scheduledAt: z
+    .string()
+    .regex(
+      /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(.\d{3})?Z$/,
+      "scheduledAt MUST be ISO 8601 UTC format ONLY"
+    )
+    .datetime({ message: "Invalid ISO 8601 UTC format" })
+    .optional(),
+  timezone: z
+    .string()
+    .refine(isValidTimezone, "timezone is not a valid IANA timezone")
+    .optional(),
+  channel: z
+    .enum(["chat", "whatsapp", "email", "push"])
+    .optional(),
+  targetPhone: z
+    .string()
+    .regex(/^\+[1-9]\d{7,14}$/, "targetPhone doit être au format E.164 (ex: +33612345678)")
+    .nullable()
+    .optional(),
+  targetEmail: z
+    .string()
+    .email("targetEmail doit être une adresse email valide")
+    .nullable()
+    .optional(),
+});
+
+// --- PATCH /api/reminders/:id — Modifier un rappel PENDING ----------
+router.patch("/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
+  const reminderId = parseInt(req.params.id, 10);
+  if (isNaN(reminderId)) {
+    return res.status(400).json({ error: "ID de rappel invalide" });
+  }
+
+  const parsed = updateReminderSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Données invalides",
+      details: parsed.error.flatten().fieldErrors,
+    });
+  }
+
+  try {
+    const reminder = await prisma.reminder.findFirst({
+      where: {
+        id: reminderId,
+        userId: req.user.sub,
+      },
+    });
+
+    if (!reminder) {
+      return res.status(404).json({ error: "Rappel introuvable" });
+    }
+
+    if (reminder.status !== "PENDING") {
+      return res.status(409).json({
+        error: `Impossible de modifier un rappel avec le statut \"${reminder.status}\". Seuls les rappels PENDING peuvent être modifiés.`,
+      });
+    }
+
+    const data = parsed.data;
+    const nextChannelRaw = data.channel ?? reminder.channel;
+    const nextChannel = nextChannelRaw === "push" ? "chat" : nextChannelRaw;
+
+    const nextScheduledAt = data.scheduledAt ? new Date(data.scheduledAt) : reminder.scheduledAt;
+    if (isNaN(nextScheduledAt.getTime())) {
+      return res.status(400).json({ error: "Date scheduledAt invalide" });
+    }
+    if (nextScheduledAt < new Date(Date.now() - 30_000)) {
+      return res.status(400).json({
+        error: "Invalid scheduled time",
+        code: "PAST_DATE",
+      });
+    }
+
+    const nextTargetPhone = data.targetPhone !== undefined ? data.targetPhone : reminder.targetPhone;
+    const nextTargetEmail = data.targetEmail !== undefined ? data.targetEmail : reminder.targetEmail;
+
+    if (nextChannel === "whatsapp" && !nextTargetPhone) {
+      return res.status(400).json({ error: "targetPhone est requis pour le canal whatsapp" });
+    }
+    if (nextChannel === "email" && !nextTargetEmail) {
+      return res.status(400).json({ error: "targetEmail est requis pour le canal email" });
+    }
+
+    const updated = await prisma.reminder.update({
+      where: { id: reminderId },
+      data: {
+        ...(data.taskDescription !== undefined && { taskDescription: data.taskDescription }),
+        ...(data.scheduledAt !== undefined && { scheduledAt: nextScheduledAt }),
+        ...(data.timezone !== undefined && { timezone: data.timezone }),
+        ...(data.channel !== undefined && { channel: nextChannel }),
+        ...(data.targetPhone !== undefined && { targetPhone: nextTargetPhone || null }),
+        ...(data.targetEmail !== undefined && { targetEmail: nextTargetEmail || null }),
+      },
+    });
+
+    await prisma.taskAssignment.updateMany({
+      where: {
+        userId: req.user.sub,
+        entityType: "reminder",
+        entityId: String(reminderId),
+        status: { in: ["pending", "in_progress"] },
+      },
+      data: {
+        title: updated.taskDescription,
+        dueDate: updated.scheduledAt,
+      },
+    });
+
+    return res.json({
+      message: "Rappel modifié",
+      reminder: updated,
+    });
+  } catch (err) {
+    console.error("[reminders] Erreur modification rappel:", err);
+    return res.status(500).json({ error: "Erreur interne lors de la modification du rappel" });
+  }
+});
+
+// --- DELETE /api/reminders/:id — Supprimer un rappel -----------------
+router.delete("/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
+  const reminderId = parseInt(req.params.id, 10);
+  if (isNaN(reminderId)) {
+    return res.status(400).json({ error: "ID de rappel invalide" });
+  }
+
+  try {
+    const reminder = await prisma.reminder.findFirst({
+      where: {
+        id: reminderId,
+        userId: req.user.sub,
+      },
+      select: { id: true },
+    });
+
+    if (!reminder) {
+      return res.status(404).json({ error: "Rappel introuvable" });
+    }
+
+    await prisma.reminder.delete({ where: { id: reminderId } });
+
+    await prisma.taskAssignment.deleteMany({
+      where: {
+        userId: req.user.sub,
+        entityType: "reminder",
+        entityId: String(reminderId),
+      },
+    });
+
+    return res.json({ message: "Rappel supprimé", success: true });
+  } catch (err) {
+    console.error("[reminders] Erreur suppression rappel:", err);
+    return res.status(500).json({ error: "Erreur interne lors de la suppression du rappel" });
+  }
+});
+
 export default router;
