@@ -11,17 +11,18 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
+let wkhtmltopdfAvailabilityPromise = null;
 
 /**
  * Check if wkhtmltopdf is available on this system.
  */
 async function isWkhtmltopdfAvailable() {
-  try {
-    await execFileAsync("wkhtmltopdf", ["--version"], { timeout: 5000 });
-    return true;
-  } catch {
-    return false;
+  if (!wkhtmltopdfAvailabilityPromise) {
+    wkhtmltopdfAvailabilityPromise = execFileAsync("wkhtmltopdf", ["--version"], { timeout: 5000 })
+      .then(() => true)
+      .catch(() => false);
   }
+  return wkhtmltopdfAvailabilityPromise;
 }
 
 /**

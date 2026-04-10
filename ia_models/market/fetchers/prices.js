@@ -64,14 +64,17 @@ async function loadPreviousSnapshots(workspaceId) {
 
 async function saveSnapshots(workspaceId, prices) {
   const entries = Object.entries(prices).filter(([, d]) => d.price != null);
-  for (const [key, data] of entries) {
-    await prisma.marketPriceSnapshot.create({
-      data: {
-        workspaceId, productKey: key,
-        price: data.price, unit: data.unit || null, source: data.source || null,
-      },
-    });
-  }
+  if (entries.length === 0) return;
+
+  await prisma.marketPriceSnapshot.createMany({
+    data: entries.map(([key, data]) => ({
+      workspaceId,
+      productKey: key,
+      price: data.price,
+      unit: data.unit || null,
+      source: data.source || null,
+    }))
+  });
 }
 
 async function fetchYahooSymbol(symbol, config) {
@@ -141,7 +144,8 @@ export async function fetchAllPrices({ workspaceId, demoMode = false, sourceStat
     if (!price) {
       const symbols = [config.symbol, config.altSymbol].filter(Boolean);
       for (const symbol of symbols) {
-        await new Promise((r) => setTimeout(r, 400));
+        // Keep a small pacing delay, but avoid large fixed waits.
+        await new Promise((r) => setTimeout(r, 120));
         const yp = await fetchYahooSymbol(symbol, config);
         if (yp == null) {
           sourceStatus.push({ product: key, source: `yahoo:${symbol}`, status: "error" });
