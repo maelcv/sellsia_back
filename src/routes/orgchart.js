@@ -40,7 +40,6 @@ Instructions:
  */
 router.post("/extract", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    console.log("[orgchart] Extract request received");
     const { imageBase64, mimeType } = z
       .object({
         imageBase64: z.string().min(10),
@@ -48,14 +47,10 @@ router.post("/extract", requireAuth, requireRole("admin"), async (req, res) => {
       })
       .parse(req.body);
 
-    console.log("[orgchart] Parsed request - mimeType:", mimeType, "imageBase64 length:", imageBase64.length);
-
     // Get default AI provider config
-    console.log("[orgchart] Fetching default AI provider...");
     const defaultProviderSetting = await prisma.systemSetting.findUnique({
       where: { key: "default_ai_provider" },
     });
-    console.log("[orgchart] Provider setting found:", !!defaultProviderSetting);
 
     if (!defaultProviderSetting) {
       return res.status(400).json({
@@ -77,7 +72,6 @@ router.post("/extract", requireAuth, requireRole("admin"), async (req, res) => {
     if (providerConfig.apiKeyEncrypted) {
       try {
         apiKey = decryptSecret(providerConfig.apiKeyEncrypted);
-        console.log("[orgchart] API key decrypted, length:", apiKey?.length);
       } catch (err) {
         console.error("[orgchart] Failed to decrypt API key:", err.message);
         return res.status(400).json({
@@ -85,11 +79,9 @@ router.post("/extract", requireAuth, requireRole("admin"), async (req, res) => {
         });
       }
     } else {
-      console.warn("[orgchart] No encrypted API key found in provider config");
     }
 
     if (!apiKey) {
-      console.error("[orgchart] API key is empty/null");
       return res.status(400).json({
         error: "Clé API du provider non configurée",
       });
@@ -103,7 +95,6 @@ router.post("/extract", requireAuth, requireRole("admin"), async (req, res) => {
 
     // Note: OCR extraction requires a provider with vision capabilities (Mistral, Claude, etc.)
     // Currently configured to use Mistral. The provider code should support vision models.
-    console.log("[orgchart] Creating provider with model:", modelToUse);
     const provider = new MistralProvider({
       apiKey,
       defaultModel: modelToUse,
