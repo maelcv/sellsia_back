@@ -40,6 +40,20 @@ jobs:
           source: "src,ia_models,package.json,package-lock.json,server.js,prisma"
           target: "/var/www/ceremia/api"
 
+      - name: 📦 Installation des dépendances système Chromium
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sudo apt-get update -y
+            sudo apt-get install -y chromium-browser libglib2.0-0 libnss3 libnspr4 libatk1.0-0 \
+              libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 \
+              libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 \
+              libpangocairo-1.0-0 libgtk-3-0 libx11-xcb1 libxcursor1 libxi6 libxtst6 2>/dev/null || \
+            sudo apt-get install -y chromium 2>/dev/null || true
+
       - name: 🔄 Redémarrage de l'API avec PM2
         uses: appleboy/ssh-action@master
         with:

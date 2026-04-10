@@ -2,7 +2,28 @@
  * HTML → PDF via Puppeteer.
  * Uses a singleton browser to amortize launch cost across runs.
  */
+import fs from "fs";
+import { execSync } from "child_process";
 import puppeteer from "puppeteer";
+
+function findChromiumExecutable() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  const candidates = [
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/snap/bin/chromium",
+  ];
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p; } catch {}
+  }
+  try {
+    const found = execSync("which chromium-browser 2>/dev/null || which chromium 2>/dev/null", { stdio: ["pipe", "pipe", "ignore"] }).toString().trim();
+    if (found) return found;
+  } catch {}
+  return undefined;
+}
 
 let browserPromise = null;
 
@@ -10,12 +31,13 @@ async function getBrowser() {
   if (browserPromise) return browserPromise;
   browserPromise = puppeteer.launch({
     headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    executablePath: findChromiumExecutable(),
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
+      "--single-process",
       "--font-render-hinting=none",
     ],
   });

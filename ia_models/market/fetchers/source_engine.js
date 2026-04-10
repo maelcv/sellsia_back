@@ -3,9 +3,30 @@
  * Ported from cgiraud/src/data/fetchers/source_engine.js.
  * Now loads sources from the database (MarketSource) instead of filesystem.
  */
+import fs from "fs";
+import { execSync } from "child_process";
 import axios from "axios";
 import puppeteer from "puppeteer";
 import { prisma } from "../../../src/prisma.js";
+
+function findChromiumExecutable() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  const candidates = [
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/snap/bin/chromium",
+  ];
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p; } catch {}
+  }
+  try {
+    const found = execSync("which chromium-browser 2>/dev/null || which chromium 2>/dev/null", { stdio: ["pipe", "pipe", "ignore"] }).toString().trim();
+    if (found) return found;
+  } catch {}
+  return undefined; // Puppeteer bundled Chrome
+}
 
 /**
  * Load enabled sources from DB for a workspace.
@@ -90,8 +111,8 @@ export async function executeScrapingSource(sourceConfig, targetId) {
   try {
     browser = await puppeteer.launch({
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      executablePath: findChromiumExecutable(),
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
     });
     const page = await browser.newPage();
     if (rawHtml) {
