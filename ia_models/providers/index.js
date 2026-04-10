@@ -86,7 +86,7 @@ export async function getProviderForTenant(tenantId) {
     FROM client_service_links csl
     JOIN external_services es ON es.id = csl.service_id
     JOIN users u ON u.id = csl.owner_user_id
-    WHERE u.tenant_id = $1
+    WHERE u.workspace_id = $1
       AND u.role = 'client'
       AND csl.status = 'active'
       AND es.category IN ('ia_cloud', 'ia_local')
@@ -113,11 +113,11 @@ export async function getProviderForTenant(tenantId) {
     }
 
     // Remonter vers le parent
-    const parent = await prisma.tenant.findUnique({
+    const parent = await prisma.workspace.findUnique({
       where: { id: currentTenantId },
-      select: { parentTenantId: true }
+      select: { parentWorkspaceId: true }
     });
-    currentTenantId = parent?.parentTenantId || null;
+    currentTenantId = parent?.parentWorkspaceId || null;
   }
 
   return null;
