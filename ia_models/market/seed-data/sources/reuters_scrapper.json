@@ -1,0 +1,27 @@
+{
+  "id": "reuters_news_scraper",
+  "name": "Scrapping Actualités Reuters Commodities",
+  "type": "scrapping",
+  "content_type": "news",
+  "config": {
+    "base_url": "https://www.reuters.com/markets/commodities/",
+    "urls_to_scrape": [
+      { "id": "general", "path": "" }
+    ],
+    "urls_to_exclude": [
+      "/investigates/", "/video/"
+    ],
+    "navigation": {
+      "wait_for_selector": "li.story-collection__story__1B5XI, div[data-testid='MediaStoryCard']",
+      "timeout": 30000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "items": "li.story-collection__story__1B5XI, div[data-testid='MediaStoryCard']",
+      "item_title": "h3",
+      "item_description": "p",
+      "item_url": "a",
+      "source_name": "Reuters"
+    }
+  }
+}

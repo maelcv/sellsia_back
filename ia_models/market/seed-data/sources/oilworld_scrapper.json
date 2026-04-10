@@ -1,0 +1,24 @@
+{
+  "id": "oilworld_scrapper",
+  "name": "Oil World (ISTA Mielke) Insights",
+  "type": "scrapping",
+  "content_type": "news",
+  "config": {
+    "base_url": "https://www.oilworld.biz/",
+    "urls_to_scrape": [
+      { "id": "general", "path": "t/market-view" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "article",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0"
+    },
+    "extraction_selectors": {
+      "items": "article",
+      "item_title": "h3",
+      "item_description": "p",
+      "source_name": "Oil World"
+    }
+  }
+}

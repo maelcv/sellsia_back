@@ -1,0 +1,38 @@
+[
+  {
+    "externalId": "C001",
+    "nom": "Coopérative Beauce Atlantique",
+    "contact": "M. Rousseau",
+    "email": "mael.vigneau33@gmail.com",
+    "produits": ["colza", "ble"],
+    "langue": "fr",
+    "note": "Focus sur le marché européen des oléagineux et le blé panifiable"
+  },
+  {
+    "externalId": "C002",
+    "nom": "Huilerie Lesieur France",
+    "contact": "Mme. Fontaine",
+    "email": "malickclikenoi@gmail.com",
+    "produits": ["tournesol", "palme"],
+    "langue": "fr",
+    "note": "Priorité aux huiles tropicales et tournesol haute-oléique"
+  },
+  {
+    "externalId": "C003",
+    "nom": "Nutrisoya International",
+    "contact": "M. Berger",
+    "email": "mael.chebbi-vigneau@linctra.com",
+    "produits": ["soja", "tournesol"],
+    "langue": "fr",
+    "note": "Spécialiste soja non-OGM et tournesol origine France/Ukraine"
+  },
+  {
+    "externalId": "C004",
+    "nom": "Oleon NV Belgium",
+    "contact": "Mme. Deschamps",
+    "email": "mael.chebbi-vigneau@kiliogene.com",
+    "produits": ["palme", "colza"],
+    "langue": "fr",
+    "note": "Transformation industrielle — corrélation colza/pétrole importante"
+  }
+]

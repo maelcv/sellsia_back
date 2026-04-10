@@ -1,0 +1,35 @@
+{
+  "id": "news_api_global",
+  "name": "Actualités de Marché via NewsAPI",
+  "type": "api",
+  "config": {
+    "url": "https://newsapi.org/v2/everything",
+    "method": "GET",
+    "auth": {
+      "type": "query",
+      "key_field": "apiKey",
+      "env_var_name": "NEWS_API_KEY"
+    },
+    "params": {
+      "q": "{{query}}",
+      "sortBy": "publishedAt",
+      "pageSize": "10"
+    },
+    "search_filters": {
+      "colza": "rapeseed OR canola OR colza",
+      "soja": "soybean market futures",
+      "tournesol": "sunflower oil Ukraine",
+      "palme": "palm oil CPO",
+      "petrole": "crude oil Brent OPEP",
+      "general": "oilseed commodity market agriculture"
+    },
+    "mappings": {
+      "items_path": "articles",
+      "title": "title",
+      "description": "description",
+      "url": "url",
+      "source_name": "source.name",
+      "date": "publishedAt"
+    }
+  }
+}

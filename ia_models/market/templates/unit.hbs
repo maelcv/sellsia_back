@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>C. Giraud & Cie — Rapport Personnalisé {{client.nom}} — {{dateShort}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>{{{embeddedCSS}}}</style>
+</head>
+<body>
+
+  {{#if demoMode}}<div class="demo-watermark">DÉMO</div>{{/if}}
+
+  <!-- ═══════════════════════════════════════
+       HEADER
+  ═══════════════════════════════════════ -->
+  <header class="report-header">
+    <div class="header-inner">
+      <div class="header-logo">
+        {{#if logoBase64}}
+          <img src="{{logoBase64}}" alt="C. Giraud & Cie">
+        {{else}}
+          <div class="header-logo-fallback">
+            <div class="header-logo-mark">G</div>
+            <div>
+              <div class="header-logo-text">C. Giraud & Cie</div>
+              <div class="header-logo-sub">Courtier en Matières Premières</div>
+            </div>
+          </div>
+        {{/if}}
+      </div>
+      <div class="header-info">
+        <div class="report-type">Rapport Expert Personnalisé</div>
+        <div class="report-title">Analyse de l'Après-Midi</div>
+        <div class="report-date">{{date}} — {{time}}</div>
+      </div>
+    </div>
+
+    <!-- Client Banner -->
+    <div class="client-banner">
+      <div>
+        <div class="client-greeting">Bonjour {{client.contact}},</div>
+        <div class="client-name">{{client.nom}}</div>
+      </div>
+      <div class="client-products">
+        {{#each client.produits}}
+        <span class="client-product-tag">{{capitalize this}}</span>
+        {{/each}}
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════
+       CONTENT
+  ═══════════════════════════════════════ -->
+  <div class="content">
+
+    <!-- === SYNTHÈSE DES MARCHÉS SUIVIS === -->
+    <div class="section-header">
+      <h2 class="section-title">Vos Marchés</h2>
+      <span class="section-subtitle">Sélection personnalisée selon votre profil</span>
+    </div>
+
+    <div class="prices-table-wrap">
+      <table class="prices-table">
+        <thead>
+          <tr>
+            <th style="width:24%">Produit</th>
+            <th style="width:22%">Bourse</th>
+            <th style="width:16%">Prix</th>
+            <th style="width:13%">Δ J-1</th>
+            <th style="width:10%">%</th>
+            <th style="width:15%">Tendance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{#each productsList}}
+          <tr>
+            <td>
+              <div class="product-name-cell">
+                <div class="product-dot" style="background:{{color}}"></div>
+                <div>
+                  <div class="product-name-label">{{name}}</div>
+                  {{#if note}}<div class="product-exchange-label" style="font-style:italic">{{note}}</div>{{/if}}
+                </div>
+              </div>
+            </td>
+            <td><span class="product-exchange-label">{{exchange}}</span></td>
+            <td>
+              <span class="price-cell">{{formatPrice price}}</span>
+              <span class="price-unit">{{unit}}</span>
+            </td>
+            <td class="delta-cell {{delta.direction}}">
+              {{deltaSign delta.value}}{{formatNum delta.value}}
+            </td>
+            <td class="delta-cell {{delta.direction}}">
+              {{deltaSign delta.percent}}{{formatNum delta.percent}}%
+            </td>
+            <td>
+              <span class="trend-badge {{delta.direction}}">{{trendLabel delta.direction}}</span>
+            </td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- === GRAPHIQUE COMPARATIF (si 2+ produits) === -->
+    {{#ifGt productsList.length 1}}
+    <div class="chart-wrap">
+      <div class="chart-title">Comparatif des cours — Vos produits suivis</div>
+      {{{comparisonChart}}}
+    </div>
+    {{/ifGt}}
+
+    <!-- === SECTIONS DÉTAILLÉES PAR PRODUIT === -->
+    {{#each productsList}}
+    <div class="product-section">
+
+      <!-- En-tête produit -->
+      <div class="product-header" style="border-left-color:{{color}}">
+        <div>
+          <div class="product-title">{{name}}</div>
+          <div class="product-section-exchange">{{exchange}}{{#if note}} — <em>{{note}}</em>{{/if}}</div>
+        </div>
+        <div class="product-header-right">
+          <div class="product-price-big">
+            {{formatPrice price}} <span class="product-price-unit">{{unit}}</span>
+          </div>
+          <div class="product-delta-badge {{delta.direction}}">
+            {{deltaArrow delta.direction}}&nbsp;
+            {{deltaSign delta.value}}{{formatNum delta.value}}
+            &nbsp;({{deltaSign delta.percent}}{{formatNum delta.percent}}%)
+          </div>
+        </div>
+      </div>
+
+      <!-- Analyse IA -->
+      {{#if synthesis}}
+      <div class="synthesis-box">
+        <div class="synthesis-header">
+          <span class="synthesis-icon">🧠</span>
+          <span class="synthesis-label">Analyse Expert</span>
+          <span class="tendance-badge tendance-{{cssClass synthesis.tendance}}">{{capitalize synthesis.tendance}}</span>
+          <span class="risk-badge risk-{{riskCssClass synthesis.niveau_risque}}">Risque {{synthesis.niveau_risque}}</span>
+        </div>
+        <ul class="synthesis-points">
+          {{#each synthesis.points}}
+          <li>{{this}}</li>
+          {{/each}}
+        </ul>
+      </div>
+      {{/if}}
+
+      <!-- Note corrélation pétrole (si colza en suivi) -->
+      {{#ifEqual key "colza"}}
+      <div class="correlation-note">
+        💡 <strong>À surveiller :</strong> Le Brent Crude est actuellement à <strong>{{../petrolPrice}} $/baril</strong>. 
+        Cette cotation influence directement la demande en biodiesel à base de colza (RED III). 
+        Une hausse du brut renforce la compétitivité du colza-biodiesel européen.
+      </div>
+      {{/ifEqual}}
+
+      {{#ifEqual key "palme"}}
+      <div class="correlation-note">
+        💡 <strong>Contexte :</strong> La production malaisienne de CPO et la demande indienne sont les deux principaux drivers du marché de la palme. Surveiller les droits d'importation indiens et les données MPOB mensuelles.
+      </div>
+      {{/ifEqual}}
+
+      {{#ifEqual key "soja"}}
+      <div class="correlation-note">
+        💡 <strong>Facteurs clés :</strong> La récolte brésilienne et les flux commerciaux Chine-USA sont déterminants pour le soja CBOT. Surveiller le rapport WASDE mensuel de l'USDA et les conditions météo en Amérique du Sud.
+      </div>
+      {{/ifEqual}}
+
+      <!-- Actualités -->
+      {{#if news}}
+      {{#ifGt news.length 0}}
+      <div class="news-container">
+        <h3 class="news-header">Actualités du jour</h3>
+        {{#each news}}
+        <div class="news-item">
+          <div class="news-meta">
+            <span class="news-source">{{source}}</span>
+            <span class="news-time">{{timeAgo}}</span>
+          </div>
+          <div class="news-title">{{title}}</div>
+          {{#if description}}
+          <div class="news-desc">{{description}}</div>
+          {{/if}}
+        </div>
+        {{/each}}
+      </div>
+      {{/ifGt}}
+      {{/if}}
+
+    </div>
+    {{/each}}
+
+  </div><!-- /content -->
+
+  <!-- ═══════════════════════════════════════
+       FOOTER
+  ═══════════════════════════════════════ -->
+  <footer class="report-footer">
+    <div class="footer-inner">
+      <div class="footer-company">C. Giraud & Cie</div>
+      <div class="footer-disclaimer">
+        Rapport personnalisé préparé exclusivement pour <strong style="color:var(--gold-light)">{{client.nom}}</strong>.
+        À titre informatif uniquement — ne constitue pas un conseil en investissement.
+      </div>
+      <div class="footer-generated">Généré le {{date}} à {{time}}</div>
+    </div>
+  </footer>
+
+</body>
+</html>

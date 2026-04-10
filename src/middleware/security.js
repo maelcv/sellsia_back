@@ -2,7 +2,7 @@ import rateLimit from "express-rate-limit";
 
 export const globalRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 1500, // 100 req/min — allows 2s polling
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests. Please try again later." }

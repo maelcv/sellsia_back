@@ -1,0 +1,27 @@
+{
+  "id": "investing_com_futures_scraper",
+  "name": "Scrapping Contrats à Terme (Investing.com)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://www.investing.com/commodities/",
+    "urls_to_scrape": [
+      { "id": "colza",     "path": "rapeseed" },
+      { "id": "soja",      "path": "soy-bean" },
+      { "id": "tournesol", "path": "sunflower-oil" },
+      { "id": "palme",     "path": "crude-palm-oil" },
+      { "id": "petrole",   "path": "crude-oil" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "[data-test='instrument-price-last']",
+      "timeout": 20000,
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "price": "[data-test='instrument-price-last']",
+      "variation": "[data-test='instrument-price-change']",
+      "variation_percent": "[data-test='instrument-price-change-percent']"
+    }
+  }
+}

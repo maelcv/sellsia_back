@@ -1,0 +1,36 @@
+{
+  "id": "gnews_api_global",
+  "name": "GNews API (Google News Alternative)",
+  "type": "api",
+  "content_type": "news",
+  "config": {
+    "url": "https://gnews.io/api/v4/search",
+    "method": "GET",
+    "auth": {
+      "type": "query",
+      "key_field": "apikey",
+      "env_var_name": "GNEWS_API_KEY"
+    },
+    "params": {
+      "q": "{{query}}",
+      "lang": "fr",
+      "max": 5
+    },
+    "search_filters": {
+      "colza": "colza OR rapeseed",
+      "soja": "soja OR soybean CBOT",
+      "tournesol": "huile tournesol marché",
+      "palme": "huile de palme CPO",
+      "petrole": "pétrole Brent cours",
+      "general": "commodités agricoles huiles végétales"
+    },
+    "mappings": {
+      "items_path": "articles",
+      "title": "title",
+      "description": "description",
+      "source_name": "source.name",
+      "url": "url",
+      "date": "publishedAt"
+    }
+  }
+}

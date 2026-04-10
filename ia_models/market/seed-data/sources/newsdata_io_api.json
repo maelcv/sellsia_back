@@ -1,0 +1,36 @@
+{
+  "id": "newsdata_io_global",
+  "name": "Actualités de Marché via Newsdata.io",
+  "type": "api",
+  "content_type": "news",
+  "config": {
+    "url": "https://newsdata.io/api/1/news",
+    "method": "GET",
+    "auth": {
+      "type": "query",
+      "key_field": "apikey",
+      "env_var_name": "NEWSDATA_IO_API_KEY"
+    },
+    "params": {
+      "q": "{{query}}",
+      "language": "fr,en",
+      "size": 10
+    },
+    "search_filters": {
+      "colza": "colza OR rapeseed OR canola",
+      "soja": "soja OR soybean",
+      "tournesol": "tournesol OR sunflower",
+      "palme": "palme OR \"palm oil\"",
+      "petrole": "pétrole OR Brent OR \"crude oil\"",
+      "general": "colza OR soja OR tournesol OR palme OR pétrole"
+    },
+    "mappings": {
+      "items_path": "results",
+      "title": "title",
+      "description": "description",
+      "url": "link",
+      "source_name": "source_id",
+      "date": "pubDate"
+    }
+  }
+}

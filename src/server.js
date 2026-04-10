@@ -45,6 +45,11 @@ import profileSecurityRoutes from "./routes/profile-security.js";
 import { startReminderWorker, stopReminderWorker } from "../ia_models/reminders/reminder-service.js";
 import { startEnrichmentWorker } from "../ia_models/workers/enrichment-worker.js";
 import { startImportWorker } from "../ia_models/workers/import-worker.js";
+import {
+  startMarketReportsWorker,
+  stopMarketReportsWorker,
+} from "../ia_models/workers/market-reports-worker.js";
+import marketReportsRoutes from "./routes/market-reports.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -160,6 +165,7 @@ app.use("/api/sub-agents", subAgentsRoutes);
 app.use("/api/ai-providers", aiProvidersRoutes);
 app.use("/api/onboarding/orgchart", orgchartRoutes);
 app.use("/api/profile", profileSecurityRoutes);
+app.use("/api/market-reports", marketReportsRoutes);
 
 app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
   // Enrich with fields not in JWT (like twoFactorEnabled)
@@ -194,6 +200,7 @@ process.on("unhandledRejection", (err) => {
 process.on("SIGTERM", async () => {
   console.log("[Server] SIGTERM received, disconnecting Prisma...");
   stopReminderWorker();
+  stopMarketReportsWorker();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -224,6 +231,9 @@ app.listen(config.port, () => {
   console.log(`Sellsia dashboard API listening on http://localhost:${config.port}`);
   // Démarrer tous les workers après que le serveur est prêt
   startReminderWorker();
+  startMarketReportsWorker(prisma).catch((err) =>
+    console.error("[Server] market reports worker failed to start:", err)
+  );
   startEnrichmentWorker();
   startImportWorker();
 });

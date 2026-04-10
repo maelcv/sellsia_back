@@ -1,0 +1,24 @@
+{
+  "id": "spglobal_scrapper",
+  "name": "S&P Global Commodity Insights",
+  "type": "scrapping",
+  "content_type": "news",
+  "config": {
+    "base_url": "https://www.spglobal.com/commodityinsights/en/market-insights/latest-news/agriculture",
+    "urls_to_scrape": [
+      { "id": "general", "path": "" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": ".latest-news-list",
+      "timeout": 20000,
+      "user_agent": "Mozilla/5.0"
+    },
+    "extraction_selectors": {
+      "items": ".latest-news-item",
+      "item_title": "h4",
+      "item_description": ".summary",
+      "source_name": "S&P Global"
+    }
+  }
+}

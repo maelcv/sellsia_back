@@ -1,0 +1,12 @@
+{
+  "id": "usda_rss_api",
+  "name": "USDA / FAS RSS Feed",
+  "type": "api",
+  "content_type": "news",
+  "config": {
+    "url": "https://www.usda.gov/rss/home.xml",
+    "method": "GET",
+    "params": {},
+    "mappings": {}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "matbarofex_scrapper",
+  "name": "Matba Rofex (Argentine) - Soja, Tournesol, Colza",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://matbarofex.com.ar/mercados/",
+    "urls_to_scrape": [
+      { "id": "soja",      "path": "agricolas" },
+      { "id": "tournesol", "path": "agricolas" },
+      { "id": "colza",     "path": "agricolas" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "table.table-striped",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0"
+    },
+    "extraction_selectors": {
+      "soja":      { "price": "tr[data-product='soja'] td.last-price", "variation": "tr[data-product='soja'] td.variation" },
+      "tournesol": { "price": "tr[data-product='girasol'] td.last-price", "variation": "tr[data-product='girasol'] td.variation" },
+      "colza":     { "price": "tr[data-product='canola'] td.last-price", "variation": "tr[data-product='canola'] td.variation" }
+    }
+  }
+}

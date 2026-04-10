@@ -1,0 +1,25 @@
+{
+  "id": "insee_data_scraper",
+  "name": "Scrapping Indices Agricoles INSEE",
+  "type": "scrapping",
+  "content_type": "news",
+  "config": {
+    "base_url": "https://www.insee.fr/fr/statistiques",
+    "urls_to_scrape": [
+      { "id": "general", "path": "?theme=40&collection=25" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "div.resultats-recherche",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    },
+    "extraction_selectors": {
+      "items": "div.resultat-item",
+      "item_title": "h3 a",
+      "item_description": "p.desc",
+      "item_url": "h3 a",
+      "source_name": "INSEE France"
+    }
+  }
+}

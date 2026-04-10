@@ -1,0 +1,28 @@
+{
+  "id": "cmegroup_scrapper",
+  "name": "CME Group Board Scraper (Agriculture + Énergie)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://www.cmegroup.com/markets/",
+    "urls_to_scrape": [
+      { "id": "soja",      "path": "agriculture/oilseeds/soybean.quotes.html" },
+      { "id": "tournesol", "path": "agriculture/oilseeds/soybean-oil.quotes.html" },
+      { "id": "colza",     "path": "agriculture/oilseeds/canola.quotes.html" },
+      { "id": "palme",     "path": "agriculture/oilseeds/refined-soybean-oil.quotes.html" },
+      { "id": "petrole",   "path": "energy/crude-oil/light-sweet-crude.quotes.html" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "table tbody tr:first-child, .last-price",
+      "wait_until": "domcontentloaded",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "price": "table tbody tr:first-child td:nth-child(4), table tbody tr:first-child td:nth-child(3), .last-price",
+      "variation": "table tbody tr:first-child td:nth-child(5), .change",
+      "variation_percent": "table tbody tr:first-child td:nth-child(6), .percent"
+    }
+  }
+}

@@ -84,5 +84,12 @@ export const config = {
     (isProduction || isStaging ? "" : "dev-whatsapp-verify-token-local-only"),
   // Timeouts pour les routes IA longue durée (en ms)
   chatStreamTimeoutMs: Number(process.env.CHAT_STREAM_TIMEOUT_MS || 720000),
-  chatAskTimeoutMs: Number(process.env.CHAT_ASK_TIMEOUT_MS || 300000)
+  chatAskTimeoutMs: Number(process.env.CHAT_ASK_TIMEOUT_MS || 300000),
+  // Market reports (cgiraud integration)
+  mistralApiKey: process.env.MISTRAL_API_KEY || "",
+  newsDataApiKey: process.env.NEWSDATA_IO_API_KEY || "",
+  marketReportsStorageDir:
+    process.env.MARKET_REPORTS_STORAGE_DIR ||
+    resolve(__dirname, "../storage/market-reports"),
+  puppeteerExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH || ""
 };

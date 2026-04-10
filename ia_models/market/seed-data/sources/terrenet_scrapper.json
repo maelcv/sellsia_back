@@ -1,0 +1,28 @@
+{
+  "id": "terrenet_news_scraper",
+  "name": "Scrapping Actualités Terre-Net (Agricole)",
+  "type": "scrapping",
+  "content_type": "news",
+  "config": {
+    "base_url": "https://www.terre-net.fr/marches-agricoles/",
+    "urls_to_scrape": [
+      { "id": "colza", "path": "oleagineux/colza" },
+      { "id": "soja", "path": "oleagineux/soja" },
+      { "id": "tournesol", "path": "oleagineux/tournesol" },
+      { "id": "general", "path": "actualites" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "article",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "items": "article",
+      "item_title": "h2, h3",
+      "item_description": "p.excerpt, .article-excerpt",
+      "item_url": "a",
+      "source_name": "Terre-Net"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "tradingeconomics_prices_scraper",
+  "name": "Scrapping Tableau de Bord TradingEconomics (Tous produits)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://fr.tradingeconomics.com/commodities",
+    "urls_to_scrape": [
+      { "id": "colza",     "path": "" },
+      { "id": "soja",      "path": "" },
+      { "id": "tournesol", "path": "" },
+      { "id": "palme",     "path": "" },
+      { "id": "petrole",   "path": "" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "table, tbody tr",
+      "wait_until": "domcontentloaded",
+      "timeout": 12000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "price": "td:nth-child(2), span[class*='price']",
+      "variation": "td:nth-child(4), span[class*='change']",
+      "variation_percent": "td:nth-child(5), span[class*='percent']"
+    }
+  }
+}

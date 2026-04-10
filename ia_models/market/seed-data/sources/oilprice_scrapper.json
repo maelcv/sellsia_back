@@ -1,0 +1,24 @@
+{
+  "id": "oilprice_scrapper",
+  "name": "OilPrice.com (Pétrole, Palme)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://oilprice.com/",
+    "urls_to_scrape": [
+      { "id": "petrole", "path": "oil-price-charts" },
+      { "id": "palme",   "path": "commodity/palm-oil" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": ".oil-price-data, .commodity-price",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    },
+    "extraction_selectors": {
+      "price": ".oil-price__brent-price strong, .commodity-price .current-price, .price-block__price",
+      "variation": ".oil-price__percent, .price-block__change",
+      "variation_percent": ".oil-price__percent, .price-block__change-percent"
+    }
+  }
+}

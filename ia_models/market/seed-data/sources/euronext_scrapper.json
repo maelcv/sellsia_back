@@ -1,0 +1,25 @@
+{
+  "id": "euronext_market_scraper",
+  "name": "Scraping des cours Euronext (Colza, Tournesol, Blé, Maïs)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://live.euronext.com/fr/product/commodities-futures/",
+    "urls_to_scrape": [
+      { "id": "colza",     "path": "ECO-DPAR" },
+      { "id": "tournesol", "path": "TSO-DPAR" },
+      { "id": "ble",       "path": "EBM-DPAR" }
+    ],
+    "urls_to_exclude": ["/derivatives/", "/equities/"],
+    "navigation": {
+      "wait_for_selector": "strong#header-instrument-price",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "price": "strong#header-instrument-price",
+      "variation": "span#header-instrument-variation",
+      "variation_percent": "span#header-instrument-variation-percentage"
+    }
+  }
+}

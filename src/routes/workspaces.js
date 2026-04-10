@@ -11,6 +11,7 @@ import bcrypt from "bcryptjs";
 import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
+import { seedMarketForWorkspace } from "../seed-market.js";
 
 const router = express.Router();
 
@@ -327,6 +328,13 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
 
     return [newWorkspace, updatedOwner];
   });
+
+  // Seed market report sources + default schedules (non-blocking on error)
+  try {
+    await seedMarketForWorkspace(prisma, workspace.id);
+  } catch (err) {
+    console.error("[WORKSPACE_CREATE] market seed failed:", err.message);
+  }
 
   await logAudit(req.user.sub, "WORKSPACE_CREATED", { workspaceId: workspace.id, slug, ownerId });
 

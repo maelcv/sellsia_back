@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      margin: 0; padding: 0;
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      background-color: #f4f4f4;
+      color: #333333;
+    }
+    .wrapper {
+      width: 100%; table-layout: fixed; background-color: #f4f4f4; padding-top: 40px; padding-bottom: 40px;
+    }
+    .main {
+      background-color: #ffffff;
+      margin: 0 auto;
+      width: 100%;
+      max-width: 600px;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+    }
+    .header {
+      background-color: #1e6d3d; /* Vert C. Giraud */
+      padding: 30px 20px;
+      text-align: center;
+      color: #ffffff;
+    }
+    .header img {
+      max-height: 60px;
+      margin-bottom: 15px;
+    }
+    .header h1 {
+      margin: 0; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;
+    }
+    .header p {
+      margin: 5px 0 0 0; font-size: 14px; opacity: 0.9;
+    }
+    .content {
+      padding: 30px;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    .greeting {
+      font-size: 18px; font-weight: bold; margin-bottom: 15px;
+    }
+    .callout {
+      background-color: #e8f1ec;
+      border-left: 4px solid #1e6d3d;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 0 4px 4px 0;
+    }
+    .btn-wrap {
+      text-align: center; margin: 30px 0;
+    }
+    .btn {
+      background-color: #1e6d3d;
+      color: #ffffff;
+      text-decoration: none;
+      padding: 12px 25px;
+      border-radius: 5px;
+      font-weight: bold;
+      display: inline-block;
+    }
+    .tags {
+      margin-top: 10px;
+    }
+    .tag {
+      display: inline-block; background: #1e6d3d; color: #fff; border-radius: 3px; padding: 2px 8px; font-size: 12px; margin-right: 5px;
+    }
+    .footer {
+      background-color: #f9f9f9;
+      padding: 20px;
+      text-align: center;
+      font-size: 12px;
+      color: #777777;
+      border-top: 1px solid #eeeeee;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="main">
+      <div class="header">
+        {{#if logoBase64}}
+          <img src="{{logoBase64}}" alt="C. Giraud & Cie">
+        {{else}}
+          <h2 style="margin:0;color:#fff;">C. GIRAUD & CIE</h2>
+        {{/if}}
+        <h1>Analyse Personnalisée</h1>
+        <p>Société de courtage en huiles végétales</p>
+      </div>
+      
+      <div class="content">
+        <div class="greeting">Bonjour {{client.contact}},</div>
+        <p>L'équipe <strong>C. Giraud & Cie</strong> a le plaisir de vous transmettre votre analyse sur mesure de l'après-midi, spécialement préparée pour <strong>{{client.nom}}</strong>.</p>
+        
+        <div class="callout">
+          <strong>Sujets couverts dans votre rapport :</strong>
+          <div class="tags">
+            {{#each client.produits}}
+            <span class="tag">{{capitalize this}}</span>
+            {{/each}}
+          </div>
+        </div>
+        
+        <p>Vous trouverez ce point de marché filtré et commenté par nos analystes directement en pièce jointe au format PDF.</p>
+        
+        <div class="btn-wrap">
+          <span style="font-style:italic;color:#666;">Document joint : rapport_expert_{{client.id}}.pdf 📎</span>
+        </div>
+        
+        <p>Nous restons à votre entière disposition pour tout complément d'information ou prise de position.</p>
+        <p>Bien cordialement,<br><strong>L'équipe C. Giraud & Cie</strong></p>
+      </div>
+      
+      <div class="footer">
+        C. Giraud & Cie — Depuis 1927<br>
+        Ce document ne constitue en aucun cas un conseil en investissement.
+      </div>
+    </div>
+  </div>
+</body>
+</html>

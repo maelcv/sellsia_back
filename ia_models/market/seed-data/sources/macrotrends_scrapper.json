@@ -1,0 +1,24 @@
+{
+  "id": "macrotrends_scrapper",
+  "name": "Macrotrends Historical Data (Soja, Palme, Pétrole)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://www.macrotrends.net/",
+    "urls_to_scrape": [
+      { "id": "soja",    "path": "2531/soybean-prices-historical-chart-data" },
+      { "id": "palme",   "path": "2529/palm-oil-price-history-chart" },
+      { "id": "petrole", "path": "1369/crude-oil-price-history-chart" },
+      { "id": "colza",   "path": "2532/canola-oil-prices-historical-data" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "#currentStats",
+      "timeout": 15000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    },
+    "extraction_selectors": {
+      "price": "#currentStats tr:first-child td:last-child, .rightTable tbody tr:first-child td:nth-child(2)"
+    }
+  }
+}

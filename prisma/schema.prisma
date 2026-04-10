@@ -206,8 +206,117 @@ model Workspace {
   workspaceIntegrations WorkspaceIntegration[]
   subAgentDefinitions   SubAgentDefinition[]
 
+  // Market Reports (cgiraud integration)
+  marketClients         MarketClient[]
+  marketSources         MarketSource[]
+  marketReportRuns      MarketReportRun[]
+  marketPriceSnapshots  MarketPriceSnapshot[]
+  marketReportSchedules MarketReportSchedule[]
+
   @@index([parentWorkspaceId])
   @@map("workspaces")
+}
+
+// ─── Market Reports (cgiraud integration) ─────────────────────
+/// Destinataires des rapports de marché (CRM-lite)
+model MarketClient {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  externalId  String?  @map("external_id") // ex: "C001" héritage cgiraud
+  nom         String
+  contact     String?
+  email       String
+  langue      String   @default("fr")
+  note        String?
+  produits    String   @default("[]") // JSON array stringifié: ["colza","ble"]
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  runs      MarketReportRun[]
+
+  @@index([workspaceId])
+  @@map("market_clients")
+}
+
+/// Configurations de sources de données (APIs + scrapers)
+model MarketSource {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  slug        String   // ex: "news_api_global"
+  label       String
+  type        String   // "api" | "scrapping"
+  contentType String   @default("price") @map("content_type") // "price" | "news"
+  configJson  String   @map("config_json") // Config complète sérialisée
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@map("market_sources")
+}
+
+/// Historique d'exécution des rapports
+model MarketReportRun {
+  id             String    @id @default(cuid())
+  workspaceId    String    @map("workspace_id")
+  kind           String    // "generic" | "unit"
+  clientId       String?   @map("client_id")
+  status         String    @default("pending") // pending | running | success | failed
+  triggeredBy    String    @default("manual") @map("triggered_by") // manual | cron
+  createdByUser  Int?      @map("created_by_user")
+  startedAt      DateTime  @default(now()) @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  errorMessage   String?   @map("error_message")
+  pdfPath        String?   @map("pdf_path")
+  payloadJson    String?   @map("payload_json") // Mistral synthesis + sources status
+  emailSentAt    DateTime? @map("email_sent_at")
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client    MarketClient? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, kind, status])
+  @@index([clientId])
+  @@map("market_report_runs")
+}
+
+/// Snapshot des prix J-1 (remplace prices_history.json)
+model MarketPriceSnapshot {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  productKey  String   @map("product_key") // colza, soja, ...
+  price       Float
+  unit        String?
+  source      String?
+  capturedAt  DateTime @default(now()) @map("captured_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, productKey, capturedAt])
+  @@map("market_price_snapshots")
+}
+
+/// Planification cron des rapports (matin + après-midi)
+model MarketReportSchedule {
+  id          String    @id @default(cuid())
+  workspaceId String    @map("workspace_id")
+  kind        String    // "generic" | "unit"
+  cronExpr    String    @map("cron_expr") // ex: "0 7 * * 1-5"
+  timezone    String    @default("Europe/Paris")
+  enabled     Boolean   @default(false)
+  lastRunAt   DateTime? @map("last_run_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, kind])
+  @@index([workspaceId])
+  @@map("market_report_schedules")
 }
 
 // ── RBAC ─────────────────────────────────────────────────────

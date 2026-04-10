@@ -1,0 +1,24 @@
+{
+  "id": "stooq_scrapper",
+  "name": "Stooq.com (Cotations, Fiabilité Moyenne)",
+  "type": "scrapping",
+  "content_type": "price",
+  "config": {
+    "base_url": "https://stooq.com/q/",
+    "urls_to_scrape": [
+      { "id": "colza",     "path": "?s=rs.f" }
+    ],
+    "urls_to_exclude": [],
+    "navigation": {
+      "wait_for_selector": "#aq_p244_c1",
+      "wait_until": "domcontentloaded",
+      "timeout": 10000,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    },
+    "extraction_selectors": {
+      "price": "#aq_p244_c1, #f13, span[id^='aq_p244']",
+      "variation": "#aq_p244_c2",
+      "variation_percent": "#aq_p244_c3"
+    }
+  }
+}

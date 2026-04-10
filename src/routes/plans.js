@@ -19,6 +19,7 @@ const PERMISSION_KEYS = [
   "ai_provider",               // Custom AI Provider — Configurer son propre fournisseur IA
   "agents_local",              // Local Agent Maker — Créer un agent custom dans son workspace
   "agents_cloud",              // Cloud Agent Importer — Importer un agent cloud (requires ai_provider)
+  "market_reports",            // Rapports Marché (cgiraud) — Matières premières + PDF + Mistral
 ];
 
 const ALL_TRUE_PERMISSIONS = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true]));

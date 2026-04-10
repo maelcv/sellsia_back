@@ -1,0 +1,29 @@
+{
+  "id": "alpha_vantage_api",
+  "name": "Alpha Vantage API (Pétrole WTI/Brent)",
+  "type": "api",
+  "content_type": "price",
+  "config": {
+    "url": "https://www.alphavantage.co/query",
+    "method": "GET",
+    "auth": {
+      "type": "query",
+      "key_field": "apikey",
+      "env_var_name": "ALPHA_VANTAGE_API_KEY"
+    },
+    "params": {
+      "function": "BRENT",
+      "interval": "daily",
+      "datatype": "json"
+    },
+    "search_filters": {
+      "petrole": "BRENT",
+      "soja": "WTI"
+    },
+    "mappings": {
+      "items_path": "data",
+      "price": "value",
+      "date": "date"
+    }
+  }
+}
