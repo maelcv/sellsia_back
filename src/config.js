@@ -91,5 +91,10 @@ export const config = {
   marketReportsStorageDir:
     process.env.MARKET_REPORTS_STORAGE_DIR ||
     resolve(__dirname, "../storage/market-reports"),
-  puppeteerExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH || ""
+  puppeteerExecutablePath: process.env.PUPPETEER_EXECUTABLE_PATH || "",
+  publicApiUrl: process.env.PUBLIC_API_URL || "",
+  frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
+  googleOauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || "",
+  googleOauthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || "",
+  googleOauthRedirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI || ""
 };

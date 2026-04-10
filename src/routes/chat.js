@@ -747,10 +747,7 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
   let heartbeatInterval = null;
 
   try {
-    // 1. Enrich Sellsy context
-    const sellsyData = await enrichContext(userId, pageContext);
-
-    // 2. Conversation management
+    // 1. Conversation management
     // Validate that reqConversationId actually exists in DB to avoid FK constraint errors
     let validatedConversationId = reqConversationId;
     if (reqConversationId) {
@@ -779,6 +776,40 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       if (existingConv?.agentId) effectiveRequestedAgentId = existingConv.agentId;
     }
 
+    // Emit conversation metadata early so clients can bind to the conversation
+    // while context/tool preparation continues in parallel.
+    res.write(`data: ${JSON.stringify({
+      type: "meta",
+      conversationId,
+      requestedTools: requestedTools || {},
+      toolCategories: null,
+      stage: "initializing"
+    })}\n\n`);
+
+    // 2. Preload expensive context in parallel
+    const knowledgeAgentId = effectiveRequestedAgentId || requestedAgentId || "commercial";
+    const shouldEnrichPipeline =
+      knowledgeAgentId === "directeur" ||
+      (!requestedAgentId && /(pipeline|reporting|direction|kpi|ca |bilan)/.test(message.toLowerCase()));
+
+    const sellsyDataPromise = enrichContext(userId, pageContext);
+    const knowledgeContextPromise = loadKnowledgeContext(message, knowledgeAgentId, userId, 3, req.workspaceId);
+    const toolBundlePromise = buildToolContext(
+      userId,
+      uploadedFiles,
+      requestedTools || {},
+      req.workspaceId,
+      req.workspacePlan?.permissions || {},
+      userRole,
+      effectiveRequestedAgentId || requestedAgentId
+    );
+    const pipelineDataPromise = shouldEnrichPipeline
+      ? enrichWithPipelineData(userId).catch((err) => {
+          console.warn("[Chat] Pipeline enrichment failed:", err.message);
+          return null;
+        })
+      : Promise.resolve(null);
+
     const userMsgContent = uploadedFiles.length > 0
       ? `${message}\n\n[Fichiers joints: ${uploadedFiles.map((f) => f.originalname).join(", ")}]`
       : message;
@@ -786,21 +817,17 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     const historyForLLM = (await getConversationHistory(conversationId, 20)).slice(0, -1);
     const isFirstMessage = historyForLLM.length === 0;
 
-    // 3. Knowledge base
-    const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId, 3, req.workspaceId);
+    const [sellsyData, knowledgeContext, toolBundle, pipelineData] = await Promise.all([
+      sellsyDataPromise,
+      knowledgeContextPromise,
+      toolBundlePromise,
+      pipelineDataPromise
+    ]);
+    const { toolContext, tools } = toolBundle;
 
-    // 3b. Build tool context for agent tool-calling
-    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {}, userRole, requestedAgentId);
-
-    // 4. Enrich pipeline data if directeur might be involved
-    if (
-      requestedAgentId === "directeur" ||
-      (!requestedAgentId && /(pipeline|reporting|direction|kpi|ca |bilan)/.test(message.toLowerCase()))
-    ) {
-      const pipelineData = await enrichWithPipelineData(userId);
-      if (pipelineData && sellsyData.data) {
-        sellsyData.data.pipelineAnalysis = pipelineData;
-      }
+    // 3. Enrich pipeline data if directeur might be involved
+    if (pipelineData && sellsyData?.data) {
+      sellsyData.data.pipelineAnalysis = pipelineData;
     }
 
     const startTime = Date.now();
@@ -812,7 +839,7 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       sellsy: tools.some((t) => t.name.startsWith("sellsy_")),
       fileParser: tools.some((t) => t.name.startsWith("parse_"))
     };
-    res.write(`data: ${JSON.stringify({ type: "meta", conversationId, requestedTools: requestedTools || {}, toolCategories })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "meta", conversationId, requestedTools: requestedTools || {}, toolCategories, stage: "ready" })}\n\n`);
 
     let fullContent = "";
     let streamToolsUsed = [];
@@ -823,11 +850,9 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     let pendingAskUserSuggestions = [];
 
     // ── Setup heartbeat to keep SSE connection alive (every 30s) ──
-    let lastHeartbeat = Date.now();
     heartbeatInterval = setInterval(() => {
       if (res.writable) {
         res.write(": keepalive heartbeat\n\n");
-        lastHeartbeat = Date.now();
       }
     }, 30000);
 
@@ -856,14 +881,12 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       if (event.type === "conversation_title") {
         res.write(`data: ${JSON.stringify({ type: "conversation_title", title: event.title, conversationId })}\n\n`);
         // Update conversation title in DB
-        try {
-          await prisma.conversation.update({
-            where: { id: conversationId },
-            data: { title: event.title }
-          });
-        } catch (e) {
+        prisma.conversation.update({
+          where: { id: conversationId },
+          data: { title: event.title }
+        }).catch((e) => {
           console.warn("[Chat] Failed to update conversation title:", e.message);
-        }
+        });
         continue;
       }
 
@@ -919,12 +942,10 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
         activeAgentId = event.agentId;
         if (!collectedAgentIds.includes(event.agentId)) collectedAgentIds.push(event.agentId);
         // Persist agent assignment on the conversation so future messages skip re-classification
-        try {
-          await prisma.conversation.update({
-            where: { id: conversationId },
-            data: { agentId: event.agentId }
-          });
-        } catch {}
+        prisma.conversation.update({
+          where: { id: conversationId },
+          data: { agentId: event.agentId }
+        }).catch(() => {});
         logReasoningStep({
           conversationId,
           stepType: "delegation",

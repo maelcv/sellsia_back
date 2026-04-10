@@ -81,41 +81,48 @@ export async function runGenericReport({
 
   const sourceStatus = [];
   try {
-    // ── Step 1: Fetch prices ───────────────────────────────────────
-    await logStep(run.id, "fetch_prices", "running", "Récupération des cours en cours…");
+    // ── Step 1 + 2: Fetch prices/news in parallel ──────────────────
+    await Promise.all([
+      logStep(run.id, "fetch_prices", "running", "Récupération des cours en cours…"),
+      logStep(run.id, "fetch_news", "running", "Récupération des actualités en cours…")
+    ]);
+
     let prices = {};
-    try {
-      prices = await fetchAllPrices({ workspaceId, demoMode, sourceStatus });
+    let news = {};
+    const [pricesResult, newsResult] = await Promise.allSettled([
+      fetchAllPrices({ workspaceId, demoMode, sourceStatus }),
+      fetchAllNews({ workspaceId, demoMode, sourceStatus })
+    ]);
+
+    if (pricesResult.status === "fulfilled") {
+      prices = pricesResult.value || {};
       const count = Object.values(prices).filter((p) => p.price != null).length;
       const priceLogs = sourceStatus
-        .filter(s => s.product)
-        .map(s => {
+        .filter((s) => s.product)
+        .map((s) => {
           const sym = s.status === "ok" ? "✓" : "✗";
           const val = s.value != null ? ` | ${s.value.toFixed(2)} ${prices[s.product]?.unit || ""}` : "";
           return `${prices[s.product]?.name || s.product} | ${s.source}${val} ${sym}${s.message ? ` — ${s.message}` : ""}`;
         });
       await logStep(run.id, "fetch_prices", "ok", `${count}/${Object.keys(PRODUCTS_CONFIG).length} cours récupérés`, priceLogs);
-    } catch (err) {
-      await logStep(run.id, "fetch_prices", "error", err.message);
-      sourceStatus.push({ source: "prices", status: "error", message: err.message });
+    } else {
+      await logStep(run.id, "fetch_prices", "error", pricesResult.reason?.message || "Erreur inconnue");
+      sourceStatus.push({ source: "prices", status: "error", message: pricesResult.reason?.message || "Erreur inconnue" });
     }
 
-    // ── Step 2: Fetch news ─────────────────────────────────────────
-    await logStep(run.id, "fetch_news", "running", "Récupération des actualités en cours…");
-    let news = {};
-    try {
-      news = await fetchAllNews({ workspaceId, demoMode, sourceStatus });
+    if (newsResult.status === "fulfilled") {
+      news = newsResult.value || {};
       const total = Object.values(news).reduce((s, arr) => s + (arr?.length || 0), 0);
       const newsSourceLogs = sourceStatus
-        .filter(s => s.kind === "news")
-        .map(s => `${s.source} | ${s.count != null ? s.count + " articles" : s.message || "aucun résultat"} ${s.status === "ok" ? "✓" : "✗"}`);
+        .filter((s) => s.kind === "news")
+        .map((s) => `${s.source} | ${s.count != null ? s.count + " articles" : s.message || "aucun résultat"} ${s.status === "ok" ? "✓" : "✗"}`);
       const products = Object.keys(PRODUCTS_CONFIG);
-      const newsProductLogs = products.map(key => `${key} : ${news[key]?.length || 0} articles`);
+      const newsProductLogs = products.map((key) => `${key} : ${news[key]?.length || 0} articles`);
       const newsLogs = [...newsSourceLogs, ...newsProductLogs];
       await logStep(run.id, "fetch_news", "ok", `${total} articles récupérés`, newsLogs);
-    } catch (err) {
-      await logStep(run.id, "fetch_news", "error", err.message);
-      sourceStatus.push({ source: "news", status: "error", message: err.message });
+    } else {
+      await logStep(run.id, "fetch_news", "error", newsResult.reason?.message || "Erreur inconnue");
+      sourceStatus.push({ source: "news", status: "error", message: newsResult.reason?.message || "Erreur inconnue" });
     }
 
     // ── Step 3: AI Synthesis ───────────────────────────────────────
@@ -173,7 +180,7 @@ export async function runGenericReport({
     const workspaceDir = path.join(STORAGE_ROOT, workspaceId);
     ensureDir(workspaceDir);
     const pdfPath = path.join(workspaceDir, `${run.id}.pdf`);
-    fs.writeFileSync(pdfPath, pdfBuffer);
+    await fs.promises.writeFile(pdfPath, pdfBuffer);
     await logStep(run.id, "pdf", "ok", `PDF généré (${Math.round(pdfBuffer.length / 1024)} Ko)`);
 
     // ── Step 7: Send emails ────────────────────────────────────────

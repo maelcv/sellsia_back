@@ -30,46 +30,54 @@ router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
   const isAdmin = req.user.role === "admin";
   const userId = req.user.sub;
 
-  let docs;
-  if (isAdmin) {
-    docs = await prisma.knowledgeDocument.findMany({
-      include: {
-        agent: { select: { name: true } },
-        client: { select: { email: true } }
-      },
-      orderBy: { updatedAt: "desc" }
-    });
-  } else {
-    docs = await prisma.knowledgeDocument.findMany({
-      where: {
-        OR: [
-          { clientId: null },
-          { clientId: userId }
-        ]
-      },
-      include: {
-        agent: { select: { name: true } }
-      },
-      orderBy: { updatedAt: "desc" }
-    });
-  }
+  try {
+    let docs;
+    if (isAdmin) {
+      docs = await prisma.knowledgeDocument.findMany({
+        include: {
+          agent: { select: { name: true } },
+          client: { select: { email: true } }
+        },
+        orderBy: { updatedAt: "desc" }
+      });
+    } else {
+      docs = await prisma.knowledgeDocument.findMany({
+        where: {
+          OR: [
+            { clientId: null },
+            { clientId: userId }
+          ]
+        },
+        include: {
+          agent: { select: { name: true } }
+        },
+        orderBy: { updatedAt: "desc" }
+      });
+    }
 
-  return res.json({
-    documents: docs.map((d) => ({
-      id: d.id,
-      title: d.title,
-      content: d.content,
-      docType: d.docType,
-      agentId: d.agentId,
-      clientId: d.clientId || undefined,
-      isActive: d.isActive,
-      createdAt: d.createdAt,
-      updatedAt: d.updatedAt,
-      agentName: d.agent?.name || null,
-      clientEmail: isAdmin ? (d.client?.email || null) : undefined,
-      metadata: d.metadataJson ? JSON.parse(d.metadataJson) : {}
-    }))
-  });
+    return res.json({
+      documents: docs.map((d) => {
+        let metadata = {};
+        try { metadata = d.metadataJson ? JSON.parse(d.metadataJson) : {}; } catch {}
+        return {
+          id: d.id,
+          title: d.title,
+          content: d.content,
+          docType: d.docType,
+          agentId: d.agentId,
+          clientId: d.clientId || undefined,
+          isActive: d.isActive,
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt,
+          agentName: d.agent?.name || null,
+          clientEmail: isAdmin ? (d.client?.email || null) : undefined,
+          metadata
+        };
+      })
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur lors de la récupération des documents" });
+  }
 });
 
 // -- POST /api/knowledge -- Ajouter un document --
@@ -82,16 +90,20 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
 
   const { title, content, docType, agentId, clientId, metadata } = parse.data;
 
-  await prisma.knowledgeDocument.create({
-    data: {
-      title,
-      content,
-      docType,
-      agentId: agentId || null,
-      clientId: clientId || null,
-      metadataJson: JSON.stringify(metadata)
-    }
-  });
+  try {
+    await prisma.knowledgeDocument.create({
+      data: {
+        title,
+        content,
+        docType,
+        agentId: agentId || null,
+        clientId: clientId || null,
+        metadataJson: JSON.stringify(metadata)
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur lors de la création du document" });
+  }
 
   await logAudit(req.user.sub, "KNOWLEDGE_DOC_CREATED", { title, docType });
   return res.status(201).json({ message: "Document created" });

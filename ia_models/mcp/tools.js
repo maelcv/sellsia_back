@@ -1555,6 +1555,16 @@ const schedule_reminder = {
       return { error: "La date de rappel ne peut pas être dans le passé" };
     }
 
+    const timezone = params.timezone || "Europe/Paris";
+    const visibility = params.visibility === "private" ? "private" : "public";
+
+    // Formate la date dans le fuseau horaire de l'utilisateur pour l'affichage
+    const formattedDate = scheduledDate.toLocaleString("fr-FR", {
+      timeZone: timezone,
+      dateStyle: "full",
+      timeStyle: "short",
+    });
+
     const channel = normalizeReminderChannel(params.channel);
 
     if (!channel) {
@@ -1579,16 +1589,6 @@ const schedule_reminder = {
     if (channel === "email" && !params.target_email) {
       return { error: "target_email est requis pour le canal email" };
     }
-
-    const timezone = params.timezone || "Europe/Paris";
-    const visibility = params.visibility === "private" ? "private" : "public";
-
-    // Formate la date dans le fuseau horaire de l'utilisateur pour l'affichage
-    const formattedDate = scheduledDate.toLocaleString("fr-FR", {
-      timeZone: timezone,
-      dateStyle: "full",
-      timeStyle: "short",
-    });
 
     const channelLabel = channel === "whatsapp"
       ? `WhatsApp (${params.target_phone})`
@@ -1633,9 +1633,6 @@ const schedule_reminder = {
       const { prisma } = await import("../../src/prisma.js");
 
       const workspaceId = context.tenantId || null;
-      if (!workspaceId) {
-        return { error: "Impossible de créer une tâche: workspace manquant dans le contexte" };
-      }
 
       const reminder = await prisma.reminder.create({
         data: {
@@ -1653,33 +1650,38 @@ const schedule_reminder = {
         },
       });
 
-      const taskDescription = applyVisibilityPrefix(
-        `Rappel planifié le ${formattedDate} via ${channelLabel}`,
-        visibility
-      );
+      let task = null;
+      if (workspaceId) {
+        const taskDescription = applyVisibilityPrefix(
+          `Rappel planifié le ${formattedDate} via ${channelLabel}`,
+          visibility
+        );
 
-      const task = await prisma.taskAssignment.create({
-        data: {
-          userId,
-          workspaceId,
-          title: params.task_description,
-          description: taskDescription,
-          dueDate: scheduledDate,
-          entityType: "reminder",
-          entityId: String(reminder.id),
-          status: "pending",
-          priority: "medium",
-        },
-      });
+        task = await prisma.taskAssignment.create({
+          data: {
+            userId,
+            workspaceId,
+            title: params.task_description,
+            description: taskDescription,
+            dueDate: scheduledDate,
+            entityType: "reminder",
+            entityId: String(reminder.id),
+            status: "pending",
+            priority: "medium",
+          },
+        });
+      }
 
       return {
         status: "scheduled",
         reminderId: reminder.id,
-        taskId: task.id,
+        taskId: task?.id || null,
         visibility,
         scheduledAt: reminder.scheduledAt,
         channel,
-        message: `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Rappel #${reminder.id}, Tâche #${task.id})`
+        message: task
+          ? `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Rappel #${reminder.id}, Tâche #${task.id})`
+          : `✅ Rappel confirmé et planifié ! Je vous rappellerai le ${formattedDate} : "${params.task_description}". (Rappel #${reminder.id})`
       };
     } catch (err) {
       console.error("[schedule_reminder tool] Erreur:", err);
@@ -1721,7 +1723,7 @@ const send_email = {
     required: ["to", "subject", "body"]
   },
   async execute(params, context) {
-    if (!context.userId || !context.tenantId) {
+    if (!context.userId) {
       return { error: "Contexte utilisateur manquant" };
     }
 
@@ -1741,12 +1743,12 @@ const send_email = {
     try {
       const { sendEmail } = await import("../email/email-service.js");
       await sendEmail({
-        userId:   context.userId,
-        tenantId: context.tenantId,
-        to:       params.to,
-        cc:       params.cc,
-        subject:  params.subject,
-        html:     params.body,
+        userId: context.userId,
+        workspaceId: context.tenantId || null,
+        to: params.to,
+        cc: params.cc,
+        subject: params.subject,
+        html: params.body,
       });
       return {
         status: "sent",
@@ -1801,7 +1803,7 @@ const create_calendar_event = {
     required: ["title", "start_at", "end_at"]
   },
   async execute(params, context) {
-    if (!context.userId || !context.tenantId) {
+    if (!context.userId) {
       return { error: "Contexte utilisateur manquant" };
     }
 
@@ -1822,7 +1824,7 @@ const create_calendar_event = {
       const event = await prisma.calendarEvent.create({
         data: {
           userId:      context.userId,
-          workspaceId: context.tenantId,
+          workspaceId: context.tenantId || null,
           title:       params.title,
           description: storedDescription,
           startAt,
@@ -2146,20 +2148,25 @@ export function getAvailableTools(context = {}, options = {}) {
 
   // Reminder tool — disponible si un userId est dans le contexte
   if (context.userId) {
+    const isAdmin = context.isAdmin === true;
+    const hasWorkspace = Boolean(context.tenantId);
+
     tools.push(schedule_reminder);
-    // Email tool — disponible si feature email_service activée
-    if (context.features?.email_service) {
+
+    // Admin can use personal email/calendar tools without a workspace.
+    if (isAdmin || context.features?.email_service) {
       tools.push(send_email);
     }
-    // Calendar tool — disponible si feature calendar activée
-    if (context.features?.calendar) {
+
+    if (isAdmin || context.features?.calendar) {
       tools.push(create_calendar_event);
     }
-    // Phase 3: CRM operations
-    if (context.features?.data_enrichment) {
+
+    // Workspace-scoped non-chat actions remain guarded by workspace presence.
+    if (hasWorkspace && (isAdmin || context.features?.data_enrichment)) {
       tools.push(enrich_company_data);
     }
-    if (context.features?.mass_import) {
+    if (hasWorkspace && (isAdmin || context.features?.mass_import)) {
       tools.push(create_task);
     }
   }

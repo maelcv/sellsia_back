@@ -64,6 +64,23 @@ function dedupe(articles) {
   });
 }
 
+async function mapWithConcurrency(items, limit, worker) {
+  const safeLimit = Math.max(1, Number(limit) || 1);
+  const sourceItems = Array.isArray(items) ? items : [];
+  let cursor = 0;
+
+  async function runWorker() {
+    while (cursor < sourceItems.length) {
+      const index = cursor;
+      cursor += 1;
+      await worker(sourceItems[index], index);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(safeLimit, sourceItems.length) }, () => runWorker());
+  await Promise.all(workers);
+}
+
 async function fetchFromNewsData(productKeywords) {
   const key = process.env.NEWSDATA_IO_API_KEY;
   if (!key || key.startsWith("your_")) return [];
@@ -121,26 +138,33 @@ export async function fetchAllNews({
 
   // Collect a global pool of articles from all news sources
   const pool = [];
-  for (const src of newsSources) {
+  const productQuery = products.flatMap((k) => PRODUCT_KEYWORDS[k] || [k]).join(" OR ");
+  await mapWithConcurrency(newsSources, 3, async (src) => {
     try {
       if (src.type === "api") {
-        const productQuery = products.flatMap(k => PRODUCT_KEYWORDS[k] || [k]).join(" OR ");
         const raw = await executeApiSource(src, { query: productQuery || "matières premières agricoles" });
         const mapped = mapApiResults(raw, src.config.mappings || {});
-        pool.push(...mapped);
+        if (mapped.length > 0) pool.push(...mapped);
         sourceStatus.push({ source: src.id, status: "ok", count: mapped.length, kind: "news" });
-      } else if (src.type === "scrapping") {
+        return;
+      }
+
+      if (src.type === "scrapping") {
         const urls = src.config?.urls_to_scrape || [];
-        for (const u of urls) {
+        const scrapedItems = [];
+        await mapWithConcurrency(urls, 2, async (u) => {
           const items = await executeScrapingSource(src, u.id);
-          if (Array.isArray(items)) pool.push(...items);
-        }
-        sourceStatus.push({ source: src.id, status: "ok", kind: "news" });
+          if (Array.isArray(items) && items.length > 0) {
+            scrapedItems.push(...items);
+          }
+        });
+        if (scrapedItems.length > 0) pool.push(...scrapedItems);
+        sourceStatus.push({ source: src.id, status: "ok", count: scrapedItems.length, kind: "news" });
       }
     } catch (err) {
       sourceStatus.push({ source: src.id, status: "error", message: err.message, kind: "news" });
     }
-  }
+  });
 
   // One-shot fallback: if pool from configured sources is empty, call newsdata.io once
   if (pool.length === 0) {

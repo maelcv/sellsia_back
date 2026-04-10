@@ -380,7 +380,8 @@ export async function orchestrate({
   let skillResult = null;
   let activeSkillBlock = "";
   try {
-    skillResult = await selectSkill(provider, userMessage, pageContext, { useLLM: true });
+    // Low mode prioritizes responsiveness; keep LLM routing in high mode.
+    skillResult = await selectSkill(provider, userMessage, pageContext, { useLLM: thinkingMode === "high" });
     if (skillResult?.skill) {
       activeSkillBlock = formatSkillForInjection(skillResult.skill);
       console.log(`[Dispatcher] Skill selected: ${skillResult.chosen_skill} (confidence: ${Math.round((skillResult.confidence || 0) * 100)}%)`);
@@ -451,32 +452,45 @@ export async function orchestrate({
   };
 }
 
-/**
- * Generates a short smart conversation title from the first user message using the LLM.
- */
-async function _generateSmartConversationTitle(userMessage, provider) {
-  try {
-    const prompt = `Génère un titre très court (3 à 6 mots maximum) résumant cette demande. Renvoie uniquement le titre brut, sans ponctuation finale ni guillemets.\n\nDemande : "${userMessage}"`;
-    const result = await provider.chat({
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.3,
-      maxTokens: 15
-    });
-    let title = (result.content || "").replace(/["']/g, "").trim();
-    title = title.replace(/\.$/, ""); // remove trailing dot
-    
-    // Check reasonable length / sanity
-    if (title && title.length < 80) return title;
-  } catch (error) {
-    console.warn("[Dispatcher] Smart title generation failed:", error.message);
-  }
-
-  // Fallback
+function _buildFallbackConversationTitle(userMessage) {
   const cleaned = (userMessage || "").trim().replace(/[^\w\s\u00C0-\u017F\-?!.,]/g, "").trim();
   if (cleaned.length <= 50) return cleaned || "Nouvelle discussion IA";
   const truncated = cleaned.slice(0, 50);
   const lastSpace = truncated.lastIndexOf(" ");
   return lastSpace > 20 ? truncated.slice(0, lastSpace) + "…" : truncated + "…";
+}
+
+/**
+ * Generates a short smart conversation title from the first user message using the LLM.
+ * Uses a short timeout to avoid delaying first streamed tokens.
+ */
+async function _generateSmartConversationTitle(userMessage, provider) {
+  const fallback = _buildFallbackConversationTitle(userMessage);
+  const timeoutMs = 700;
+
+  try {
+    const prompt = `Génère un titre très court (3 à 6 mots maximum) résumant cette demande. Renvoie uniquement le titre brut, sans ponctuation finale ni guillemets.\n\nDemande : "${userMessage}"`;
+    const titlePromise = provider.chat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      maxTokens: 15
+    }).then((result) => {
+      let title = (result.content || "").replace(/["']/g, "").trim();
+      title = title.replace(/\.$/, "");
+      return title && title.length < 80 ? title : null;
+    }).catch(() => null);
+
+    const timeoutPromise = new Promise((resolve) => {
+      setTimeout(() => resolve(null), timeoutMs);
+    });
+
+    const title = await Promise.race([titlePromise, timeoutPromise]);
+    if (title) return title;
+  } catch (error) {
+    console.warn("[Dispatcher] Smart title generation failed:", error.message);
+  }
+
+  return fallback;
 }
 
 /**
@@ -501,6 +515,8 @@ export async function* orchestrateStream({
   isFirstMessage = false,
   tenantId = null
 }) {
+  const useLLMSkillRouting = thinkingMode === "high";
+
   // Step 1: Emit conversation title on first message
   if (isFirstMessage) {
     const title = await _generateSmartConversationTitle(userMessage, provider);
@@ -508,6 +524,14 @@ export async function* orchestrateStream({
       yield { type: "conversation_title", title };
     }
   }
+
+  // Kick off skill routing early to overlap with agent classification.
+  const skillSelectionPromise = selectSkill(provider, userMessage, pageContext, {
+    useLLM: useLLMSkillRouting
+  }).catch((err) => {
+    console.warn("[Dispatcher] Stream skill routing failed:", err.message);
+    return null;
+  });
 
   // Step 2: Determine which agent to use
   let agentId;
@@ -538,13 +562,13 @@ export async function* orchestrateStream({
   let skillResult = null;
   let activeSkillBlock = "";
   try {
-    skillResult = await selectSkill(provider, userMessage, pageContext, { useLLM: true });
+    skillResult = await skillSelectionPromise;
     if (skillResult?.skill) {
       activeSkillBlock = formatSkillForInjection(skillResult.skill);
       console.log(`[Dispatcher] Stream skill selected: ${skillResult.chosen_skill} (confidence: ${Math.round((skillResult.confidence || 0) * 100)}%)`);
     }
-  } catch (err) {
-    console.warn("[Dispatcher] Stream skill routing failed:", err.message);
+  } catch {
+    // Errors are already handled in skillSelectionPromise.
   }
 
   // Step 4: Detect user language (once, propagated to agents and sub-agents)

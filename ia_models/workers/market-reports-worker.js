@@ -85,10 +85,12 @@ function registerSchedule(schedule) {
             where: { workspaceId: schedule.workspaceId, active: true },
           });
           for (const c of clients) {
-            await enqueueUnitReport({
+            enqueueUnitReport({
               workspaceId: schedule.workspaceId,
               clientId: c.id,
               triggeredBy: "cron",
+            }).catch((err) => {
+              log(`unit enqueue failed for ${schedule.workspaceId}:${c.id}: ${err.message}`);
             });
           }
         }
