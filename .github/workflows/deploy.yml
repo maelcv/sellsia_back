@@ -40,15 +40,6 @@ jobs:
           source: "src,ia_models,package.json,package-lock.json,server.js,prisma"
           target: "/var/www/ceremia/api"
 
-      - name: 📄 Installation de wkhtmltopdf (HTML→PDF sans navigateur)
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            which wkhtmltopdf || sudo apt-get install -y wkhtmltopdf
-
       - name: 🔄 Redémarrage de l'API avec PM2
         uses: appleboy/ssh-action@master
         with:
