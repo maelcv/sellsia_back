@@ -1,14 +1,66 @@
 /**
- * HTML → PDF via Puppeteer.
- * Uses a singleton browser to amortize launch cost across runs.
+ * HTML → PDF converter.
+ * Strategy:
+ *   1. wkhtmltopdf CLI (Linux server — no browser required)
+ *   2. Puppeteer (local dev / Mac fallback)
  */
-import puppeteer from "puppeteer";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
-let browserPromise = null;
+const execFileAsync = promisify(execFile);
 
-async function getBrowser() {
-  if (browserPromise) return browserPromise;
-  browserPromise = puppeteer.launch({
+/**
+ * Check if wkhtmltopdf is available on this system.
+ */
+async function isWkhtmltopdfAvailable() {
+  try {
+    await execFileAsync("wkhtmltopdf", ["--version"], { timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Generate PDF via wkhtmltopdf CLI (no browser, works on headless Linux).
+ */
+async function generatePDFviaWkhtmltopdf(htmlContent) {
+  const tmpDir = os.tmpdir();
+  const inputPath = path.join(tmpDir, `report-${Date.now()}.html`);
+  const outputPath = path.join(tmpDir, `report-${Date.now()}.pdf`);
+
+  try {
+    await fs.promises.writeFile(inputPath, htmlContent, "utf8");
+    await execFileAsync("wkhtmltopdf", [
+      "--page-size", "A4",
+      "--margin-top", "0mm",
+      "--margin-right", "0mm",
+      "--margin-bottom", "0mm",
+      "--margin-left", "0mm",
+      "--print-media-type",
+      "--enable-local-file-access",
+      "--quiet",
+      inputPath,
+      outputPath,
+    ], { timeout: 60000 });
+
+    const pdf = await fs.promises.readFile(outputPath);
+    return pdf;
+  } finally {
+    fs.promises.unlink(inputPath).catch(() => {});
+    fs.promises.unlink(outputPath).catch(() => {});
+  }
+}
+
+/**
+ * Generate PDF via Puppeteer (local dev / Mac).
+ */
+async function generatePDFviaPuppeteer(htmlContent) {
+  const { default: puppeteer } = await import("puppeteer");
+  const browser = await puppeteer.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
@@ -16,32 +68,9 @@ async function getBrowser() {
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--single-process",
       "--font-render-hinting=none",
     ],
   });
-  browserPromise.catch(() => {
-    browserPromise = null;
-  });
-  return browserPromise;
-}
-
-export async function closeBrowser() {
-  if (!browserPromise) return;
-  try {
-    const b = await browserPromise;
-    await b.close();
-  } catch {
-    // ignore
-  }
-  browserPromise = null;
-}
-
-/**
- * Render an HTML string to a PDF Buffer (A4, full-bleed).
- */
-export async function generatePDF(htmlContent) {
-  const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     await page.setContent(htmlContent, { waitUntil: "networkidle0", timeout: 30000 });
@@ -55,5 +84,20 @@ export async function generatePDF(htmlContent) {
     return Buffer.isBuffer(pdf) ? pdf : Buffer.from(pdf);
   } finally {
     await page.close().catch(() => {});
+    await browser.close().catch(() => {});
   }
 }
+
+/**
+ * Render an HTML string to a PDF Buffer (A4).
+ * Uses wkhtmltopdf on Linux servers, Puppeteer on Mac/local dev.
+ */
+export async function generatePDF(htmlContent) {
+  if (await isWkhtmltopdfAvailable()) {
+    return generatePDFviaWkhtmltopdf(htmlContent);
+  }
+  return generatePDFviaPuppeteer(htmlContent);
+}
+
+// No-op kept for API compatibility
+export async function closeBrowser() {}
