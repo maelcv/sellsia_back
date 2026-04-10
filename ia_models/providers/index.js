@@ -120,6 +120,20 @@ export async function getProviderForTenant(tenantId) {
     currentTenantId = parent?.parentWorkspaceId || null;
   }
 
+  // Fallback : provider global configuré par l'admin (ExternalService)
+  const globalProviders = await prisma.$queryRaw`
+    SELECT es.code, es.default_config as "defaultConfig"
+    FROM external_services es
+    WHERE es.category IN ('ia_cloud', 'ia_local')
+      AND es.is_active = true
+    ORDER BY es.id ASC
+    LIMIT 1
+  `;
+  if (globalProviders[0]) {
+    const provider = instantiateProviderFromExternalService(globalProviders[0]);
+    if (provider) return provider;
+  }
+
   return null;
 }
 

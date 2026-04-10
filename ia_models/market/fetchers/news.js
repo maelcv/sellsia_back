@@ -124,7 +124,8 @@ export async function fetchAllNews({
   for (const src of newsSources) {
     try {
       if (src.type === "api") {
-        const raw = await executeApiSource(src, { query: "matières premières agricoles" });
+        const productQuery = products.flatMap(k => PRODUCT_KEYWORDS[k] || [k]).join(" OR ");
+        const raw = await executeApiSource(src, { query: productQuery || "matières premières agricoles" });
         const mapped = mapApiResults(raw, src.config.mappings || {});
         pool.push(...mapped);
         sourceStatus.push({ source: src.id, status: "ok", count: mapped.length, kind: "news" });
@@ -159,9 +160,12 @@ export async function fetchAllNews({
       matchProduct(`${a.title} ${a.description}`, kws)
     );
 
-    out[key] = dedupe(matched)
+    const classified = dedupe(matched)
       .slice(0, 5)
       .map((a) => ({ ...a, timeAgo: timeAgo(a.publishedAt) }));
+
+    // Fallback to demo articles when no real articles match this product
+    out[key] = classified.length > 0 ? classified : (DEMO_NEWS[key] || []);
   }
 
   return out;
