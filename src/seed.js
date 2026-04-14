@@ -1,12 +1,14 @@
-import { 
-  seedAgents, 
-  seedSubAgents, 
-  seedIntegrations, 
+import {
+  seedAgents,
+  seedSubAgents,
+  seedIntegrations,
   seedProviders,
+  seedAgentTemplates,
   BASE_AGENTS,
   BASE_SUB_AGENTS,
   INTEGRATION_TYPES,
-  IA_PROVIDERS
+  IA_PROVIDERS,
+  BASE_AGENT_TEMPLATES,
 } from "./lib/seed-lib.js";
 import { prisma } from "./prisma.js";
 
@@ -17,12 +19,14 @@ async function seed() {
   await seedSubAgents();
   await seedIntegrations();
   await seedProviders();
+  await seedAgentTemplates();
 
   console.log("\n✨ Seed terminé !");
   console.log("\n🤖 Agents globaux :", BASE_AGENTS.map(a => a.name).join(", "));
   console.log("🤖 Sous-agents & outils :", BASE_SUB_AGENTS.length);
   console.log("🔗 Types d'intégration :", INTEGRATION_TYPES.length);
   console.log("⚡ Providers IA :", IA_PROVIDERS.length);
+  console.log("📋 Templates agents :", BASE_AGENT_TEMPLATES.length);
   console.log("💡 Plans, workspaces et utilisateurs : gérés séparément (fixture ou onboarding UI).");
 
   await prisma.$disconnect();

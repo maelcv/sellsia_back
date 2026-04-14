@@ -21,17 +21,18 @@ import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { chatRateLimit } from "../middleware/security.js";
 import { decryptSecret } from "../security/secrets.js";
-import { getProviderForUser, getActiveProviderCode } from "../../ia_models/providers/index.js";
-import { orchestrate, orchestrateStream } from "../../ia_models/orchestrator/dispatcher.js";
-import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
+import { getProviderForUser, getActiveProviderCode } from "../ai-providers/index.js";
+import { orchestrate, orchestrateStream } from "../orchestrator/dispatcher.js";
+import { enrichContext, enrichWithPipelineData, loadKnowledgeContext, getSellsyClient } from "../orchestrator/context.js";
 import {
   getOrCreateConversation,
   addMessage,
   getConversationHistory,
   getRecentConversations,
   getConversationMessages
-} from "../../ia_models/orchestrator/memory.js";
-import { getAvailableTools } from "../../ia_models/mcp/tools.js";
+} from "../orchestrator/memory.js";
+import { getAvailableTools } from "../tools/mcp/tools.js";
+import { platformEmitter } from "../services/automation-events.js";
 import { resolve as resolvePath, join as joinPath } from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
@@ -420,6 +421,7 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tena
     tenantId,         // Nécessaire pour les tools email + calendar
     features,         // Feature flags du tenant (email_service, calendar, etc.)
     isAdmin,          // Flag admin pour get_platform_stats
+    userRole,         // Role pour les checks d'accès tools (vault, automations...)
     agentId,          // ID agent pour schedule_reminder
     sellsyClient,
     tavilyApiKey: resolvedWebApiKey || config.tavilyApiKey || null,
@@ -1221,6 +1223,16 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       })}\n\n`);
     }
     res.end();
+
+    // Émettre l'événement plateforme pour les automations
+    if (req.workspaceId) {
+      platformEmitter.emit("conversation.ended", {
+        workspaceId: req.workspaceId,
+        userId,
+        conversationId,
+        agentId: activeAgentId || agentId,
+      });
+    }
   } catch (error) {
     console.error("[Chat Stream] Error:", error);
     if (!clientDisconnected && res.writable) {
@@ -1372,8 +1384,8 @@ router.post("/suggestions", requireAuth, requireWorkspaceContext, async (req, re
   try {
     const sellsyData = await enrichContext(userId, pageContext);
 
-    const { SUGGESTIONS_PROMPT } = await import("../../ia_models/prompts/system/defaults.js");
-    const { interpolatePrompt } = await import("../../ia_models/prompts/loader.js");
+    const { SUGGESTIONS_PROMPT } = await import("../prompts/system/defaults.js");
+    const { interpolatePrompt } = await import("../prompts/loader.js");
 
     const prompt = interpolatePrompt(SUGGESTIONS_PROMPT, {
       context: JSON.stringify({

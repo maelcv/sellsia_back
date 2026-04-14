@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import multer from "multer";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { sendEmail } from "../../ia_models/email/email-service.js";
+import { sendEmail } from "../services/email/email-service.js";
 import { encryptSecret } from "../security/secrets.js";
 import { randomBytes } from "crypto";
 
@@ -257,7 +257,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
     });
 
     try {
-      const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+      const { renderEmailTemplate } = await import("../services/email/email-service.js");
       const html = renderEmailTemplate({
         title: "Bienvenue sur Sellsia",
         content: `
@@ -287,7 +287,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
     // Send team member invitations
     for (const member of result.teamMembers) {
       try {
-        const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+        const { renderEmailTemplate } = await import("../services/email/email-service.js");
         const html = renderEmailTemplate({
           title: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
           content: `
@@ -512,7 +512,7 @@ router.post(
     });
 
     try {
-      const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+      const { renderEmailTemplate } = await import("../services/email/email-service.js");
       const html = renderEmailTemplate({
         title: "Bienvenue sur Sellsia",
         content: `
@@ -541,7 +541,7 @@ router.post(
 
     for (const member of result.teamMembers) {
       try {
-        const { renderEmailTemplate } = await import("../../ia_models/email/email-service.js");
+        const { renderEmailTemplate } = await import("../services/email/email-service.js");
         const html = renderEmailTemplate({
           title: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
           content: `

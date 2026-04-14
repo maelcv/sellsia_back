@@ -178,7 +178,7 @@ router.post("/request-email-code", async (req, res) => {
   });
 
   try {
-    const { renderEmailTemplate, sendEmail } = await import("../../ia_models/email/email-service.js");
+    const { renderEmailTemplate, sendEmail } = await import("../services/email/email-service.js");
     const html = renderEmailTemplate({
       title: "Votre code de sécurité",
       content: `

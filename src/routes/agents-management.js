@@ -421,4 +421,190 @@ router.delete("/workspace/:workspaceId/knowledge/:docId", requireAuth, async (re
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT TEMPLATES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/agents-management/templates
+ * Liste les templates disponibles pour l'utilisateur courant.
+ */
+router.get("/templates", requireAuth, async (req, res) => {
+  try {
+    const { user } = req;
+    const isAdmin = user.role === "admin";
+
+    const where = {
+      isActive: true,
+      ...(isAdmin ? {} : {
+        OR: [
+          { workspaceId: null },
+          { workspaceId: user.workspaceId },
+        ],
+      }),
+    };
+
+    const templates = await prisma.agentTemplate.findMany({
+      where,
+      select: {
+        id: true, name: true, description: true, category: true,
+        imageUrl: true, defaultTools: true, workspaceId: true, createdAt: true,
+      },
+      orderBy: [{ workspaceId: "asc" }, { name: "asc" }],
+    });
+
+    return res.json(templates.map(t => ({ ...t, defaultTools: JSON.parse(t.defaultTools || "[]") })));
+  } catch (err) {
+    console.error("[agents-management] GET templates error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/agents-management/templates
+ * Crée un nouveau template d'agent.
+ */
+router.post("/templates", requireAuth, async (req, res) => {
+  try {
+    const { user } = req;
+    const schema = z.object({
+      name: z.string().min(1).max(100),
+      description: z.string().min(1).max(500),
+      category: z.enum(["sales", "management", "technical", "custom"]).default("custom"),
+      defaultPrompt: z.string().min(1),
+      defaultTools: z.array(z.string()).default([]),
+      imageUrl: z.string().url().optional(),
+      workspaceId: z.string().optional(),
+    });
+
+    const data = schema.parse(req.body);
+    if (user.role !== "admin") data.workspaceId = user.workspaceId;
+
+    const template = await prisma.agentTemplate.create({
+      data: { ...data, defaultTools: JSON.stringify(data.defaultTools), createdById: user.id },
+    });
+
+    return res.status(201).json({ ...template, defaultTools: JSON.parse(template.defaultTools) });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: "Données invalides", details: err.errors });
+    console.error("[agents-management] POST templates error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /api/agents-management/templates/:id
+ */
+router.put("/templates/:id", requireAuth, async (req, res) => {
+  try {
+    const { user } = req;
+    const { id } = req.params;
+    const template = await prisma.agentTemplate.findUnique({ where: { id } });
+    if (!template) return res.status(404).json({ error: "Template introuvable" });
+    if (user.role !== "admin" && template.createdById !== user.id) return res.status(403).json({ error: "Non autorisé" });
+
+    const schema = z.object({
+      name: z.string().min(1).max(100).optional(),
+      description: z.string().min(1).max(500).optional(),
+      category: z.enum(["sales", "management", "technical", "custom"]).optional(),
+      defaultPrompt: z.string().min(1).optional(),
+      defaultTools: z.array(z.string()).optional(),
+      imageUrl: z.string().url().nullable().optional(),
+      isActive: z.boolean().optional(),
+    });
+
+    const data = schema.parse(req.body);
+    if (data.defaultTools !== undefined) data.defaultTools = JSON.stringify(data.defaultTools);
+
+    const updated = await prisma.agentTemplate.update({ where: { id }, data });
+    return res.json({ ...updated, defaultTools: JSON.parse(updated.defaultTools) });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: "Données invalides", details: err.errors });
+    console.error("[agents-management] PUT templates error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * DELETE /api/agents-management/templates/:id
+ */
+router.delete("/templates/:id", requireAuth, async (req, res) => {
+  try {
+    const { user } = req;
+    const { id } = req.params;
+    const template = await prisma.agentTemplate.findUnique({ where: { id } });
+    if (!template) return res.status(404).json({ error: "Template introuvable" });
+    if (user.role !== "admin" && template.createdById !== user.id) return res.status(403).json({ error: "Non autorisé" });
+    await prisma.agentTemplate.update({ where: { id }, data: { isActive: false } });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[agents-management] DELETE templates error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/agents-management/from-template
+ * Crée un agent depuis un template. Accessible à tous les rôles.
+ */
+router.post("/from-template", requireAuth, async (req, res) => {
+  try {
+    const { user } = req;
+    const schema = z.object({
+      templateId: z.string(),
+      name: z.string().min(1).max(100),
+      description: z.string().min(1).max(500).optional(),
+      workspaceId: z.string().optional(),
+      overrides: z.object({
+        defaultPrompt: z.string().optional(),
+        allowedTools: z.array(z.string()).optional(),
+      }).optional(),
+    });
+
+    const { templateId, name, description, workspaceId, overrides = {} } = schema.parse(req.body);
+
+    const template = await prisma.agentTemplate.findUnique({ where: { id: templateId } });
+    if (!template || !template.isActive) return res.status(404).json({ error: "Template introuvable ou inactif" });
+
+    if (template.workspaceId && template.workspaceId !== user.workspaceId && user.role !== "admin") {
+      return res.status(403).json({ error: "Accès à ce template non autorisé" });
+    }
+
+    const targetWorkspaceId = user.role === "admin" ? (workspaceId || null) : user.workspaceId;
+    const allowedTools = overrides.allowedTools ? JSON.stringify(overrides.allowedTools) : template.defaultTools;
+
+    const agent = await prisma.agent.create({
+      data: {
+        id: randomUUID(),
+        name,
+        description: description || template.description,
+        agentType: "local",
+        isActive: true,
+        workspaceId: targetWorkspaceId,
+        ownerId: user.id,
+        templateId,
+        allowedTools,
+        allowedSubAgents: template.defaultSubAgents || "[]",
+        imageUrl: template.imageUrl,
+      },
+    });
+
+    await prisma.agentPrompt.create({
+      data: {
+        agentId: agent.id,
+        systemPrompt: overrides.defaultPrompt || template.defaultPrompt,
+        version: 1,
+        isActive: true,
+        clientId: null,
+      },
+    });
+
+    return res.status(201).json({ ...agent, allowedTools: JSON.parse(agent.allowedTools || "[]") });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: "Données invalides", details: err.errors });
+    console.error("[agents-management] POST from-template error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

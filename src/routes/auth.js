@@ -9,7 +9,7 @@ import { config } from "../config.js";
 import { authRateLimit } from "../middleware/security.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { encryptSecret, maskSecret } from "../security/secrets.js";
-import { sendEmail } from "../../ia_models/email/email-service.js";
+import { sendEmail } from "../services/email/email-service.js";
 
 const router = express.Router();
 const totp = new TOTP();
@@ -696,7 +696,7 @@ router.post("/forgot-password", authRateLimit, async (req, res) => {
     const resetUrl = `${process.env.APP_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
 
     try {
-      const { renderEmailTemplate, sendEmail } = await import("../../ia_models/email/email-service.js");
+      const { renderEmailTemplate, sendEmail } = await import("../services/email/email-service.js");
 
       const html = renderEmailTemplate({
         title: "Réinitialisation de mot de passe",
@@ -785,7 +785,7 @@ router.post("/reset-password", authRateLimit, async (req, res) => {
 
     // Send confirmation email
     try {
-      const { renderEmailTemplate, sendEmail } = await import("../../ia_models/email/email-service.js");
+      const { renderEmailTemplate, sendEmail } = await import("../services/email/email-service.js");
 
       const html = renderEmailTemplate({
         title: "Mot de passe réinitialisé",

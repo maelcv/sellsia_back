@@ -31,14 +31,14 @@ import {
   sendTwilioTemplateMessage,
   parseTwilioWebhookPayload
 } from "../providers/whatsapp-connector.js";
-import { getProviderForUser } from "../../ia_models/providers/index.js";
-import { orchestrate } from "../../ia_models/orchestrator/dispatcher.js";
+import { getProviderForUser } from "../ai-providers/index.js";
+import { orchestrate } from "../orchestrator/dispatcher.js";
 import {
   addMessage,
   getConversationHistory
-} from "../../ia_models/orchestrator/memory.js";
-import { getAvailableTools } from "../../ia_models/mcp/tools.js";
-import { enrichContext, loadKnowledgeContext, getSellsyClient } from "../../ia_models/orchestrator/context.js";
+} from "../orchestrator/memory.js";
+import { getAvailableTools } from "../tools/mcp/tools.js";
+import { enrichContext, loadKnowledgeContext, getSellsyClient } from "../orchestrator/context.js";
 
 const router = express.Router();
 
@@ -229,9 +229,10 @@ async function processIncomingMessage(event) {
   // Resolve tenantId for the identified user (needed for conversation isolation)
   const userRecord = await prisma.user.findUnique({
     where: { id: userId },
-    select: { tenantId: true }
+    select: { tenantId: true, role: true }
   });
   const tenantId = userRecord?.tenantId || null;
+  const userRole = userRecord?.role || "client";
 
   const accessToken = decryptSecret(account.accessTokenEncrypted);
 
@@ -345,6 +346,8 @@ async function processIncomingMessage(event) {
     const toolContext = {
       userId,           // Nécessaire pour le tool schedule_reminder
       tenantId,
+      userRole,
+      features: {},
       sellsyClient,
       tavilyApiKey: config.tavilyApiKey || null,
       uploadedFiles: [],

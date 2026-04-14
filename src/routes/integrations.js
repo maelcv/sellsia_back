@@ -6,7 +6,7 @@ import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js"
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { config } from "../config.js";
 import { encryptSecret, decryptSecret, maskSecret } from "../security/secrets.js";
-import { SellsyClient } from "../../ia_models/sellsy/client.js";
+import { SellsyClient } from "../sellsy/client.js";
 
 const router = express.Router();
 
