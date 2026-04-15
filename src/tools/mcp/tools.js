@@ -12,7 +12,8 @@
 
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import fs from "node:fs/promises";
+import { dirname, resolve, join } from "node:path";
 import {
   canReadVaultToolContext,
   canWriteVaultToolContext,
@@ -2055,21 +2056,411 @@ export const ADMIN_TOOLS = [get_platform_stats];
 
 // ── Vault Tools ───────────────────────────────────────
 
-async function getVaultToolPathPolicy(context) {
-  if (!context?.tenantId) {
-    throw Object.assign(new Error("Workspace non défini"), { statusCode: 400 });
+const VAULT_BASE = process.env.VAULT_BASE_PATH || resolve("./vaults");
+const VAULT_GLOBAL_DIR = "Global";
+const VAULT_WORKSPACES_DIR = "Workspaces";
+const VAULT_SYSTEM_DIR = "System";
+const VAULT_FOLDER_OWNERS_FILE = ".folder-owners.json";
+const VAULT_USER_VISIBILITY_FILE = ".user-folders.json";
+const VAULT_AI_SHARING_FILE = ".ai-folder-sharing.json";
+
+function normalizeVaultToolPath(rawPath = "") {
+  return String(rawPath || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+}
+
+function toWorkspaceRootPath(workspaceId, notePath = "") {
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  const normalizedNotePath = normalizeVaultToolPath(notePath);
+  if (!normalizedWorkspaceId) return "";
+  if (!normalizedNotePath) return `${VAULT_WORKSPACES_DIR}/${normalizedWorkspaceId}`;
+  return `${VAULT_WORKSPACES_DIR}/${normalizedWorkspaceId}/${normalizedNotePath}`;
+}
+
+function parseVaultScopedPath(rawPath = "", defaultWorkspaceId = null) {
+  const normalizedPath = normalizeVaultToolPath(rawPath);
+  const normalizedDefaultWorkspaceId = String(defaultWorkspaceId || "").trim();
+
+  if (!normalizedPath) {
+    return {
+      scope: normalizedDefaultWorkspaceId ? "workspace" : "root",
+      workspaceId: normalizedDefaultWorkspaceId || null,
+      notePath: "",
+      rootPath: normalizedDefaultWorkspaceId
+        ? toWorkspaceRootPath(normalizedDefaultWorkspaceId)
+        : "",
+      isRootScoped: false,
+    };
   }
 
+  if (normalizedPath === VAULT_GLOBAL_DIR || normalizedPath.startsWith(`${VAULT_GLOBAL_DIR}/`)) {
+    return {
+      scope: "global",
+      workspaceId: null,
+      notePath: normalizedPath.slice(VAULT_GLOBAL_DIR.length).replace(/^\//, ""),
+      rootPath: normalizedPath,
+      isRootScoped: true,
+    };
+  }
+
+  if (normalizedPath === VAULT_WORKSPACES_DIR || normalizedPath.startsWith(`${VAULT_WORKSPACES_DIR}/`)) {
+    const parts = normalizedPath.split("/");
+    const workspaceId = String(parts[1] || "").trim() || null;
+    const notePath = normalizeVaultToolPath(parts.slice(2).join("/"));
+    return {
+      scope: "workspace",
+      workspaceId,
+      notePath,
+      rootPath: workspaceId ? toWorkspaceRootPath(workspaceId, notePath) : VAULT_WORKSPACES_DIR,
+      isRootScoped: true,
+    };
+  }
+
+  if (!normalizedDefaultWorkspaceId) {
+    return {
+      scope: "workspace",
+      workspaceId: null,
+      notePath: normalizedPath,
+      rootPath: normalizedPath,
+      isRootScoped: false,
+    };
+  }
+
+  return {
+    scope: "workspace",
+    workspaceId: normalizedDefaultWorkspaceId,
+    notePath: normalizedPath,
+    rootPath: toWorkspaceRootPath(normalizedDefaultWorkspaceId, normalizedPath),
+    isRootScoped: false,
+  };
+}
+
+function topLevelFolder(pathValue = "") {
+  return normalizeVaultToolPath(pathValue).split("/")[0] || "";
+}
+
+function normalizeOwnerId(value) {
+  return String(value || "").trim();
+}
+
+function extractTopLevelOwnerId(pathValue = "") {
+  const topLevel = topLevelFolder(pathValue);
+  if (!topLevel) return null;
+  return /^\d+$/.test(topLevel) ? topLevel : null;
+}
+
+function getNearestPathMapValue(map, pathValue) {
+  const normalizedPath = normalizeVaultToolPath(pathValue);
+  if (!normalizedPath) return null;
+
+  const parts = normalizedPath.split("/");
+  for (let i = parts.length; i > 0; i -= 1) {
+    const key = parts.slice(0, i).join("/");
+    if (key in map) return map[key];
+  }
+
+  return null;
+}
+
+function normalizeAiShareMode(rawMode) {
+  const mode = String(rawMode || "").trim().toLowerCase();
+  if (["shared_full", "full", "public_full", "workspace_full", "vertical"].includes(mode)) {
+    return "shared_full";
+  }
+  if (["shared", "upward", "public"].includes(mode)) {
+    return "shared";
+  }
+  return "owner_only";
+}
+
+async function pathExists(pathValue) {
+  try {
+    await fs.access(pathValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveWorkspaceVaultRoot(workspaceId) {
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  const modernRoot = join(VAULT_BASE, VAULT_WORKSPACES_DIR, normalizedWorkspaceId);
+  const legacyRoot = join(VAULT_BASE, normalizedWorkspaceId);
+
+  if (await pathExists(modernRoot)) return modernRoot;
+  if (await pathExists(legacyRoot)) return legacyRoot;
+  return modernRoot;
+}
+
+async function readWorkspaceVaultMap(workspaceId, fileName) {
+  const root = await resolveWorkspaceVaultRoot(workspaceId);
+  const filePath = join(root, fileName);
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+async function isWorkspaceAncestor(prisma, ancestorWorkspaceId, workspaceId, parentCache) {
+  const normalizedAncestor = String(ancestorWorkspaceId || "").trim();
+  const normalizedWorkspace = String(workspaceId || "").trim();
+  if (!normalizedAncestor || !normalizedWorkspace || normalizedAncestor === normalizedWorkspace) {
+    return false;
+  }
+
+  let current = normalizedWorkspace;
+  while (current) {
+    if (current === normalizedAncestor) return true;
+
+    if (parentCache.has(current)) {
+      current = parentCache.get(current);
+      continue;
+    }
+
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: current },
+      select: { parentWorkspaceId: true },
+    });
+
+    const parentId = workspace?.parentWorkspaceId || null;
+    parentCache.set(current, parentId);
+    current = parentId;
+  }
+
+  return false;
+}
+
+async function filterTreeByAsyncPathPolicy(tree, canReadPath) {
+  async function filterNode(node) {
+    if (node.type === "file") {
+      return (await canReadPath(node.path)) ? node : null;
+    }
+
+    const children = [];
+    for (const child of Array.isArray(node.children) ? node.children : []) {
+      const filteredChild = await filterNode(child);
+      if (filteredChild) children.push(filteredChild);
+    }
+
+    if ((await canReadPath(node.path)) || children.length > 0) {
+      return { ...node, children };
+    }
+
+    return null;
+  }
+
+  const result = [];
+  for (const node of tree || []) {
+    const filteredNode = await filterNode(node);
+    if (filteredNode) result.push(filteredNode);
+  }
+  return result;
+}
+
+async function getVaultToolPathPolicy(context) {
   if (context.isAdmin) {
     return {
-      canReadPath: () => true,
+      canReadPath: async () => true,
       canWritePath: () => true,
     };
   }
 
+  if (!context?.tenantId) {
+    throw Object.assign(new Error("Workspace non défini"), { statusCode: 400 });
+  }
+
   const { ensureWorkspaceBaseStructure, createWorkspacePathPolicy } = await import("../../services/vault/vault-service.js");
   await ensureWorkspaceBaseStructure(context.tenantId, context.userId);
-  return createWorkspacePathPolicy(context.tenantId, context.userId, context.userRole);
+  const workspacePolicy = await createWorkspacePathPolicy(context.tenantId, context.userId, context.userRole, {
+    isAgentContext: Boolean(context.agentId),
+  });
+
+  if (!context.agentId) {
+    return {
+      canReadPath: async (inputPath) => workspacePolicy.canReadPath(inputPath),
+      canWritePath: workspacePolicy.canWritePath,
+    };
+  }
+
+  const { prisma } = await import("../../prisma.js");
+
+  const requesterWorkspaceId = String(context.tenantId || "").trim();
+  const requesterUserId = normalizeOwnerId(context.userId);
+
+  const workspaceMapsCache = new Map();
+  const parentWorkspaceCache = new Map();
+  const ownerUserInfoCache = new Map();
+  const requesterVsOwnerWorkspaceCache = new Map();
+
+  async function getWorkspaceMaps(workspaceId) {
+    const normalizedWorkspaceId = String(workspaceId || "").trim();
+    if (workspaceMapsCache.has(normalizedWorkspaceId)) {
+      return workspaceMapsCache.get(normalizedWorkspaceId);
+    }
+
+    const [rawOwnersMap, rawVisibilityMap, rawAiShareMap] = await Promise.all([
+      readWorkspaceVaultMap(normalizedWorkspaceId, VAULT_FOLDER_OWNERS_FILE),
+      readWorkspaceVaultMap(normalizedWorkspaceId, VAULT_USER_VISIBILITY_FILE),
+      readWorkspaceVaultMap(normalizedWorkspaceId, VAULT_AI_SHARING_FILE),
+    ]);
+
+    const folderOwnersMap = {};
+    for (const [key, value] of Object.entries(rawOwnersMap || {})) {
+      const normalizedKey = normalizeVaultToolPath(key);
+      const normalizedValue = normalizeOwnerId(value);
+      if (!normalizedKey || !normalizedValue) continue;
+      folderOwnersMap[normalizedKey] = normalizedValue;
+    }
+
+    const visibilityMap = {};
+    for (const [key, value] of Object.entries(rawVisibilityMap || {})) {
+      const normalizedKey = normalizeVaultToolPath(key);
+      if (!normalizedKey) continue;
+      visibilityMap[normalizedKey] = String(value || "").trim().toLowerCase();
+    }
+
+    const aiShareMap = {};
+    for (const [key, value] of Object.entries(rawAiShareMap || {})) {
+      const normalizedKey = normalizeVaultToolPath(key);
+      if (!normalizedKey) continue;
+      aiShareMap[normalizedKey] = normalizeAiShareMode(value);
+    }
+
+    const entry = { folderOwnersMap, visibilityMap, aiShareMap };
+    workspaceMapsCache.set(normalizedWorkspaceId, entry);
+    return entry;
+  }
+
+  async function getOwnerUserInfo(ownerId, fallbackWorkspaceId) {
+    if (!ownerId) return { workspaceId: fallbackWorkspaceId, role: null };
+    if (ownerUserInfoCache.has(ownerId)) {
+      return ownerUserInfoCache.get(ownerId) || { workspaceId: fallbackWorkspaceId, role: null };
+    }
+
+    const numericOwnerId = Number(ownerId);
+    if (!Number.isInteger(numericOwnerId)) {
+      const fallback = { workspaceId: fallbackWorkspaceId, role: null };
+      ownerUserInfoCache.set(ownerId, fallback);
+      return fallback;
+    }
+
+    const owner = await prisma.user.findUnique({
+      where: { id: numericOwnerId },
+      select: { workspaceId: true, role: true },
+    });
+
+    const ownerUserInfo = {
+      workspaceId: owner?.workspaceId || fallbackWorkspaceId,
+      role: owner?.role || null,
+    };
+    ownerUserInfoCache.set(ownerId, ownerUserInfo);
+    return ownerUserInfo;
+  }
+
+  async function getRequesterVsOwnerWorkspaceRelation(ownerWorkspaceId) {
+    const normalizedOwnerWorkspaceId = String(ownerWorkspaceId || "").trim();
+    if (!normalizedOwnerWorkspaceId || !requesterWorkspaceId) {
+      return { above: false, below: false };
+    }
+
+    if (requesterVsOwnerWorkspaceCache.has(normalizedOwnerWorkspaceId)) {
+      return requesterVsOwnerWorkspaceCache.get(normalizedOwnerWorkspaceId);
+    }
+
+    const [above, below] = await Promise.all([
+      isWorkspaceAncestor(prisma, requesterWorkspaceId, normalizedOwnerWorkspaceId, parentWorkspaceCache),
+      isWorkspaceAncestor(prisma, normalizedOwnerWorkspaceId, requesterWorkspaceId, parentWorkspaceCache),
+    ]);
+
+    const relation = { above, below };
+    requesterVsOwnerWorkspaceCache.set(normalizedOwnerWorkspaceId, relation);
+    return relation;
+  }
+
+  async function canAgentReadWorkspacePath(targetWorkspaceId, notePath) {
+    const normalizedWorkspaceId = String(targetWorkspaceId || "").trim();
+    const normalizedNotePath = normalizeVaultToolPath(notePath);
+    if (!normalizedWorkspaceId || !normalizedNotePath) return false;
+
+    const topLevel = topLevelFolder(normalizedNotePath);
+    if (topLevel === VAULT_SYSTEM_DIR || topLevel === VAULT_GLOBAL_DIR) {
+      return true;
+    }
+
+    const { folderOwnersMap, visibilityMap, aiShareMap } = await getWorkspaceMaps(normalizedWorkspaceId);
+
+    const ownerFromMap = normalizeOwnerId(getNearestPathMapValue(folderOwnersMap, normalizedNotePath));
+    const ownerId = ownerFromMap || extractTopLevelOwnerId(normalizedNotePath);
+    if (!ownerId) return false;
+
+    if (ownerId === requesterUserId) return true;
+
+    const shareModeFromMap = getNearestPathMapValue(aiShareMap, normalizedNotePath);
+    const visibilityMode = visibilityMap[topLevelFolder(normalizedNotePath)] === "public" ? "shared" : null;
+    const shareMode = normalizeAiShareMode(shareModeFromMap || visibilityMode || "owner_only");
+    if (shareMode === "owner_only") return false;
+
+    const ownerUserInfo = await getOwnerUserInfo(ownerId, normalizedWorkspaceId);
+    const ownerWorkspaceId = ownerUserInfo.workspaceId;
+
+    if (ownerWorkspaceId && requesterWorkspaceId && ownerWorkspaceId === requesterWorkspaceId) {
+      const roleRank = {
+        sub_client: 1,
+        client: 2,
+        admin: 3,
+      };
+
+      const requesterRank = roleRank[String(context.userRole || "").trim().toLowerCase()] || 0;
+      const ownerRank = roleRank[String(ownerUserInfo.role || "").trim().toLowerCase()] || 0;
+
+      if (shareMode === "shared") {
+        return requesterRank > ownerRank;
+      }
+
+      if (shareMode === "shared_full") {
+        return requesterRank !== ownerRank;
+      }
+    }
+
+    const relation = await getRequesterVsOwnerWorkspaceRelation(ownerWorkspaceId);
+
+    if (shareMode === "shared") {
+      return relation.above;
+    }
+
+    if (shareMode === "shared_full") {
+      return relation.above || relation.below;
+    }
+
+    return false;
+  }
+
+  return {
+    canReadPath: async (inputPath) => {
+      const parsedPath = parseVaultScopedPath(inputPath, requesterWorkspaceId);
+
+      if (parsedPath.scope === "global") {
+        return true;
+      }
+
+      if (parsedPath.scope !== "workspace") {
+        return false;
+      }
+
+      if (!parsedPath.workspaceId || !parsedPath.notePath) {
+        return false;
+      }
+
+      return canAgentReadWorkspacePath(parsedPath.workspaceId, parsedPath.notePath);
+    },
+    canWritePath: workspacePolicy.canWritePath,
+  };
 }
 
 const vault_read = {
@@ -2087,18 +2478,38 @@ const vault_read = {
     required: ["path"]
   },
   async execute(params, context) {
-    if (!context.tenantId) return { error: "Workspace non défini" };
+    if (!context.tenantId && !context.isAdmin) return { error: "Workspace non défini" };
     if (!canReadVaultToolContext(context)) {
       return { error: "Accès vault non autorisé pour cet utilisateur" };
     }
 
+    const requestedPath = normalizeVaultToolPath(params.path || "");
+    if (!requestedPath) return { error: "Chemin de note requis" };
+
     const policy = await getVaultToolPathPolicy(context);
-    if (!policy.canReadPath(params.path)) {
+    if (!(await policy.canReadPath(requestedPath))) {
       return { error: "Accès interdit à cette note du vault" };
     }
 
+    const parsedPath = parseVaultScopedPath(requestedPath, context.tenantId || null);
+    if (parsedPath.isRootScoped) {
+      if (parsedPath.scope === "workspace" && (!parsedPath.workspaceId || !parsedPath.notePath)) {
+        return { error: "Chemin de note invalide. Utilisez Workspaces/:id/<note>.md" };
+      }
+      if (parsedPath.scope === "global" && !parsedPath.notePath) {
+        return { error: "Chemin de note invalide. Utilisez Global/<note>.md" };
+      }
+
+      const { readRootNote } = await import("../../services/vault/vault-service.js");
+      return readRootNote(parsedPath.rootPath);
+    }
+
+    if (!context.tenantId) {
+      return { error: "Chemin workspace relatif invalide sans workspace courant" };
+    }
+
     const { readNote } = await import("../../services/vault/vault-service.js");
-    return readNote(context.tenantId, params.path);
+    return readNote(context.tenantId, parsedPath.notePath);
   }
 };
 
@@ -2121,18 +2532,41 @@ const vault_write = {
     required: ["path", "content"]
   },
   async execute(params, context) {
-    if (!context.tenantId) return { error: "Workspace non défini" };
+    if (!context.tenantId && !context.isAdmin) return { error: "Workspace non défini" };
     if (!canWriteVaultToolContext(context)) {
       return { error: "Écriture vault non autorisée pour cet utilisateur" };
     }
 
+    const requestedPath = normalizeVaultToolPath(params.path || "");
+    if (!requestedPath) return { error: "Chemin de note requis" };
+
     const policy = await getVaultToolPathPolicy(context);
-    if (!policy.canWritePath(params.path)) {
+    if (!policy.canWritePath(requestedPath)) {
       return { error: "Écriture interdite dans ce dossier du vault" };
     }
 
+    const parsedPath = parseVaultScopedPath(requestedPath, context.tenantId || null);
+    if (parsedPath.isRootScoped) {
+      if (!context.isAdmin) {
+        return { error: "Écriture root scope réservée aux admins" };
+      }
+      if (parsedPath.scope === "workspace" && (!parsedPath.workspaceId || !parsedPath.notePath)) {
+        return { error: "Chemin de note invalide. Utilisez Workspaces/:id/<note>.md" };
+      }
+      if (parsedPath.scope === "global" && !parsedPath.notePath) {
+        return { error: "Chemin de note invalide. Utilisez Global/<note>.md" };
+      }
+
+      const { writeRootNote } = await import("../../services/vault/vault-service.js");
+      return writeRootNote(parsedPath.rootPath, params.content);
+    }
+
+    if (!context.tenantId) {
+      return { error: "Chemin workspace relatif invalide sans workspace courant" };
+    }
+
     const { writeNote } = await import("../../services/vault/vault-service.js");
-    return writeNote(context.tenantId, params.path, params.content);
+    return writeNote(context.tenantId, parsedPath.notePath, params.content);
   }
 };
 
@@ -2155,18 +2589,41 @@ const vault_append = {
     required: ["path", "content"]
   },
   async execute(params, context) {
-    if (!context.tenantId) return { error: "Workspace non défini" };
+    if (!context.tenantId && !context.isAdmin) return { error: "Workspace non défini" };
     if (!canWriteVaultToolContext(context)) {
       return { error: "Écriture vault non autorisée pour cet utilisateur" };
     }
 
+    const requestedPath = normalizeVaultToolPath(params.path || "");
+    if (!requestedPath) return { error: "Chemin de note requis" };
+
     const policy = await getVaultToolPathPolicy(context);
-    if (!policy.canWritePath(params.path)) {
+    if (!policy.canWritePath(requestedPath)) {
       return { error: "Écriture interdite dans ce dossier du vault" };
     }
 
+    const parsedPath = parseVaultScopedPath(requestedPath, context.tenantId || null);
+    if (parsedPath.isRootScoped) {
+      if (!context.isAdmin) {
+        return { error: "Écriture root scope réservée aux admins" };
+      }
+      if (parsedPath.scope === "workspace" && (!parsedPath.workspaceId || !parsedPath.notePath)) {
+        return { error: "Chemin de note invalide. Utilisez Workspaces/:id/<note>.md" };
+      }
+      if (parsedPath.scope === "global" && !parsedPath.notePath) {
+        return { error: "Chemin de note invalide. Utilisez Global/<note>.md" };
+      }
+
+      const { appendRootNote } = await import("../../services/vault/vault-service.js");
+      return appendRootNote(parsedPath.rootPath, params.content);
+    }
+
+    if (!context.tenantId) {
+      return { error: "Chemin workspace relatif invalide sans workspace courant" };
+    }
+
     const { appendNote } = await import("../../services/vault/vault-service.js");
-    return appendNote(context.tenantId, params.path, params.content);
+    return appendNote(context.tenantId, parsedPath.notePath, params.content);
   }
 };
 
@@ -2185,18 +2642,41 @@ const vault_delete = {
     required: ["path"]
   },
   async execute(params, context) {
-    if (!context.tenantId) return { error: "Workspace non défini" };
+    if (!context.tenantId && !context.isAdmin) return { error: "Workspace non défini" };
     if (!canWriteVaultToolContext(context)) {
       return { error: "Écriture vault non autorisée pour cet utilisateur" };
     }
 
+    const requestedPath = normalizeVaultToolPath(params.path || "");
+    if (!requestedPath) return { error: "Chemin de note requis" };
+
     const policy = await getVaultToolPathPolicy(context);
-    if (!policy.canWritePath(params.path)) {
+    if (!policy.canWritePath(requestedPath)) {
       return { error: "Écriture interdite dans ce dossier du vault" };
     }
 
+    const parsedPath = parseVaultScopedPath(requestedPath, context.tenantId || null);
+    if (parsedPath.isRootScoped) {
+      if (!context.isAdmin) {
+        return { error: "Écriture root scope réservée aux admins" };
+      }
+      if (parsedPath.scope === "workspace" && (!parsedPath.workspaceId || !parsedPath.notePath)) {
+        return { error: "Chemin de note invalide. Utilisez Workspaces/:id/<note>.md" };
+      }
+      if (parsedPath.scope === "global" && !parsedPath.notePath) {
+        return { error: "Chemin de note invalide. Utilisez Global/<note>.md" };
+      }
+
+      const { deleteRootNote } = await import("../../services/vault/vault-service.js");
+      return deleteRootNote(parsedPath.rootPath);
+    }
+
+    if (!context.tenantId) {
+      return { error: "Chemin workspace relatif invalide sans workspace courant" };
+    }
+
     const { deleteNote } = await import("../../services/vault/vault-service.js");
-    return deleteNote(context.tenantId, params.path);
+    return deleteNote(context.tenantId, parsedPath.notePath);
   }
 };
 
@@ -2219,15 +2699,30 @@ const vault_search = {
     required: ["query"]
   },
   async execute(params, context) {
-    if (!context.tenantId) return { error: "Workspace non défini" };
+    if (!context.tenantId && !context.isAdmin) return { error: "Workspace non défini" };
     if (!canReadVaultToolContext(context)) {
       return { error: "Accès vault non autorisé pour cet utilisateur" };
     }
 
     const policy = await getVaultToolPathPolicy(context);
-    const { searchNotes } = await import("../../services/vault/vault-service.js");
-    const rawResults = await searchNotes(context.tenantId, params.query, params.limit || 10);
-    const results = rawResults.filter((item) => policy.canReadPath(item.path));
+
+    const max = Math.max(1, Number(params.limit) || 10);
+    const searchLimit = Math.min(200, max * 20);
+    const isAgentContext = Boolean(context.agentId);
+
+    const { searchNotes, searchRootNotes } = await import("../../services/vault/vault-service.js");
+    const rawResults = isAgentContext
+      ? await searchRootNotes(params.query, searchLimit)
+      : await searchNotes(context.tenantId, params.query, searchLimit);
+
+    const results = [];
+    for (const item of rawResults) {
+      if (await policy.canReadPath(item.path)) {
+        results.push(item);
+      }
+      if (results.length >= max) break;
+    }
+
     return { results };
   }
 };
@@ -2247,21 +2742,36 @@ const vault_list = {
     required: []
   },
   async execute(params, context) {
-    if (!context.tenantId) return { error: "Workspace non défini" };
+    if (!context.tenantId && !context.isAdmin) return { error: "Workspace non défini" };
     if (!canReadVaultToolContext(context)) {
       return { error: "Accès vault non autorisé pour cet utilisateur" };
     }
 
     const policy = await getVaultToolPathPolicy(context);
-    const folder = params.folder || "";
-    if (folder && !policy.canReadPath(folder)) {
-      return { error: "Accès interdit à ce dossier du vault" };
+    const folder = normalizeVaultToolPath(params.folder || "");
+    const parsedFolder = parseVaultScopedPath(folder, context.tenantId || null);
+    const isAgentContext = Boolean(context.agentId);
+
+    const { listTree, listRootTree } = await import("../../services/vault/vault-service.js");
+
+    let rawTree = [];
+    if (isAgentContext || parsedFolder.isRootScoped) {
+      if (!parsedFolder.isRootScoped && !context.tenantId && folder) {
+        return { error: "Chemin workspace relatif invalide sans workspace courant" };
+      }
+
+      const rootFolder = folder
+        ? (parsedFolder.isRootScoped
+          ? parsedFolder.rootPath
+          : toWorkspaceRootPath(context.tenantId, parsedFolder.notePath))
+        : "";
+
+      rawTree = await listRootTree(rootFolder);
+    } else {
+      rawTree = await listTree(context.tenantId, parsedFolder.notePath || "");
     }
 
-    const { listTree } = await import("../../services/vault/vault-service.js");
-    const { filterTreeByPathPolicy } = await import("../../services/vault/vault-service.js");
-    const rawTree = await listTree(context.tenantId, folder);
-    const tree = filterTreeByPathPolicy(rawTree, policy.canReadPath);
+    const tree = await filterTreeByAsyncPathPolicy(rawTree, policy.canReadPath);
     return { tree };
   }
 };

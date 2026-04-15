@@ -12,6 +12,7 @@ import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { seedMarketForWorkspace } from "../seed-market.js";
+import { deleteWorkspaceVaultStorage } from "../services/vault/vault-service.js";
 
 const router = express.Router();
 
@@ -56,6 +57,19 @@ function formatWorkspace(workspace) {
     userCount: workspace._count?.users || 0,
     childCount: workspace._count?.children || 0
   };
+}
+
+async function cleanupWorkspaceVault(workspaceId) {
+  try {
+    await deleteWorkspaceVaultStorage(workspaceId);
+    return { deleted: true };
+  } catch (err) {
+    console.error("[workspaces] Failed to cleanup vault storage:", {
+      workspaceId,
+      error: err?.message || String(err)
+    });
+    return { deleted: false, error: "vault_cleanup_failed" };
+  }
 }
 
 // ── Admin routes ──────────────────────────────────────────────
@@ -446,8 +460,25 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
       data: updateData
     });
 
-    await logAudit(req.user.sub, "WORKSPACE_UPDATED", { workspaceId: req.params.id, changes: updateData });
-    return res.json({ message: "Workspace mis à jour", workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name } });
+    let vaultCleanup = null;
+    if (updateData.status === "deleted") {
+      vaultCleanup = await cleanupWorkspaceVault(workspace.id);
+    }
+
+    const auditPayload = { workspaceId: req.params.id, changes: updateData };
+    if (vaultCleanup) {
+      auditPayload.vaultCleanup = vaultCleanup;
+    }
+    await logAudit(req.user.sub, "WORKSPACE_UPDATED", auditPayload);
+
+    const response = {
+      message: "Workspace mis à jour",
+      workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name }
+    };
+    if (vaultCleanup) {
+      response.vaultCleanup = vaultCleanup;
+    }
+    return res.json(response);
   } catch (err) {
     if (err.code === "P2025") {
       return res.status(404).json({ error: "Workspace introuvable" });
@@ -462,13 +493,15 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  */
 router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    await prisma.workspace.update({
+    const workspace = await prisma.workspace.update({
       where: { id: req.params.id },
       data: { status: "deleted" }
     });
 
-    await logAudit(req.user.sub, "WORKSPACE_DELETED", { workspaceId: req.params.id });
-    return res.json({ message: "Workspace supprimé" });
+    const vaultCleanup = await cleanupWorkspaceVault(workspace.id);
+
+    await logAudit(req.user.sub, "WORKSPACE_DELETED", { workspaceId: req.params.id, vaultCleanup });
+    return res.json({ message: "Workspace supprimé", vaultCleanup });
   } catch (err) {
     if (err.code === "P2025") {
       return res.status(404).json({ error: "Workspace introuvable" });

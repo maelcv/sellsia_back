@@ -18,15 +18,18 @@ import { prisma } from "../../prisma.js";
 const VAULT_BASE = process.env.VAULT_BASE_PATH || path.resolve("./vaults");
 const GLOBAL_DIR = "Global";
 const WORKSPACES_DIR = "Workspaces";
+const WORKSPACE_SYSTEM_DIR = "System";
 const USER_FOLDER_VISIBILITY_FILE = ".user-folders.json";
 const FOLDER_OWNERS_FILE = ".folder-owners.json";
+const FOLDER_PROTECTIONS_FILE = ".folder-protections.json";
+const ROOT_PROTECTIONS_FILE = ".root-protections.json";
 const USER_FOLDER_PUBLIC = "public";
 const USER_FOLDER_PRIVATE = "private";
 const WORKSPACE_LOCKED_TOP_LEVEL_FOLDERS = new Set([
   GLOBAL_DIR,
+  WORKSPACE_SYSTEM_DIR,
   "Agents",
   "Platform",
-  "System",
   "_agents",
   "_platform",
   "_system",
@@ -39,6 +42,18 @@ function normalizeVaultPath(rawPath = "") {
     .replace(/\\/g, "/")
     .replace(/^\/+/, "")
     .replace(/\/+$/, "");
+}
+
+function normalizeWorkspaceScopedPath(rawPath = "") {
+  const normalizedPath = normalizeVaultPath(rawPath);
+  if (!normalizedPath) return "";
+
+  const parts = normalizedPath.split("/");
+  if (parts[0] === GLOBAL_DIR) {
+    return normalizeVaultPath([WORKSPACE_SYSTEM_DIR, ...parts.slice(1)].join("/"));
+  }
+
+  return normalizedPath;
 }
 
 function globalRoot() {
@@ -64,13 +79,32 @@ function workspaceRoot(workspaceId) {
   return modernRoot;
 }
 
+export async function deleteWorkspaceVaultStorage(workspaceId) {
+  const normalizedWorkspaceId = String(workspaceId || "").trim();
+  if (!normalizedWorkspaceId || normalizedWorkspaceId.includes("/")) {
+    throw Object.assign(new Error("workspaceId invalide"), { statusCode: 400 });
+  }
+
+  const modernPath = resolveSafeInRoot(workspacesRoot(), normalizedWorkspaceId);
+  const legacyPath = resolveSafeInRoot(VAULT_BASE, normalizedWorkspaceId);
+
+  await fs.rm(modernPath, { recursive: true, force: true });
+  await fs.rm(legacyPath, { recursive: true, force: true });
+  await prisma.vaultNote.deleteMany({ where: { workspaceId: normalizedWorkspaceId } });
+
+  return {
+    workspaceId: normalizedWorkspaceId,
+    deleted: true,
+  };
+}
+
 /**
  * Résout le chemin absolu d'une note et valide qu'il ne sort pas du vault.
  * Throws si path traversal détecté.
  */
 function resolveSafe(workspaceId, notePath) {
   const root = workspaceRoot(workspaceId);
-  const normalizedPath = normalizeVaultPath(notePath);
+  const normalizedPath = normalizeWorkspaceScopedPath(notePath);
   const resolved = path.resolve(root, normalizedPath);
   if (!resolved.startsWith(root + path.sep) && resolved !== root) {
     throw Object.assign(new Error("Chemin invalide"), { statusCode: 400 });
@@ -147,6 +181,88 @@ async function writeFolderOwnersMap(workspaceId, map) {
   await fs.writeFile(filePath, JSON.stringify(map, null, 2), "utf-8");
 }
 
+function folderProtectionsPath(workspaceId) {
+  return path.join(workspaceRoot(workspaceId), FOLDER_PROTECTIONS_FILE);
+}
+
+function rootProtectionsPath() {
+  return path.join(VAULT_BASE, ROOT_PROTECTIONS_FILE);
+}
+
+function hasPathOrAncestorInSet(protectionSet, inputPath) {
+  const normalizedPath = normalizeVaultPath(inputPath);
+  if (!normalizedPath) return false;
+
+  const parts = normalizedPath.split("/");
+  for (let i = parts.length; i > 0; i -= 1) {
+    const key = parts.slice(0, i).join("/");
+    if (protectionSet.has(key)) return true;
+  }
+
+  return false;
+}
+
+async function readFolderProtectionsMap(workspaceId) {
+  const filePath = folderProtectionsPath(workspaceId);
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Set();
+
+    const set = new Set();
+    for (const folderPath of Object.keys(parsed)) {
+      const normalizedPath = normalizeVaultPath(folderPath);
+      if (normalizedPath && parsed[folderPath] === true) {
+        set.add(normalizedPath);
+      }
+    }
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
+async function writeFolderProtectionsMap(workspaceId, protectionSet) {
+  const root = workspaceRoot(workspaceId);
+  await fs.mkdir(root, { recursive: true });
+  const filePath = folderProtectionsPath(workspaceId);
+  const obj = {};
+  for (const protectedPath of protectionSet) {
+    obj[protectedPath] = true;
+  }
+  await fs.writeFile(filePath, JSON.stringify(obj, null, 2), "utf-8");
+}
+
+async function readRootProtectionsMap() {
+  const filePath = rootProtectionsPath();
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Set();
+
+    const set = new Set();
+    for (const protectedPath of Object.keys(parsed)) {
+      const normalizedPath = normalizeVaultPath(protectedPath);
+      if (normalizedPath && parsed[protectedPath] === true) {
+        set.add(normalizedPath);
+      }
+    }
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
+async function writeRootProtectionsMap(protectionSet) {
+  await fs.mkdir(VAULT_BASE, { recursive: true });
+  const filePath = rootProtectionsPath();
+  const obj = {};
+  for (const protectedPath of protectionSet) {
+    obj[protectedPath] = true;
+  }
+  await fs.writeFile(filePath, JSON.stringify(obj, null, 2), "utf-8");
+}
+
 function getNearestFolderOwner(folderOwnersMap, inputPath) {
   const normalizedPath = normalizeVaultPath(inputPath);
   if (!normalizedPath) return null;
@@ -177,6 +293,120 @@ export function isWorkspaceLockedFolderPath(inputPath) {
   return WORKSPACE_LOCKED_TOP_LEVEL_FOLDERS.has(normalizedPath);
 }
 
+export async function isWorkspaceFolderProtected(workspaceId, inputPath) {
+  const normalizedPath = normalizeVaultPath(inputPath);
+  if (!normalizedPath) return false;
+
+  if (isWorkspaceLockedFolderPath(normalizedPath)) return true;
+  return isWorkspacePathProtected(workspaceId, normalizedPath);
+}
+
+export async function isWorkspacePathProtected(workspaceId, inputPath) {
+  const normalizedPath = normalizeVaultPath(inputPath);
+  if (!normalizedPath) return false;
+
+  const protections = await readFolderProtectionsMap(workspaceId);
+  return hasPathOrAncestorInSet(protections, normalizedPath);
+}
+
+export async function toggleWorkspaceFolderProtection(workspaceId, folderPath) {
+  return setWorkspacePathProtection(workspaceId, folderPath);
+}
+
+export async function setWorkspacePathProtection(workspaceId, targetPath, protectedState = null) {
+  const normalizedPath = normalizeWorkspaceScopedPath(targetPath);
+  if (!normalizedPath) {
+    throw Object.assign(new Error("Chemin requis"), { statusCode: 400 });
+  }
+
+  if (isWorkspaceLockedFolderPath(normalizedPath)) {
+    throw Object.assign(new Error("Ce dossier système ne peut pas être modifié"), { statusCode: 403 });
+  }
+
+  const targetAbsolutePath = resolveSafe(workspaceId, normalizedPath);
+  if (!(await pathExists(targetAbsolutePath))) {
+    throw Object.assign(new Error("Élément introuvable"), { statusCode: 404 });
+  }
+
+  const protections = await readFolderProtectionsMap(workspaceId);
+  const shouldProtect =
+    typeof protectedState === "boolean"
+      ? protectedState
+      : !protections.has(normalizedPath);
+
+  if (shouldProtect) {
+    protections.add(normalizedPath);
+  } else {
+    protections.delete(normalizedPath);
+  }
+
+  await writeFolderProtectionsMap(workspaceId, protections);
+  return { path: normalizedPath, protected: protections.has(normalizedPath) };
+}
+
+export async function isRootPathProtected(rootPath) {
+  const normalizedPath = normalizeVaultPath(rootPath);
+  if (!normalizedPath) return false;
+
+  const target = resolveRootScopedPath(normalizedPath);
+  if (target.scope === "workspace") {
+    if (!target.notePath) return false;
+    return isWorkspacePathProtected(target.workspaceId, target.notePath);
+  }
+
+  if (!target.notePath) return false;
+
+  const protections = await readRootProtectionsMap();
+  return hasPathOrAncestorInSet(protections, normalizedPath);
+}
+
+export async function setRootPathProtection(rootPath, protectedState = null) {
+  const normalizedPath = normalizeVaultPath(rootPath);
+  if (!normalizedPath) {
+    throw Object.assign(new Error("Chemin requis"), { statusCode: 400 });
+  }
+
+  if (isRootLockedFolderPath(normalizedPath)) {
+    throw Object.assign(new Error("Ce dossier système ne peut pas être modifié"), { statusCode: 403 });
+  }
+
+  const target = resolveRootScopedPath(normalizedPath);
+  if (target.scope === "workspace") {
+    if (!target.notePath) {
+      throw Object.assign(new Error("Impossible de modifier la protection sur la racine d'un workspace"), { statusCode: 403 });
+    }
+    const result = await setWorkspacePathProtection(target.workspaceId, target.notePath, protectedState);
+    return {
+      path: normalizeVaultPath(`${WORKSPACES_DIR}/${target.workspaceId}/${result.path}`),
+      protected: result.protected,
+    };
+  }
+
+  if (!target.notePath) {
+    throw Object.assign(new Error("Impossible de modifier la protection sur la racine Global"), { statusCode: 403 });
+  }
+
+  const globalPath = resolveSafeInRoot(globalRoot(), target.notePath);
+  if (!(await pathExists(globalPath))) {
+    throw Object.assign(new Error("Élément introuvable"), { statusCode: 404 });
+  }
+
+  const protections = await readRootProtectionsMap();
+  const shouldProtect =
+    typeof protectedState === "boolean"
+      ? protectedState
+      : !protections.has(normalizedPath);
+
+  if (shouldProtect) {
+    protections.add(normalizedPath);
+  } else {
+    protections.delete(normalizedPath);
+  }
+
+  await writeRootProtectionsMap(protections);
+  return { path: normalizedPath, protected: protections.has(normalizedPath) };
+}
+
 export function isRootLockedFolderPath(inputPath) {
   const normalizedPath = normalizeVaultPath(inputPath);
   if (!normalizedPath) return false;
@@ -189,7 +419,12 @@ export function isRootLockedFolderPath(inputPath) {
     return true;
   }
 
-  if (parts[0] === WORKSPACES_DIR && parts[1] && parts[2] === GLOBAL_DIR && parts.length === 3) {
+  if (
+    parts[0] === WORKSPACES_DIR &&
+    parts[1] &&
+    (parts[2] === WORKSPACE_SYSTEM_DIR || parts[2] === GLOBAL_DIR) &&
+    parts.length === 3
+  ) {
     return true;
   }
 
@@ -212,6 +447,76 @@ async function moveFolderOwnerEntries(workspaceId, fromPath, toPath) {
   }
 
   await writeFolderOwnersMap(workspaceId, next);
+}
+
+async function moveWorkspaceProtectionEntries(workspaceId, fromPath, toPath, includeChildren) {
+  const normalizedFrom = normalizeWorkspaceScopedPath(fromPath);
+  const normalizedTo = normalizeWorkspaceScopedPath(toPath);
+  if (!normalizedFrom || !normalizedTo) return;
+
+  const protections = await readFolderProtectionsMap(workspaceId);
+  const next = new Set(protections);
+
+  for (const key of protections) {
+    if (key === normalizedFrom || (includeChildren && key.startsWith(`${normalizedFrom}/`))) {
+      const suffix = key.slice(normalizedFrom.length).replace(/^\//, "");
+      const nextKey = normalizeWorkspaceScopedPath(suffix ? `${normalizedTo}/${suffix}` : normalizedTo);
+      next.delete(key);
+      next.add(nextKey);
+    }
+  }
+
+  await writeFolderProtectionsMap(workspaceId, next);
+}
+
+async function deleteWorkspaceProtectionEntries(workspaceId, folderPath, includeChildren) {
+  const normalizedPath = normalizeWorkspaceScopedPath(folderPath);
+  if (!normalizedPath) return;
+
+  const protections = await readFolderProtectionsMap(workspaceId);
+  const next = new Set();
+
+  for (const key of protections) {
+    if (key === normalizedPath || (includeChildren && key.startsWith(`${normalizedPath}/`))) continue;
+    next.add(key);
+  }
+
+  await writeFolderProtectionsMap(workspaceId, next);
+}
+
+async function moveRootProtectionEntries(fromRootPath, toRootPath, includeChildren) {
+  const normalizedFrom = normalizeVaultPath(fromRootPath);
+  const normalizedTo = normalizeVaultPath(toRootPath);
+  if (!normalizedFrom || !normalizedTo) return;
+
+  const protections = await readRootProtectionsMap();
+  const next = new Set(protections);
+
+  for (const key of protections) {
+    if (key === normalizedFrom || (includeChildren && key.startsWith(`${normalizedFrom}/`))) {
+      const suffix = key.slice(normalizedFrom.length).replace(/^\//, "");
+      const nextKey = normalizeVaultPath(suffix ? `${normalizedTo}/${suffix}` : normalizedTo);
+      next.delete(key);
+      next.add(nextKey);
+    }
+  }
+
+  await writeRootProtectionsMap(next);
+}
+
+async function deleteRootProtectionEntries(rootPath, includeChildren) {
+  const normalizedPath = normalizeVaultPath(rootPath);
+  if (!normalizedPath) return;
+
+  const protections = await readRootProtectionsMap();
+  const next = new Set();
+
+  for (const key of protections) {
+    if (key === normalizedPath || (includeChildren && key.startsWith(`${normalizedPath}/`))) continue;
+    next.add(key);
+  }
+
+  await writeRootProtectionsMap(next);
 }
 
 async function deleteFolderOwnerEntries(workspaceId, folderPath) {
@@ -252,7 +557,7 @@ async function deleteVisibilityEntry(workspaceId, folderPath) {
 }
 
 export async function setFolderOwner(workspaceId, folderPath, ownerUserId) {
-  const normalizedPath = normalizeVaultPath(folderPath);
+  const normalizedPath = normalizeWorkspaceScopedPath(folderPath);
   const ownerId = String(ownerUserId || "").trim();
   if (!normalizedPath || !ownerId) return;
   if (isWorkspaceLockedFolderPath(normalizedPath)) return;
@@ -265,7 +570,19 @@ export async function setFolderOwner(workspaceId, folderPath, ownerUserId) {
 export async function ensureWorkspaceBaseStructure(workspaceId, userId = null) {
   const root = workspaceRoot(workspaceId);
   await fs.mkdir(root, { recursive: true });
-  await fs.mkdir(path.join(root, GLOBAL_DIR), { recursive: true });
+
+  const systemPath = path.join(root, WORKSPACE_SYSTEM_DIR);
+  const legacyGlobalPath = path.join(root, GLOBAL_DIR);
+
+  if (!(await pathExists(systemPath)) && (await pathExists(legacyGlobalPath))) {
+    const stats = await fs.stat(legacyGlobalPath).catch(() => null);
+    if (stats?.isDirectory()) {
+      await fs.rename(legacyGlobalPath, systemPath);
+      await moveFolderOwnerEntries(workspaceId, GLOBAL_DIR, WORKSPACE_SYSTEM_DIR);
+    }
+  }
+
+  await fs.mkdir(systemPath, { recursive: true });
   if (userId !== null && userId !== undefined) {
     await fs.mkdir(path.join(root, String(userId)), { recursive: true });
   }
@@ -292,55 +609,93 @@ export async function setUserFolderVisibility(workspaceId, userId, visibility) {
   return { userId: key, visibility: normalizedVisibility };
 }
 
-export async function createWorkspacePathPolicy(workspaceId, userId, userRole) {
+export async function createWorkspacePathPolicy(workspaceId, userId, userRole, options = {}) {
   const isAdmin = userRole === "admin";
+  const isAgentContext = options?.isAgentContext === true;
+  const hasSystemFolderAccess = isAdmin || isAgentContext;
   const normalizedUserId = String(userId || "").trim();
   const visibilityMap = await readUserFolderVisibilityMap(workspaceId);
   const folderOwnersMap = await readFolderOwnersMap(workspaceId);
+  const protectionSet = await readFolderProtectionsMap(workspaceId);
   const isWorkspaceOwner = userRole === "client";
 
-  const getPathOwner = (inputPath) => getNearestFolderOwner(folderOwnersMap, inputPath);
+  const getPathOwner = (inputPath) =>
+    getNearestFolderOwner(folderOwnersMap, normalizeWorkspaceScopedPath(inputPath));
+
+  const isSystemFolderPath = (inputPath) => {
+    const topLevel = topLevelName(inputPath);
+    return topLevel === WORKSPACE_SYSTEM_DIR || topLevel === GLOBAL_DIR;
+  };
+
+  const isProtectedPath = (inputPath) => {
+    const normalizedPath = normalizeWorkspaceScopedPath(inputPath);
+    if (!normalizedPath) return false;
+    return hasPathOrAncestorInSet(protectionSet, normalizedPath);
+  };
 
   const canReadPath = (inputPath) => {
-    if (isAdmin) return true;
-    if (isWorkspaceOwner) return true;
-
     const normalizedPath = normalizeVaultPath(inputPath);
     const topLevel = normalizedPath.split("/")[0];
     if (!topLevel) return false;
-    if (topLevel === GLOBAL_DIR) return true;
+
+    if (isSystemFolderPath(normalizedPath)) {
+      return hasSystemFolderAccess;
+    }
+
+    if (isAdmin) return true;
+    if (isWorkspaceOwner) return true;
+
+    const canonicalPath = normalizeWorkspaceScopedPath(normalizedPath);
+    const canonicalTopLevel = canonicalPath.split("/")[0];
     if (topLevel === normalizedUserId) return true;
-    const owner = getPathOwner(normalizedPath);
+    if (canonicalTopLevel === normalizedUserId) return true;
+
+    const owner = getPathOwner(canonicalPath);
     if (owner && owner === normalizedUserId) return true;
-    return visibilityMap[topLevel] === USER_FOLDER_PUBLIC;
+    return visibilityMap[canonicalTopLevel] === USER_FOLDER_PUBLIC;
   };
 
   const canWritePath = (inputPath) => {
-    if (isAdmin) return true;
-    if (isWorkspaceOwner) return true;
-
     const normalizedPath = normalizeVaultPath(inputPath);
     const topLevel = normalizedPath.split("/")[0];
     if (!topLevel) return false;
-    if (topLevel === GLOBAL_DIR) return true;
+
+    if (isSystemFolderPath(normalizedPath)) {
+      return hasSystemFolderAccess;
+    }
+
+    if (isAdmin) return true;
+    if (isProtectedPath(normalizedPath)) return false;
+    if (isWorkspaceOwner) return true;
+
+    const canonicalPath = normalizeWorkspaceScopedPath(normalizedPath);
+    const canonicalTopLevel = canonicalPath.split("/")[0];
     if (topLevel === normalizedUserId) return true;
-    const owner = getPathOwner(normalizedPath);
+    if (canonicalTopLevel === normalizedUserId) return true;
+
+    const owner = getPathOwner(canonicalPath);
     return owner === normalizedUserId;
   };
 
   const canManageFolderPath = (inputPath) => {
-    if (isAdmin) return true;
-
     const normalizedPath = normalizeVaultPath(inputPath);
     if (!normalizedPath) return false;
+
+    if (isSystemFolderPath(normalizedPath)) {
+      return isAdmin;
+    }
+
+    if (isAdmin) return true;
+    if (isProtectedPath(normalizedPath)) return false;
     if (isWorkspaceLockedFolderPath(normalizedPath)) return false;
 
     if (isWorkspaceOwner) return true;
 
-    const topLevel = normalizedPath.split("/")[0];
+    const canonicalPath = normalizeWorkspaceScopedPath(normalizedPath);
+    const topLevel = canonicalPath.split("/")[0];
     if (topLevel === normalizedUserId) return true;
 
-    const owner = getPathOwner(normalizedPath);
+    const owner = getPathOwner(canonicalPath);
     return owner === normalizedUserId;
   };
 
@@ -404,6 +759,22 @@ function parseWikilinks(content) {
   return [...links];
 }
 
+function resolveWorkspaceOutlinkPath(linkPath) {
+  const normalizedLink = normalizeVaultPath(linkPath);
+  if (!normalizedLink) return "";
+
+  if (
+    normalizedLink === GLOBAL_DIR ||
+    normalizedLink.startsWith(`${GLOBAL_DIR}/`) ||
+    normalizedLink === WORKSPACES_DIR ||
+    normalizedLink.startsWith(`${WORKSPACES_DIR}/`)
+  ) {
+    return normalizedLink;
+  }
+
+  return normalizeWorkspaceScopedPath(normalizedLink);
+}
+
 /**
  * Compte les mots d'un contenu (approximation).
  */
@@ -422,23 +793,26 @@ function countWords(content) {
  * Appelé automatiquement après chaque writeNote.
  */
 export async function syncMetadata(workspaceId, notePath, content) {
+  const normalizedPath = normalizeWorkspaceScopedPath(notePath);
   const parsed = matter(content);
   const frontmatter = parsed.data || {};
-  const outlinks = parseWikilinks(parsed.content);
+  const outlinks = parseWikilinks(parsed.content)
+    .map((linkPath) => resolveWorkspaceOutlinkPath(linkPath))
+    .filter(Boolean);
   const tags = Array.isArray(frontmatter.tags)
     ? frontmatter.tags.map(String)
     : frontmatter.tags
     ? [String(frontmatter.tags)]
     : [];
-  const title = extractTitle(notePath, frontmatter);
+  const title = extractTitle(normalizedPath, frontmatter);
   const wordCount = countWords(content);
 
   // Upsert VaultNote
   await prisma.vaultNote.upsert({
-    where: { workspaceId_path: { workspaceId, path: notePath } },
+    where: { workspaceId_path: { workspaceId, path: normalizedPath } },
     create: {
       workspaceId,
-      path: notePath,
+      path: normalizedPath,
       title,
       frontmatter: JSON.stringify(frontmatter),
       outlinks: JSON.stringify(outlinks),
@@ -464,7 +838,7 @@ export async function syncMetadata(workspaceId, notePath, content) {
           workspaceId,
           path: targetPath,
           title: extractTitle(targetPath),
-          inlinks: JSON.stringify([notePath]),
+          inlinks: JSON.stringify([normalizedPath]),
         },
         update: {
           inlinks: {
@@ -474,10 +848,10 @@ export async function syncMetadata(workspaceId, notePath, content) {
         },
       }).then(async (existing) => {
         const current = JSON.parse(existing.inlinks || "[]");
-        if (!current.includes(notePath)) {
+        if (!current.includes(normalizedPath)) {
           await prisma.vaultNote.update({
             where: { workspaceId_path: { workspaceId, path: targetPath } },
-            data: { inlinks: JSON.stringify([...current, notePath]) },
+            data: { inlinks: JSON.stringify([...current, normalizedPath]) },
           });
         }
       });
@@ -494,16 +868,17 @@ export async function syncMetadata(workspaceId, notePath, content) {
  * @returns {{ content: string, frontmatter: object, title: string, path: string }}
  */
 export async function readNote(workspaceId, notePath) {
-  const filePath = resolveSafe(workspaceId, notePath);
+  const normalizedPath = normalizeWorkspaceScopedPath(notePath);
+  const filePath = resolveSafe(workspaceId, normalizedPath);
   try {
     const raw = await fs.readFile(filePath, "utf-8");
     const parsed = matter(raw);
     return {
-      path: notePath,
+      path: normalizedPath,
       content: raw,
       body: parsed.content,
       frontmatter: parsed.data || {},
-      title: extractTitle(notePath, parsed.data),
+      title: extractTitle(normalizedPath, parsed.data),
     };
   } catch (err) {
     if (err.code === "ENOENT") {
@@ -518,11 +893,12 @@ export async function readNote(workspaceId, notePath) {
  * Crée les dossiers parents si nécessaires.
  */
 export async function writeNote(workspaceId, notePath, content) {
-  const filePath = resolveSafe(workspaceId, notePath);
+  const normalizedPath = normalizeWorkspaceScopedPath(notePath);
+  const filePath = resolveSafe(workspaceId, normalizedPath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, "utf-8");
-  await syncMetadata(workspaceId, notePath, content);
-  return { path: notePath, written: true };
+  await syncMetadata(workspaceId, normalizedPath, content);
+  return { path: normalizedPath, written: true };
 }
 
 /**
@@ -530,7 +906,8 @@ export async function writeNote(workspaceId, notePath, content) {
  * Crée la note si elle n'existe pas.
  */
 export async function appendNote(workspaceId, notePath, appendContent) {
-  const filePath = resolveSafe(workspaceId, notePath);
+  const normalizedPath = normalizeWorkspaceScopedPath(notePath);
+  const filePath = resolveSafe(workspaceId, normalizedPath);
   let existing = "";
   try {
     existing = await fs.readFile(filePath, "utf-8");
@@ -542,23 +919,26 @@ export async function appendNote(workspaceId, notePath, appendContent) {
     : appendContent;
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, newContent, "utf-8");
-  await syncMetadata(workspaceId, notePath, newContent);
-  return { path: notePath, appended: true };
+  await syncMetadata(workspaceId, normalizedPath, newContent);
+  return { path: normalizedPath, appended: true };
 }
 
 /**
  * Supprime une note (fichier + entrée DB).
  */
 export async function deleteNote(workspaceId, notePath) {
-  const filePath = resolveSafe(workspaceId, notePath);
+  const normalizedPath = normalizeWorkspaceScopedPath(notePath);
+  const filePath = resolveSafe(workspaceId, normalizedPath);
   try {
     await fs.unlink(filePath);
   } catch (err) {
     if (err.code !== "ENOENT") throw err;
   }
   await prisma.vaultNote.deleteMany({
-    where: { workspaceId, path: notePath },
+    where: { workspaceId, path: normalizedPath },
   });
+  await deleteWorkspaceProtectionEntries(workspaceId, normalizedPath, false);
+
   // Nettoyer les inlinks pointant vers cette note
   const notes = await prisma.vaultNote.findMany({
     where: { workspaceId },
@@ -566,10 +946,10 @@ export async function deleteNote(workspaceId, notePath) {
   });
   for (const note of notes) {
     const inlinks = JSON.parse(note.inlinks || "[]");
-    if (inlinks.includes(notePath)) {
+    if (inlinks.includes(normalizedPath)) {
       await prisma.vaultNote.update({
         where: { workspaceId_path: { workspaceId, path: note.path } },
-        data: { inlinks: JSON.stringify(inlinks.filter((l) => l !== notePath)) },
+        data: { inlinks: JSON.stringify(inlinks.filter((l) => l !== normalizedPath)) },
       });
     }
   }
@@ -590,13 +970,14 @@ async function rebuildWorkspaceMetadata(workspaceId) {
   await reindexVault(workspaceId);
 }
 
-export async function createFolder(workspaceId, folderPath, ownerUserId = null) {
-  const normalizedPath = normalizeVaultPath(folderPath);
+export async function createFolder(workspaceId, folderPath, ownerUserId = null, options = {}) {
+  const allowProtected = options?.allowProtected === true;
+  const normalizedPath = normalizeWorkspaceScopedPath(folderPath);
   if (!normalizedPath) {
     throw Object.assign(new Error("Chemin dossier requis"), { statusCode: 400 });
   }
 
-  if (isWorkspaceLockedFolderPath(normalizedPath)) {
+  if (isWorkspaceLockedFolderPath(normalizedPath) && !allowProtected) {
     throw Object.assign(new Error("Ce dossier est protégé"), { statusCode: 403 });
   }
 
@@ -610,9 +991,10 @@ export async function createFolder(workspaceId, folderPath, ownerUserId = null) 
   return { path: normalizedPath, created: true, type: "dir" };
 }
 
-export async function renameEntry(workspaceId, fromPath, toPath) {
-  const normalizedFrom = normalizeVaultPath(fromPath);
-  const normalizedTo = normalizeVaultPath(toPath);
+export async function renameEntry(workspaceId, fromPath, toPath, options = {}) {
+  const allowProtected = options?.allowProtected === true;
+  const normalizedFrom = normalizeWorkspaceScopedPath(fromPath);
+  const normalizedTo = normalizeWorkspaceScopedPath(toPath);
 
   if (!normalizedFrom || !normalizedTo) {
     throw Object.assign(new Error("fromPath et toPath requis"), { statusCode: 400 });
@@ -634,10 +1016,10 @@ export async function renameEntry(workspaceId, fromPath, toPath) {
   }
 
   const sourceStats = await fs.stat(sourcePath);
-  if (sourceStats.isDirectory() && isWorkspaceLockedFolderPath(normalizedFrom)) {
+  if (sourceStats.isDirectory() && isWorkspaceLockedFolderPath(normalizedFrom) && !allowProtected) {
     throw Object.assign(new Error("Ce dossier est protégé"), { statusCode: 403 });
   }
-  if (isWorkspaceLockedFolderPath(normalizedTo)) {
+  if (isWorkspaceLockedFolderPath(normalizedTo) && !allowProtected) {
     throw Object.assign(new Error("Chemin cible protégé"), { statusCode: 403 });
   }
 
@@ -649,6 +1031,8 @@ export async function renameEntry(workspaceId, fromPath, toPath) {
     await moveVisibilityEntry(workspaceId, normalizedFrom, normalizedTo);
   }
 
+  await moveWorkspaceProtectionEntries(workspaceId, normalizedFrom, normalizedTo, sourceStats.isDirectory());
+
   await rebuildWorkspaceMetadata(workspaceId);
 
   return {
@@ -659,13 +1043,14 @@ export async function renameEntry(workspaceId, fromPath, toPath) {
   };
 }
 
-export async function deleteFolderRecursive(workspaceId, folderPath) {
-  const normalizedPath = normalizeVaultPath(folderPath);
+export async function deleteFolderRecursive(workspaceId, folderPath, options = {}) {
+  const allowProtected = options?.allowProtected === true;
+  const normalizedPath = normalizeWorkspaceScopedPath(folderPath);
   if (!normalizedPath) {
     throw Object.assign(new Error("Chemin dossier requis"), { statusCode: 400 });
   }
 
-  if (isWorkspaceLockedFolderPath(normalizedPath)) {
+  if (isWorkspaceLockedFolderPath(normalizedPath) && !allowProtected) {
     throw Object.assign(new Error("Ce dossier est protégé"), { statusCode: 403 });
   }
 
@@ -682,6 +1067,7 @@ export async function deleteFolderRecursive(workspaceId, folderPath) {
   await fs.rm(targetPath, { recursive: true, force: true });
   await deleteFolderOwnerEntries(workspaceId, normalizedPath);
   await deleteVisibilityEntry(workspaceId, normalizedPath);
+  await deleteWorkspaceProtectionEntries(workspaceId, normalizedPath, true);
   await rebuildWorkspaceMetadata(workspaceId);
 
   return { deleted: true, type: "dir", path: normalizedPath };
@@ -695,7 +1081,7 @@ export async function deleteFolderRecursive(workspaceId, folderPath) {
  */
 export async function listTree(workspaceId, folder = "") {
   const root = workspaceRoot(workspaceId);
-  const normalizedFolder = normalizeVaultPath(folder);
+  const normalizedFolder = normalizeWorkspaceScopedPath(folder);
   const base = normalizedFolder ? resolveSafe(workspaceId, normalizedFolder) : root;
 
   // Structure attendue du workspace
@@ -846,8 +1232,9 @@ async function renameEntryInRootDir(rootDir, fromPath, toPath) {
   };
 }
 
-export async function createRootFolder(rootPath, ownerUserId = null) {
-  if (isRootLockedFolderPath(rootPath)) {
+export async function createRootFolder(rootPath, ownerUserId = null, options = {}) {
+  const allowProtected = options?.allowProtected === true;
+  if (isRootLockedFolderPath(rootPath) && !allowProtected) {
     throw Object.assign(new Error("Ce dossier est protégé"), { statusCode: 403 });
   }
 
@@ -868,15 +1255,16 @@ export async function createRootFolder(rootPath, ownerUserId = null) {
     return { path: normalizeVaultPath(rootPath), created: true, type: "dir" };
   }
 
-  const folder = await createFolder(target.workspaceId, target.notePath, ownerUserId);
+  const folder = await createFolder(target.workspaceId, target.notePath, ownerUserId, { allowProtected });
   return {
     ...folder,
     path: normalizeVaultPath(`${WORKSPACES_DIR}/${target.workspaceId}/${folder.path}`),
   };
 }
 
-export async function renameRootEntry(fromRootPath, toRootPath) {
-  if (isRootLockedFolderPath(fromRootPath) || isRootLockedFolderPath(toRootPath)) {
+export async function renameRootEntry(fromRootPath, toRootPath, options = {}) {
+  const allowProtected = options?.allowProtected === true;
+  if ((isRootLockedFolderPath(fromRootPath) || isRootLockedFolderPath(toRootPath)) && !allowProtected) {
     throw Object.assign(new Error("Ce dossier est protégé"), { statusCode: 403 });
   }
 
@@ -896,6 +1284,11 @@ export async function renameRootEntry(fromRootPath, toRootPath) {
       throw Object.assign(new Error("Impossible de renommer les dossiers racine système"), { statusCode: 403 });
     }
     const renamed = await renameEntryInRootDir(globalRoot(), source.notePath, target.notePath);
+    await moveRootProtectionEntries(
+      normalizeVaultPath(`${GLOBAL_DIR}/${source.notePath}`),
+      normalizeVaultPath(`${GLOBAL_DIR}/${target.notePath}`),
+      renamed.type === "dir"
+    );
     return {
       ...renamed,
       fromPath: normalizeVaultPath(fromRootPath),
@@ -907,7 +1300,7 @@ export async function renameRootEntry(fromRootPath, toRootPath) {
     throw Object.assign(new Error("Impossible de renommer la racine d'un workspace"), { statusCode: 403 });
   }
 
-  const renamed = await renameEntry(source.workspaceId, source.notePath, target.notePath);
+  const renamed = await renameEntry(source.workspaceId, source.notePath, target.notePath, { allowProtected });
   return {
     ...renamed,
     fromPath: normalizeVaultPath(fromRootPath),
@@ -915,8 +1308,9 @@ export async function renameRootEntry(fromRootPath, toRootPath) {
   };
 }
 
-export async function deleteRootFolderRecursive(rootPath) {
-  if (isRootLockedFolderPath(rootPath)) {
+export async function deleteRootFolderRecursive(rootPath, options = {}) {
+  const allowProtected = options?.allowProtected === true;
+  if (isRootLockedFolderPath(rootPath) && !allowProtected) {
     throw Object.assign(new Error("Ce dossier est protégé"), { statusCode: 403 });
   }
 
@@ -938,6 +1332,7 @@ export async function deleteRootFolderRecursive(rootPath) {
     }
 
     await fs.rm(absPath, { recursive: true, force: true });
+    await deleteRootProtectionEntries(normalizeVaultPath(rootPath), true);
     return { deleted: true, type: "dir", path: normalizeVaultPath(rootPath) };
   }
 
@@ -945,7 +1340,7 @@ export async function deleteRootFolderRecursive(rootPath) {
     throw Object.assign(new Error("Impossible de supprimer la racine d'un workspace"), { statusCode: 403 });
   }
 
-  return deleteFolderRecursive(target.workspaceId, target.notePath);
+  return deleteFolderRecursive(target.workspaceId, target.notePath, { allowProtected });
 }
 
 async function listWorkspaceIdsFromFilesystem() {
@@ -1093,7 +1488,7 @@ export async function listRootTree(folder = "") {
     const workspaceId = parts[1];
     await ensureWorkspaceBaseStructure(workspaceId);
     const wsRoot = workspaceRoot(workspaceId);
-    const innerFolder = parts.slice(2).join("/");
+    const innerFolder = normalizeWorkspaceScopedPath(parts.slice(2).join("/"));
     const baseDir = resolveSafeInRoot(wsRoot, innerFolder || "");
     const prefix = normalizeVaultPath(innerFolder
       ? `${WORKSPACES_DIR}/${workspaceId}/${innerFolder}`
@@ -1156,6 +1551,7 @@ export async function deleteRootNote(rootPath) {
 
   if (target.scope === "global") {
     await deleteNoteInRootDir(globalRoot(), target.notePath);
+    await deleteRootProtectionEntries(normalizeVaultPath(rootPath), false);
     return { deleted: true };
   }
 
@@ -1211,51 +1607,88 @@ export async function getRootGraph() {
   const nodes = [];
   const edges = [];
   const pathSet = new Set();
+  const edgeSet = new Set();
   const titleByPath = new Map();
+
+  const addNode = (nodePath, title, group) => {
+    const normalizedPath = normalizeVaultPath(nodePath);
+    if (!normalizedPath || pathSet.has(normalizedPath)) return;
+    nodes.push({ id: normalizedPath, title, group });
+    pathSet.add(normalizedPath);
+    titleByPath.set(normalizedPath, title);
+  };
+
+  const addEdge = (sourcePath, targetPath) => {
+    const source = normalizeVaultPath(sourcePath);
+    const target = normalizeVaultPath(targetPath);
+    if (!source || !target) return;
+    const edgeKey = `${source} -> ${target}`;
+    if (edgeSet.has(edgeKey)) return;
+    edgeSet.add(edgeKey);
+    edges.push({ source, target });
+  };
+
+  const resolveRootScopedTarget = (rawTarget, sourcePath) => {
+    const normalizedTarget = normalizeVaultPath(rawTarget);
+    if (!normalizedTarget) return "";
+
+    if (
+      normalizedTarget === GLOBAL_DIR ||
+      normalizedTarget.startsWith(`${GLOBAL_DIR}/`) ||
+      normalizedTarget === WORKSPACES_DIR ||
+      normalizedTarget.startsWith(`${WORKSPACES_DIR}/`)
+    ) {
+      return normalizedTarget;
+    }
+
+    if (sourcePath === GLOBAL_DIR || sourcePath.startsWith(`${GLOBAL_DIR}/`)) {
+      return normalizeVaultPath(`${GLOBAL_DIR}/${normalizedTarget}`);
+    }
+
+    if (sourcePath.startsWith(`${WORKSPACES_DIR}/`)) {
+      const parts = sourcePath.split("/");
+      const workspaceId = parts[1];
+      if (!workspaceId) return "";
+      const workspaceScopedTarget = normalizeWorkspaceScopedPath(normalizedTarget);
+      return normalizeVaultPath(`${WORKSPACES_DIR}/${workspaceId}/${workspaceScopedTarget}`);
+    }
+
+    return normalizedTarget;
+  };
+
+  const allFiles = [];
 
   const globalFiles = await collectMarkdownFiles(globalRoot(), GLOBAL_DIR);
   for (const file of globalFiles) {
     const parsed = matter(file.content);
     const title = extractTitle(file.path, parsed.data);
-    nodes.push({ id: file.path, title, group: GLOBAL_DIR });
-    pathSet.add(file.path);
-    titleByPath.set(file.path, title);
+    addNode(file.path, title, GLOBAL_DIR);
+    allFiles.push(file);
   }
 
   const workspaceIds = await listWorkspaceIdsFromFilesystem();
   for (const workspaceId of workspaceIds) {
     try {
-      const graph = await getGraph(workspaceId);
-      for (const node of graph.nodes) {
-        const scopedPath = normalizeVaultPath(`${WORKSPACES_DIR}/${workspaceId}/${node.id}`);
-        nodes.push({ id: scopedPath, title: node.title || toNodeName(scopedPath), group: `${WORKSPACES_DIR}/${workspaceId}` });
-        pathSet.add(scopedPath);
-        titleByPath.set(scopedPath, node.title || toNodeName(scopedPath));
-      }
-
-      for (const edge of graph.edges) {
-        const source = normalizeVaultPath(`${WORKSPACES_DIR}/${workspaceId}/${edge.source}`);
-        const target = normalizeVaultPath(`${WORKSPACES_DIR}/${workspaceId}/${edge.target}`);
-        edges.push({ source, target });
+      const wsFiles = await collectMarkdownFiles(workspaceRoot(workspaceId), `${WORKSPACES_DIR}/${workspaceId}`);
+      for (const file of wsFiles) {
+        const parsed = matter(file.content);
+        const title = extractTitle(file.path, parsed.data);
+        addNode(file.path, title, `${WORKSPACES_DIR}/${workspaceId}`);
+        allFiles.push(file);
       }
     } catch {
       /* ignore malformed workspace */
     }
   }
 
-  // Build global edges from wikilinks
-  for (const file of globalFiles) {
+  // Build edges from all wikilinks (Global + Workspaces), including cross-scope links.
+  for (const file of allFiles) {
     const parsed = matter(file.content);
     const outlinks = parseWikilinks(parsed.content || "");
     for (const rawTarget of outlinks) {
-      const scopedTarget = normalizeVaultPath(
-        rawTarget.startsWith(`${GLOBAL_DIR}/`) || rawTarget.startsWith(`${WORKSPACES_DIR}/`)
-          ? rawTarget
-          : `${GLOBAL_DIR}/${rawTarget}`
-      );
-      if (pathSet.has(scopedTarget)) {
-        edges.push({ source: file.path, target: scopedTarget });
-      }
+      const scopedTarget = resolveRootScopedTarget(rawTarget, file.path);
+      if (!scopedTarget || !pathSet.has(scopedTarget)) continue;
+      addEdge(file.path, scopedTarget);
     }
   }
 
@@ -1398,6 +1831,24 @@ export async function getGraph(workspaceId) {
     select: { path: true, title: true, outlinks: true },
   });
 
+  const parseNoteOutlinks = async (note) => {
+    try {
+      const filePath = resolveSafe(workspaceId, note.path);
+      const raw = await fs.readFile(filePath, "utf-8");
+      const parsed = matter(raw);
+      return parseWikilinks(parsed.content || "")
+        .map((rawTarget) => resolveWorkspaceOutlinkPath(rawTarget))
+        .filter(Boolean);
+    } catch {
+      try {
+        const fallback = JSON.parse(note.outlinks || "[]");
+        return fallback.map((rawTarget) => resolveWorkspaceOutlinkPath(rawTarget)).filter(Boolean);
+      } catch {
+        return [];
+      }
+    }
+  };
+
   const nodes = notes.map((n) => ({
     id: n.path,
     title: n.title,
@@ -1405,13 +1856,38 @@ export async function getGraph(workspaceId) {
   }));
 
   const pathSet = new Set(notes.map((n) => n.path));
+  const nodeSet = new Set(nodes.map((n) => n.id));
   const edges = [];
+  const edgeSet = new Set();
+
   for (const note of notes) {
-    const outlinks = JSON.parse(note.outlinks || "[]");
+    const outlinks = await parseNoteOutlinks(note);
     for (const target of outlinks) {
-      if (pathSet.has(target)) {
-        edges.push({ source: note.path, target });
+      const normalizedTarget = normalizeVaultPath(target);
+      if (!normalizedTarget) continue;
+
+      const isLocalTarget = pathSet.has(normalizedTarget);
+      const isRootScopedTarget =
+        normalizedTarget.startsWith(`${GLOBAL_DIR}/`) ||
+        normalizedTarget.startsWith(`${WORKSPACES_DIR}/`);
+
+      if (!isLocalTarget && !isRootScopedTarget) continue;
+
+      if (isRootScopedTarget && !nodeSet.has(normalizedTarget)) {
+        nodeSet.add(normalizedTarget);
+        nodes.push({
+          id: normalizedTarget,
+          title: toNodeName(normalizedTarget),
+          group: normalizedTarget.startsWith(`${WORKSPACES_DIR}/`)
+            ? `${WORKSPACES_DIR}/${normalizedTarget.split("/")[1] || "unknown"}`
+            : GLOBAL_DIR,
+        });
       }
+
+      const edgeKey = `${note.path} -> ${normalizedTarget}`;
+      if (edgeSet.has(edgeKey)) continue;
+      edgeSet.add(edgeKey);
+      edges.push({ source: note.path, target: normalizedTarget });
     }
   }
 

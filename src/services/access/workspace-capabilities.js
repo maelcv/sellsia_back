@@ -20,7 +20,8 @@ export function resolveWorkspaceIdFromRequest(req) {
 export function canReadVaultRequest(req) {
   if (req?.user?.role === "admin") return true;
   const perms = getPermissions(req?.workspacePlan?.permissions);
-  return Boolean(perms.knowledge_vault);
+  // Backward compatible: if knowledge_vault is undefined, vault is enabled by default.
+  return perms.knowledge_vault !== false;
 }
 
 export function canWriteVaultRequest(req) {
@@ -70,15 +71,16 @@ export function canWriteAutomationsRequest(req) {
 }
 
 export function canReadVaultToolContext(context = {}) {
-  if (!context.tenantId) return false;
   if (context.isAdmin) return true;
+  if (!context.tenantId) return false;
   const perms = getPermissions(context.features);
-  return Boolean(perms.knowledge_vault);
+  // Backward compatible: if knowledge_vault is undefined, vault is enabled by default.
+  return perms.knowledge_vault !== false;
 }
 
 export function canWriteVaultToolContext(context = {}) {
-  if (!context.tenantId) return false;
   if (context.isAdmin) return true;
+  if (!context.tenantId) return false;
   if (!canReadVaultToolContext(context)) return false;
 
   const perms = getPermissions(context.features);

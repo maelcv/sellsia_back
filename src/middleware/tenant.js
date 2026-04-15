@@ -132,6 +132,16 @@ export async function requireWorkspaceContext(req, res, next) {
         }
       : null;
 
+    // If workspace has no plan, create a default plan object with default permissions
+    // This ensures non-admin users can access features by default
+    if (!req.workspacePlan) {
+      req.workspacePlan = {
+        id: null,
+        name: "Default",
+        permissions: {} // Empty = all features enabled by default
+      };
+    }
+
     req.allowedAgentIds = req.workspacePlan?.allowedAgents?.map(a => a.id) || [];
 
     next();

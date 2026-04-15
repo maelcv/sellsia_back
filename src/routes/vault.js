@@ -49,9 +49,15 @@ import {
   deleteRootFolderRecursive,
   isWorkspaceLockedFolderPath,
   isRootLockedFolderPath,
+  isWorkspacePathProtected,
+  setWorkspacePathProtection,
+  isRootPathProtected,
+  setRootPathProtection,
 } from "../services/vault/vault-service.js";
 
 const router = Router();
+const GLOBAL_DIR = "Global";
+const WORKSPACES_DIR = "Workspaces";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -147,41 +153,75 @@ function ensureFolderManageAccess(res, canManageFolderPath, folderPath) {
 function decorateTreeForUi(tree, options = {}) {
   const {
     rootScope = false,
+    allowSystemLockedActions = false,
+    allowProtectionToggle = false,
     canWritePath = () => false,
     canManageFolderPath = () => false,
     getPathOwner = () => null,
+    isPathProtected = () => false,
   } = options;
 
   function decorate(node) {
     const normalizedPath = normalizeVaultPath(node.path);
     const isDir = node.type === "dir";
-    const locked = isDir
+    const systemLocked = isDir
       ? (rootScope ? isRootLockedFolderPath(normalizedPath) : isWorkspaceLockedFolderPath(normalizedPath))
       : false;
+    const protectedPath = isPathProtected(normalizedPath);
+    const locked = systemLocked || protectedPath;
+    const canModifyNode = !protectedPath && (allowSystemLockedActions || !systemLocked);
 
     const canRename = isDir
-      ? (!locked && canManageFolderPath(normalizedPath))
-      : canWritePath(normalizedPath);
+      ? (canModifyNode && canManageFolderPath(normalizedPath))
+      : (!protectedPath && canWritePath(normalizedPath));
 
     const canDelete = isDir
-      ? (!locked && canManageFolderPath(normalizedPath))
-      : canWritePath(normalizedPath);
+      ? (canModifyNode && canManageFolderPath(normalizedPath))
+      : (!protectedPath && canWritePath(normalizedPath));
 
-    const canCreateChild = isDir && !locked && canManageFolderPath(normalizedPath);
+    const canCreateChild = isDir && canModifyNode && canManageFolderPath(normalizedPath);
+    const canToggleProtection = allowProtectionToggle && !systemLocked && (isDir
+      ? canManageFolderPath(normalizedPath)
+      : canWritePath(normalizedPath));
     const ownerId = isDir ? (getPathOwner(normalizedPath) || null) : null;
 
     return {
       ...node,
       locked,
+      protected: protectedPath,
       canRename,
       canDelete,
       canCreateChild,
+      canToggleProtection,
       ownerId,
       children: Array.isArray(node.children) ? node.children.map(decorate) : node.children,
     };
   }
 
   return (tree || []).map(decorate);
+}
+
+async function buildProtectionMap(tree, isPathProtectedFn) {
+  const protectionMap = new Map();
+
+  async function walk(nodes) {
+    for (const node of nodes || []) {
+      const normalizedPath = normalizeVaultPath(node.path);
+      if (normalizedPath && !protectionMap.has(normalizedPath)) {
+        try {
+          protectionMap.set(normalizedPath, await isPathProtectedFn(normalizedPath));
+        } catch {
+          protectionMap.set(normalizedPath, false);
+        }
+      }
+      if (Array.isArray(node.children) && node.children.length > 0) {
+        await walk(node.children);
+      }
+    }
+  }
+
+  await walk(tree || []);
+  return protectionMap;
 }
 
 // ── Arborescence ─────────────────────────────────────────────────
@@ -194,11 +234,15 @@ router.get("/tree", requireAuth, requireWorkspaceContext, async (req, res) => {
 
     if (isAdminRootScope(req)) {
       const tree = await listRootTree(folder);
+      const protectionMap = await buildProtectionMap(tree, (pathValue) => isRootPathProtected(pathValue));
       const decoratedTree = decorateTreeForUi(tree, {
         rootScope: true,
+        allowSystemLockedActions: true,
+        allowProtectionToggle: true,
         canWritePath: () => true,
         canManageFolderPath: () => true,
         getPathOwner: () => null,
+        isPathProtected: (pathValue) => protectionMap.get(pathValue) === true,
       });
       return res.json({ tree: decoratedTree });
     }
@@ -221,11 +265,18 @@ router.get("/tree", requireAuth, requireWorkspaceContext, async (req, res) => {
       return res.status(403).json({ error: "Accès interdit à ce dossier du vault" });
     }
 
+    const protectionMap = await buildProtectionMap(filteredTree, (pathValue) =>
+      isWorkspacePathProtected(workspaceId, pathValue)
+    );
+
     const decoratedTree = decorateTreeForUi(filteredTree, {
       rootScope: false,
+      allowSystemLockedActions: req.user?.role === "admin",
+      allowProtectionToggle: req.user?.role === "admin",
       canWritePath,
       canManageFolderPath,
       getPathOwner,
+      isPathProtected: (pathValue) => protectionMap.get(pathValue) === true,
     });
 
     res.json({ tree: decoratedTree });
@@ -352,10 +403,17 @@ router.get("/backlinks/*", requireAuth, requireWorkspaceContext, async (req, res
     if (!requireWorkspaceId(res, workspaceId)) return;
     if (!ensurePathReadAccess(res, canReadPath, notePath)) return;
 
+    if (req.user?.role === "admin") {
+      const normalizedNotePath = normalizeVaultPath(notePath);
+      const rootScopedPath = normalizedNotePath.startsWith(`${GLOBAL_DIR}/`) || normalizedNotePath.startsWith(`${WORKSPACES_DIR}/`)
+        ? normalizedNotePath
+        : normalizeVaultPath(`${WORKSPACES_DIR}/${workspaceId}/${normalizedNotePath}`);
+      const backlinks = await getRootBacklinks(rootScopedPath);
+      return res.json({ backlinks });
+    }
+
     const rawBacklinks = await getBacklinks(workspaceId, notePath);
-    const backlinks = req.user?.role === "admin"
-      ? rawBacklinks
-      : rawBacklinks.filter((item) => canReadPath(item.path));
+    const backlinks = rawBacklinks.filter((item) => canReadPath(item.path));
 
     res.json({ backlinks });
   } catch (err) {
@@ -474,7 +532,7 @@ router.post("/folder", requireAuth, requireWorkspaceContext, async (req, res) =>
     }
 
     if (isAdminRootScope(req)) {
-      const result = await createRootFolder(folderPath, null);
+      const result = await createRootFolder(folderPath, null, { allowProtected: true });
       return res.status(201).json(result);
     }
 
@@ -483,7 +541,9 @@ router.post("/folder", requireAuth, requireWorkspaceContext, async (req, res) =>
     if (!ensureFolderManageAccess(res, canManageFolderPath, folderPath)) return;
 
     const ownerUserId = req.user?.role === "admin" ? null : req.user?.sub;
-    const result = await createFolder(workspaceId, folderPath, ownerUserId);
+    const result = await createFolder(workspaceId, folderPath, ownerUserId, {
+      allowProtected: req.user?.role === "admin",
+    });
     res.status(201).json(result);
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
@@ -501,7 +561,7 @@ router.patch("/rename", requireAuth, requireWorkspaceContext, async (req, res) =
     }
 
     if (isAdminRootScope(req)) {
-      const result = await renameRootEntry(fromPath, toPath);
+      const result = await renameRootEntry(fromPath, toPath, { allowProtected: true });
       return res.json(result);
     }
 
@@ -518,7 +578,9 @@ router.patch("/rename", requireAuth, requireWorkspaceContext, async (req, res) =
       return res.status(403).json({ error: "Renommage interdit sur ce chemin" });
     }
 
-    const result = await renameEntry(workspaceId, fromPath, toPath);
+    const result = await renameEntry(workspaceId, fromPath, toPath, {
+      allowProtected: req.user?.role === "admin",
+    });
     res.json(result);
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
@@ -535,7 +597,7 @@ router.delete("/folder/*", requireAuth, requireWorkspaceContext, async (req, res
     }
 
     if (isAdminRootScope(req)) {
-      const result = await deleteRootFolderRecursive(folderPath);
+      const result = await deleteRootFolderRecursive(folderPath, { allowProtected: true });
       return res.json(result);
     }
 
@@ -543,7 +605,47 @@ router.delete("/folder/*", requireAuth, requireWorkspaceContext, async (req, res
     if (!requireWorkspaceId(res, workspaceId)) return;
     if (!ensureFolderManageAccess(res, canManageFolderPath, folderPath)) return;
 
-    const result = await deleteFolderRecursive(workspaceId, folderPath);
+    const result = await deleteFolderRecursive(workspaceId, folderPath, {
+      allowProtected: req.user?.role === "admin",
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/vault/protection { path, protected?: boolean }
+router.patch("/protection", requireAuth, requireWorkspaceContext, async (req, res) => {
+  if (!requireVaultWriteAccess(req, res)) return;
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ error: "Seul un admin peut modifier la protection" });
+  }
+
+  try {
+    const targetPath = normalizeVaultPath(req.body?.path || "");
+    if (!targetPath) {
+      return res.status(400).json({ error: "path requis" });
+    }
+
+    const requestedProtection = req.body?.protected;
+    const hasExplicitState = typeof requestedProtection === "boolean";
+
+    if (isAdminRootScope(req)) {
+      const result = await setRootPathProtection(
+        targetPath,
+        hasExplicitState ? requestedProtection : null
+      );
+      return res.json(result);
+    }
+
+    const { workspaceId } = await getWorkspacePathPolicy(req);
+    if (!requireWorkspaceId(res, workspaceId)) return;
+
+    const result = await setWorkspacePathProtection(
+      workspaceId,
+      targetPath,
+      hasExplicitState ? requestedProtection : null
+    );
     res.json(result);
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
