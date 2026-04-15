@@ -15,7 +15,7 @@
 import cron from "node-cron";
 import { prisma } from "../prisma.js";
 import { platformEmitter } from "../services/automation-events.js";
-import { runAutomation } from "../services/automations/automation-engine.js";
+import { enqueueWorkflow } from "./workflow-queue.js";
 import { logger } from "../lib/logger.js";
 
 const cronJobs = new Map(); // automationId → cron.ScheduledTask
@@ -28,9 +28,9 @@ let running = false;
 async function triggerAutomation(automationId, triggerData, triggeredBy) {
   try {
     logger.info("[automation-worker] Triggering automation", { automationId, triggeredBy });
-    await runAutomation(automationId, triggerData, triggeredBy);
+    await enqueueWorkflow(automationId, triggerData, triggeredBy);
   } catch (err) {
-    logger.error("[automation-worker] Run failed", err, { automationId });
+    logger.error("[automation-worker] Enqueue failed", err, { automationId });
   }
 }
 

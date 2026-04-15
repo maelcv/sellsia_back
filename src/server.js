@@ -53,6 +53,7 @@ import marketReportsRoutes from "./routes/market-reports.js";
 import vaultRoutes from "./routes/vault.js";
 import automationsRoutes from "./routes/automations.js";
 import { startAutomationWorker, stopAutomationWorker } from "./workers/automation-worker.js";
+import { startWorkflowQueue, stopWorkflowQueue } from "./workers/workflow-queue.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -228,6 +229,7 @@ process.on("SIGTERM", async () => {
   stopReminderWorker();
   stopMarketReportsWorker();
   stopAutomationWorker();
+  await stopWorkflowQueue();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -263,6 +265,9 @@ app.listen(config.port, () => {
   );
   startEnrichmentWorker();
   startImportWorker();
+  startWorkflowQueue().catch((err) =>
+    console.error("[Server] workflow queue failed to start:", err)
+  );
   startAutomationWorker().catch((err) =>
     console.error("[Server] automation worker failed to start:", err)
   );

@@ -1519,9 +1519,10 @@ model Automation {
   scope         AutomationScope       @default(workspace)
   isActive      Boolean               @default(false) @map("is_active")
   triggerType   AutomationTriggerType @map("trigger_type")
-  triggerConfig String                @default("{}") @map("trigger_config") // JSON: { cronExpr, eventType, webhookToken }
-  steps         String                @default("[]") // JSON: AutomationStep[]
-  lastRunAt     DateTime?             @map("last_run_at")
+  triggerConfig  String                @default("{}") @map("trigger_config") // JSON: { cronExpr, eventType, webhookToken }
+  steps          String                @default("[]") // JSON: AutomationStep[] (legacy)
+  definitionJson String?               @map("definition_json") // JSON: { nodes: WorkflowNode[], edges: WorkflowEdge[] } (visual builder)
+  lastRunAt      DateTime?             @map("last_run_at")
   lastRunStatus String?               @map("last_run_status") // "success" | "error" | "running" | "cancelled"
   createdAt     DateTime              @default(now()) @map("created_at")
   updatedAt     DateTime              @updatedAt @map("updated_at")
