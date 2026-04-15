@@ -42,14 +42,17 @@ import subAgentsRoutes from "./routes/sub-agents.js";
 import aiProvidersRoutes from "./routes/ai-providers.js";
 import orgchartRoutes from "./routes/orgchart.js";
 import profileSecurityRoutes from "./routes/profile-security.js";
-import { startReminderWorker, stopReminderWorker } from "../ia_models/reminders/reminder-service.js";
-import { startEnrichmentWorker } from "../ia_models/workers/enrichment-worker.js";
-import { startImportWorker } from "../ia_models/workers/import-worker.js";
+import { startReminderWorker, stopReminderWorker } from "./services/reminders/reminder-service.js";
+import { startEnrichmentWorker } from "./workers/enrichment-worker.js";
+import { startImportWorker } from "./workers/import-worker.js";
 import {
   startMarketReportsWorker,
   stopMarketReportsWorker,
-} from "../ia_models/workers/market-reports-worker.js";
+} from "./workers/market-reports-worker.js";
 import marketReportsRoutes from "./routes/market-reports.js";
+import vaultRoutes from "./routes/vault.js";
+import automationsRoutes from "./routes/automations.js";
+import { startAutomationWorker, stopAutomationWorker } from "./workers/automation-worker.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -128,8 +131,29 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", service: "sellsia-dashboard-api" });
+app.get("/api/health", async (_req, res) => {
+  const services = {};
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    services.db = "ok";
+  } catch {
+    services.db = "unavailable";
+  }
+  try {
+    const { getRedis } = await import("./cache/redis-client.js");
+    const redis = await getRedis();
+    if (redis) {
+      await redis.ping();
+      services.redis = "ok";
+    } else {
+      services.redis = process.env.REDIS_URL ? "unavailable" : "not_configured";
+    }
+  } catch {
+    services.redis = "unavailable";
+  }
+  const criticalServices = ["db"];
+  const status = criticalServices.every((s) => services[s] === "ok") ? "ok" : "degraded";
+  res.status(status === "ok" ? 200 : 503).json({ status, service: "sellsia-dashboard-api", services });
 });
 
 app.use("/api/auth", authRoutes);
@@ -166,6 +190,8 @@ app.use("/api/ai-providers", aiProvidersRoutes);
 app.use("/api/onboarding/orgchart", orgchartRoutes);
 app.use("/api/profile", profileSecurityRoutes);
 app.use("/api/market-reports", marketReportsRoutes);
+app.use("/api/vault", vaultRoutes);
+app.use("/api/automations", automationsRoutes);
 
 app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
   // Enrich with fields not in JWT (like twoFactorEnabled)
@@ -201,6 +227,7 @@ process.on("SIGTERM", async () => {
   console.log("[Server] SIGTERM received, disconnecting Prisma...");
   stopReminderWorker();
   stopMarketReportsWorker();
+  stopAutomationWorker();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -236,4 +263,7 @@ app.listen(config.port, () => {
   );
   startEnrichmentWorker();
   startImportWorker();
+  startAutomationWorker().catch((err) =>
+    console.error("[Server] automation worker failed to start:", err)
+  );
 });

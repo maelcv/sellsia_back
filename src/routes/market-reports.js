@@ -12,11 +12,11 @@ import {
   enqueueGenericReport,
   enqueueUnitReport,
   rebuildWorkspaceSchedules,
-} from "../../ia_models/workers/market-reports-worker.js";
+} from "../workers/market-reports-worker.js";
 import {
   executeScrapingSource,
   executeApiSource,
-} from "../../ia_models/market/fetchers/source_engine.js";
+} from "../services/market/fetchers/source_engine.js";
 import { seedMarketForWorkspace } from "../seed-market.js";
 
 const router = express.Router();

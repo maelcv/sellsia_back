@@ -7,7 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SEED_DATA_DIR = path.join(__dirname, "..", "ia_models", "market", "seed-data");
+const SEED_DATA_DIR = path.join(__dirname, "services", "market", "seed-data");
 const SOURCES_DIR = path.join(SEED_DATA_DIR, "sources");
 const CLIENTS_FILE = path.join(SEED_DATA_DIR, "clients.json");
 

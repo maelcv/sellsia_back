@@ -19,7 +19,7 @@ import { prisma } from "../prisma.js";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
-import { reminderEmitter } from "../../ia_models/reminders/reminder-events.js";
+import { reminderEmitter } from "../services/reminders/reminder-events.js";
 
 const router = Router();
 

@@ -120,6 +120,20 @@ enum AgentType {
   openai_remote // maps to "openai-remote" in DB — agents importés depuis OpenAI Assistants
 }
 
+enum AgentTemplateCategory {
+  sales
+  management
+  technical
+  custom
+}
+
+enum MemoryStableType {
+  preference
+  business_ctx
+  policy
+  persona
+}
+
 enum ProviderErrorType {
   auth_failed
   insufficient_credits
@@ -212,6 +226,15 @@ model Workspace {
   marketReportRuns      MarketReportRun[]
   marketPriceSnapshots  MarketPriceSnapshot[]
   marketReportSchedules MarketReportSchedule[]
+
+  // Memory OS
+  agentTemplates  AgentTemplate[]
+  memoryStable    MemoryStable[]
+  memorySemantic  MemorySemantic[]
+
+  // Vault & Automations
+  vaultNotes   VaultNote[]
+  automations  Automation[]
 
   @@index([parentWorkspaceId])
   @@map("workspaces")
@@ -431,6 +454,14 @@ model User {
   workspaceIntegrationsConfigured WorkspaceIntegration[] @relation("WorkspaceIntegrationsConfigured")
   subAgentDefinitions        SubAgentDefinition[]
 
+  // Memory OS
+  createdTemplates AgentTemplate[]  @relation("CreatedTemplates")
+  memoryStable     MemoryStable[]
+  memorySemantic   MemorySemantic[]
+
+  // Automations
+  automations Automation[]
+
   @@index([workspaceId])
   @@map("users")
 }
@@ -462,6 +493,10 @@ model Agent {
   ownerId Int?  @map("owner_id")
   owner   User? @relation("OwnedAgents", fields: [ownerId], references: [id], onDelete: SetNull)
 
+  // Template dont cet agent est issu (null = agent built-in hardcodé)
+  templateId String?        @map("template_id")
+  template   AgentTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
   // Relations
   userAgentAccess      UserAgentAccess[]
   workspaceAgentAccess WorkspaceAgentAccess[]
@@ -476,6 +511,8 @@ model Agent {
   reminders            Reminder[]
 
   allowedInPlans Plan[] @relation("PlanToAgent")
+
+  memorySemantic MemorySemantic[]
 
   @@index([workspaceId])
   @@map("agents")
@@ -703,6 +740,8 @@ model Conversation {
   @@unique([userId, channel, channelPhoneFrom], name: "conversation_unique_channel_contact")
   @@index([workspaceId])
   @@map("conversations")
+
+  memorySemantic MemorySemantic[]
 }
 
 model Message {
@@ -1348,4 +1387,167 @@ model SystemSetting {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("system_settings")
+}
+
+/// Template d'agent — blueprint pour créer des agents sans modifier le code.
+/// workspaceId = null → template global plateforme (admin).
+/// workspaceId = set  → template workspace-scoped (client).
+model AgentTemplate {
+  id            String                @id @default(cuid())
+  name          String
+  description   String
+  category      AgentTemplateCategory @default(custom)
+  defaultPrompt String                @db.Text @map("default_prompt")
+
+  // Tools/sub-agents pré-configurés (JSON arrays de noms)
+  defaultTools     String @default("[]") @map("default_tools")     // ["crm-search", "web-search", ...]
+  defaultSubAgents String @default("[]") @map("default_sub_agents") // legacy compat
+
+  imageUrl String? @map("image_url")
+  isActive Boolean @default(true) @map("is_active")
+
+  // Scoping
+  workspaceId String?    @map("workspace_id")
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Créateur
+  createdById Int?  @map("created_by_id")
+  createdBy   User? @relation("CreatedTemplates", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  agents Agent[]
+
+  @@index([workspaceId])
+  @@map("agent_templates")
+}
+
+/// Mémoire stable — préférences, contexte métier, politiques long terme par workspace/user.
+model MemoryStable {
+  id          Int              @id @default(autoincrement())
+  type        MemoryStableType
+  key         String
+  value       String           @db.Text
+  isActive    Boolean          @default(true) @map("is_active")
+
+  workspaceId String? @map("workspace_id")
+  userId      Int?    @map("user_id")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, userId, key])
+  @@index([workspaceId])
+  @@map("memory_stable")
+}
+
+/// Mémoire sémantique — embeddings vectoriels pour recherche par similarité.
+/// Requiert l'extension pgvector sur Supabase (CREATE EXTENSION IF NOT EXISTS vector).
+/// La colonne embedding est de type vector(1536) (compatible OpenAI text-embedding-3-small).
+model MemorySemantic {
+  id             Int      @id @default(autoincrement())
+  content        String   @db.Text
+  summary        String?  @db.Text
+  embedding      Unsupported("vector(1536)")?
+
+  workspaceId    String? @map("workspace_id")
+  userId         Int?    @map("user_id")
+  agentId        String? @map("agent_id")
+  conversationId String? @map("conversation_id")
+
+  workspace    Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent        Agent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([workspaceId])
+  @@map("memory_semantic")
+}
+
+// ─── Vault (Obsidian-style markdown notes) ───────────────────────
+
+/// Métadonnées d'une note markdown du vault.
+/// Le contenu réel est stocké sur le filesystem à VAULT_BASE_PATH/{workspaceId}/{path}.
+model VaultNote {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  path        String   // ex: "Clients/SELI/00-Overview.md"
+  title       String
+  frontmatter String   @default("{}") @map("frontmatter") // JSON: tags, aliases, date, etc.
+  outlinks    String   @default("[]") // JSON: chemins vers lesquels cette note pointe ([[wikilinks]])
+  inlinks     String   @default("[]") // JSON: chemins qui pointent vers cette note
+  tags        String   @default("[]") // JSON: array de tags extraits du frontmatter
+  wordCount   Int      @default(0) @map("word_count")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, path])
+  @@index([workspaceId])
+  @@map("vault_notes")
+}
+
+// ─── Automations ─────────────────────────────────────────────────
+
+enum AutomationScope {
+  workspace
+  client
+  sub_client
+}
+
+enum AutomationTriggerType {
+  cron
+  event
+  webhook
+  manual
+}
+
+/// Automation = trigger + séquence d'étapes (JSON) avec conditions if/else.
+model Automation {
+  id            String                @id @default(cuid())
+  name          String
+  description   String?
+  workspaceId   String?               @map("workspace_id") // null = global (admin only)
+  ownerId       Int?                  @map("owner_id")
+  scope         AutomationScope       @default(workspace)
+  isActive      Boolean               @default(false) @map("is_active")
+  triggerType   AutomationTriggerType @map("trigger_type")
+  triggerConfig String                @default("{}") @map("trigger_config") // JSON: { cronExpr, eventType, webhookToken }
+  steps         String                @default("[]") // JSON: AutomationStep[]
+  lastRunAt     DateTime?             @map("last_run_at")
+  lastRunStatus String?               @map("last_run_status") // "success" | "error" | "running" | "cancelled"
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  workspace Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  owner     User?         @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  runs      AutomationRun[]
+
+  @@index([workspaceId])
+  @@map("automations")
+}
+
+/// Log d'exécution d'une automation.
+model AutomationRun {
+  id           String    @id @default(cuid())
+  automationId String    @map("automation_id")
+  status       String    // "running" | "success" | "error" | "cancelled"
+  triggeredBy  String    @map("triggered_by") // "cron" | "event:{type}" | "webhook" | "manual" | "user:{id}"
+  inputData    String    @default("{}") @map("input_data") // JSON: données du trigger
+  stepsLog     String    @default("[]") @map("steps_log") // JSON: [{stepId, status, output, error, durationMs}]
+  error        String?
+  startedAt    DateTime  @default(now()) @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@index([automationId])
+  @@map("automation_runs")
 }

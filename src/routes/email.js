@@ -11,7 +11,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { requireFeature } from "../middleware/auth.js";
 import { prisma } from "../prisma.js";
-import { encryptSmtpPassword, decryptSmtpPassword, sendEmail } from "../../ia_models/email/email-service.js";
+import { encryptSmtpPassword, decryptSmtpPassword, sendEmail } from "../services/email/email-service.js";
 
 const router = Router();
 router.use(requireAuth, requireWorkspaceContext, requireFeature("email_service"));

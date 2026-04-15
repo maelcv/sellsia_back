@@ -571,3 +571,60 @@ export async function seedProviders() {
   console.log(`  ✓ ${IA_PROVIDERS.length} providers IA`);
   return IA_PROVIDERS.length;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT TEMPLATES (built-in)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const BASE_AGENT_TEMPLATES = [
+  {
+    id: "template-commercial",
+    name: "Agent Commercial",
+    description: "Template pour agents commerciaux : briefs comptes, relances, aide à la vente.",
+    category: "sales",
+    defaultPrompt: "Tu es un assistant commercial expert intégré au CRM Sellsy. Tu assistes les commerciaux dans leur quotidien : briefs comptes, relances personnalisées, aide à la vente et suggestions d'actions. Sois direct, concis et orienté action.",
+    defaultTools: JSON.stringify(["crm-search", "crm-action", "sales-analysis", "sales-strategy", "sales-writer", "web-action"]),
+    isActive: true,
+    workspaceId: null,
+  },
+  {
+    id: "template-directeur",
+    name: "Agent Direction",
+    description: "Template pour agents de pilotage : reporting, KPIs, analyse pipeline, prévisions.",
+    category: "management",
+    defaultPrompt: "Tu es un agent expert en pilotage commercial. Tu analyses la performance commerciale globale, détectes les signaux faibles, identifies les écarts et orientes les décisions de management. Travaille au niveau macro avec des insights actionnables.",
+    defaultTools: JSON.stringify(["crm-search", "sales-analysis", "pipeline-diagnostic"]),
+    isActive: true,
+    workspaceId: null,
+  },
+  {
+    id: "template-technicien",
+    name: "Agent Technique",
+    description: "Template pour agents techniques : configuration CRM, API, intégrations, webhooks.",
+    category: "technical",
+    defaultPrompt: "Tu es un expert technique de l'écosystème Sellsy. Tu assistes sur la configuration, les APIs, les webhooks et les intégrations. Sois précis, concis et propose des solutions concrètes avec des exemples.",
+    defaultTools: JSON.stringify(["crm-search", "web-action"]),
+    isActive: true,
+    workspaceId: null,
+  },
+];
+
+export async function seedAgentTemplates() {
+  console.log("\n📋 Seeding agent templates...");
+  let total = 0;
+  for (const tpl of BASE_AGENT_TEMPLATES) {
+    await prisma.agentTemplate.upsert({
+      where: { id: tpl.id },
+      update: {
+        name: tpl.name,
+        description: tpl.description,
+        defaultPrompt: tpl.defaultPrompt,
+        defaultTools: tpl.defaultTools,
+      },
+      create: tpl,
+    });
+    console.log(`  ✓ Template "${tpl.name}"`);
+    total++;
+  }
+  return total;
+}

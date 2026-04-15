@@ -12,6 +12,7 @@ import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { seedMarketForWorkspace } from "../seed-market.js";
+import { deleteWorkspaceVaultStorage } from "../services/vault/vault-service.js";
 
 const router = express.Router();
 
@@ -56,6 +57,19 @@ function formatWorkspace(workspace) {
     userCount: workspace._count?.users || 0,
     childCount: workspace._count?.children || 0
   };
+}
+
+async function cleanupWorkspaceVault(workspaceId) {
+  try {
+    await deleteWorkspaceVaultStorage(workspaceId);
+    return { deleted: true };
+  } catch (err) {
+    console.error("[workspaces] Failed to cleanup vault storage:", {
+      workspaceId,
+      error: err?.message || String(err)
+    });
+    return { deleted: false, error: "vault_cleanup_failed" };
+  }
 }
 
 // ── Admin routes ──────────────────────────────────────────────
@@ -280,6 +294,67 @@ router.get("/:id", requireAuth, requireRole("admin"), async (req, res) => {
 });
 
 /**
+ * POST /api/workspaces/self-provision
+ * Permet à un utilisateur client sans workspace de créer le sien.
+ * Requiert auth mais PAS requireWorkspaceContext (l'user n'a pas encore de workspace).
+ */
+router.post("/self-provision", requireAuth, async (req, res) => {
+  if (req.user.role === "admin") {
+    return res.status(403).json({ error: "Les admins ne peuvent pas auto-provisionner un workspace." });
+  }
+
+  // Vérifier que l'user n'a pas déjà un workspace
+  const existing = await prisma.user.findUnique({
+    where: { id: req.user.sub },
+    select: { workspaceId: true, companyName: true, email: true }
+  });
+  if (existing?.workspaceId) {
+    return res.status(409).json({ error: "Vous avez déjà un workspace." });
+  }
+
+  const { name } = req.body;
+  if (!name || typeof name !== "string" || name.trim().length < 2) {
+    return res.status(400).json({ error: "name requis (min 2 caractères)" });
+  }
+
+  // Slug depuis le nom
+  const baseSlug = name.trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "workspace";
+  const unique = `${baseSlug}-${Date.now().toString(36)}`;
+
+  // Plan par défaut : le premier plan actif
+  const defaultPlan = await prisma.plan.findFirst({
+    where: { isActive: true },
+    orderBy: { id: "asc" }
+  });
+
+  try {
+    const [workspace] = await prisma.$transaction(async (tx) => {
+      const ws = await tx.workspace.create({
+        data: {
+          name: name.trim(),
+          slug: unique,
+          status: "active",
+          plan: defaultPlan?.name || "starter",
+          ...(defaultPlan ? { planId: defaultPlan.id } : {})
+        }
+      });
+      await tx.user.update({
+        where: { id: req.user.sub },
+        data: { workspaceId: ws.id }
+      });
+      return [ws];
+    });
+
+    res.status(201).json({ workspace: { id: workspace.id, name: workspace.name, slug: workspace.slug } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /api/workspaces
  * Créer un workspace + user owner (admin seulement, transaction atomique)
  */
@@ -385,8 +460,25 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
       data: updateData
     });
 
-    await logAudit(req.user.sub, "WORKSPACE_UPDATED", { workspaceId: req.params.id, changes: updateData });
-    return res.json({ message: "Workspace mis à jour", workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name } });
+    let vaultCleanup = null;
+    if (updateData.status === "deleted") {
+      vaultCleanup = await cleanupWorkspaceVault(workspace.id);
+    }
+
+    const auditPayload = { workspaceId: req.params.id, changes: updateData };
+    if (vaultCleanup) {
+      auditPayload.vaultCleanup = vaultCleanup;
+    }
+    await logAudit(req.user.sub, "WORKSPACE_UPDATED", auditPayload);
+
+    const response = {
+      message: "Workspace mis à jour",
+      workspace: { id: workspace.id, slug: workspace.slug, name: workspace.name }
+    };
+    if (vaultCleanup) {
+      response.vaultCleanup = vaultCleanup;
+    }
+    return res.json(response);
   } catch (err) {
     if (err.code === "P2025") {
       return res.status(404).json({ error: "Workspace introuvable" });
@@ -401,13 +493,15 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  */
 router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   try {
-    await prisma.workspace.update({
+    const workspace = await prisma.workspace.update({
       where: { id: req.params.id },
       data: { status: "deleted" }
     });
 
-    await logAudit(req.user.sub, "WORKSPACE_DELETED", { workspaceId: req.params.id });
-    return res.json({ message: "Workspace supprimé" });
+    const vaultCleanup = await cleanupWorkspaceVault(workspace.id);
+
+    await logAudit(req.user.sub, "WORKSPACE_DELETED", { workspaceId: req.params.id, vaultCleanup });
+    return res.json({ message: "Workspace supprimé", vaultCleanup });
   } catch (err) {
     if (err.code === "P2025") {
       return res.status(404).json({ error: "Workspace introuvable" });

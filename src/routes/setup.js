@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { prisma, hasAnyUsers } from "../prisma.js";
-import { verifySmtpConfig } from "../../ia_models/email/email-service.js";
+import { verifySmtpConfig } from "../services/email/email-service.js";
 import { encryptSecret } from "../security/secrets.js";
 
 const router = Router();

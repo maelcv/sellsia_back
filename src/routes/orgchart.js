@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { decryptSecret } from "../security/secrets.js";
-import { MistralProvider } from "../../ia_models/providers/mistral.js";
+import { MistralProvider } from "../ai-providers/mistral.js";
 
 const router = Router();
 

@@ -10,7 +10,7 @@ import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { authRateLimit } from "../middleware/security.js";
 import { requireAuth } from "../middleware/auth.js";
-import { sendEmail } from "../../ia_models/email/email-service.js";
+import { sendEmail } from "../services/email/email-service.js";
 
 const router = express.Router();
 

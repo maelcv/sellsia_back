@@ -11,7 +11,7 @@ import express from "express";
 import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { SYSTEM_PROMPTS } from "../../ia_models/prompts/system/defaults.js";
+import { SYSTEM_PROMPTS } from "../prompts/system/defaults.js";
 
 const router = express.Router();
 
