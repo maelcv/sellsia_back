@@ -21,10 +21,16 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { prisma } from "../prisma.js";
-import { runAutomation } from "../services/automations/automation-engine.js";
 import { enqueueWorkflow } from "../workers/workflow-queue.js";
 import { reloadAutomations } from "../workers/automation-worker.js";
 import { getAllBricksForClient } from "../bricks/registry.js";
+import { listAutomationMetadataOptions } from "../services/automations/integration-resolvers.js";
+import {
+  listTree,
+  ensureWorkspaceBaseStructure,
+  createWorkspacePathPolicy,
+  filterTreeByPathPolicy,
+} from "../services/vault/vault-service.js";
 import {
   canReadAutomationsRequest,
   canWriteAutomationsRequest,
@@ -52,11 +58,88 @@ function requireWriteAccess(req, res) {
   return false;
 }
 
+function collectVaultHints(tree, maxResults = 200) {
+  const dirHints = [];
+  const fileHints = [];
+
+  function walk(nodes = []) {
+    for (const node of nodes) {
+      if (!node?.path || typeof node.path !== "string") continue;
+      if (node.type === "dir") {
+        dirHints.push(`${node.path.replace(/\\/g, "/")}/`);
+        walk(Array.isArray(node.children) ? node.children : []);
+      } else if (node.type === "file") {
+        fileHints.push(node.path.replace(/\\/g, "/"));
+      }
+
+      if (dirHints.length >= maxResults && fileHints.length >= maxResults) {
+        return;
+      }
+    }
+  }
+
+  walk(tree);
+
+  return {
+    rootHints: [...new Set(dirHints)].slice(0, maxResults),
+    pathSuggestions: [...new Set([...dirHints, ...fileHints])].slice(0, maxResults),
+  };
+}
+
 // ── Catalogue des briques ─────────────────────────────────────────
 
 router.get("/bricks", requireAuth, requireWorkspaceContext, (req, res) => {
   try {
     res.json({ bricks: getAllBricksForClient() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/metadata", requireAuth, requireWorkspaceContext, async (req, res) => {
+  if (!requireReadAccess(req, res)) return;
+
+  try {
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+    const metadata = await listAutomationMetadataOptions({
+      workspaceId,
+      userId: req.user.sub,
+      userRole: req.user.role,
+    });
+
+    let vault = {
+      rootHints: [],
+      pathSuggestions: [],
+    };
+
+    if (req.user.role === "admin" && !workspaceId) {
+      vault = {
+        rootHints: ["Global/", "Workspaces/"],
+        pathSuggestions: ["Global/", "Workspaces/"],
+      };
+    } else if (workspaceId) {
+      await ensureWorkspaceBaseStructure(
+        workspaceId,
+        req.user.role === "admin" ? null : req.user.sub
+      );
+
+      const tree = await listTree(workspaceId, "");
+      const visibleTree = req.user.role === "admin"
+        ? tree
+        : filterTreeByPathPolicy(
+          tree,
+          (await createWorkspacePathPolicy(workspaceId, req.user.sub, req.user.role)).canReadPath
+        );
+
+      vault = collectVaultHints(visibleTree, 200);
+    }
+
+    res.json({
+      metadata: {
+        ...metadata,
+        vault,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

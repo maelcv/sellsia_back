@@ -1,4 +1,8 @@
 import { z } from "../types.js";
+import {
+  normalizeDomainListInput,
+  resolveTavilyApiKeyForAutomation,
+} from "../../services/automations/integration-resolvers.js";
 
 export const webSearchAction = {
   id: "action:web_search",
@@ -14,35 +18,54 @@ export const webSearchAction = {
     searchDepth: z.enum(["basic", "advanced"]).optional().describe("Profondeur de recherche"),
     includeDomains: z.string().optional().describe("Domaines à inclure (séparés par des virgules)"),
     excludeDomains: z.string().optional().describe("Domaines à exclure (séparés par des virgules)"),
+    tavilySource: z.string().optional().describe("Source Tavily: auto | env | workspace:<id> | user:<id>"),
   }),
 
   outputSchema: z.object({
     results: z.any().describe("Tableau de résultats [{title, url, content, score}]"),
     query:   z.string(),
+    source:  z.string().optional(),
   }),
 
   async execute(inputs, context) {
-    const { query, maxResults, searchDepth, includeDomains, excludeDomains } = inputs;
+    const {
+      query,
+      maxResults,
+      searchDepth,
+      includeDomains,
+      excludeDomains,
+      tavilySource,
+    } = inputs;
+
     if (!query) throw new Error("query est requis");
 
-    const { config } = await import("../../config.js");
-    if (!config.tavilyApiKey) throw new Error("TAVILY_API_KEY non configurée");
+    const source = await resolveTavilyApiKeyForAutomation({
+      workspaceId: context.workspaceId,
+      userId: context.userId,
+      userRole: context.userRole,
+      sourceRef: tavilySource,
+    });
 
     const { tavily } = await import("@tavily/core");
-    const client = tavily({ apiKey: config.tavilyApiKey });
+    const client = tavily({ apiKey: source.apiKey });
 
-    const n = Math.min(parseInt(maxResults || "5", 10), 10);
+    const parsedMax = Number(maxResults);
+    const n = Math.min(Math.max(Number.isFinite(parsedMax) ? parsedMax : 5, 1), 10);
 
     const opts = {
       maxResults: n,
       searchDepth: searchDepth || "basic",
     };
 
-    if (includeDomains) {
-      opts.includeDomains = includeDomains.split(",").map((d) => d.trim()).filter(Boolean);
+    const normalizedIncludeDomains = normalizeDomainListInput(includeDomains);
+    const normalizedExcludeDomains = normalizeDomainListInput(excludeDomains);
+
+    if (normalizedIncludeDomains.length > 0) {
+      opts.includeDomains = normalizedIncludeDomains;
     }
-    if (excludeDomains) {
-      opts.excludeDomains = excludeDomains.split(",").map((d) => d.trim()).filter(Boolean);
+
+    if (normalizedExcludeDomains.length > 0) {
+      opts.excludeDomains = normalizedExcludeDomains;
     }
 
     const response = await client.search(query, opts);
@@ -54,6 +77,6 @@ export const webSearchAction = {
       score:   r.score,
     }));
 
-    return { results, query };
+    return { results, query, source: source.label };
   },
 };

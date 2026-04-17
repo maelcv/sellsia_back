@@ -28,6 +28,33 @@ import { getBrick } from "../../bricks/registry.js";
 const MAX_CONCURRENT_PER_WORKSPACE = 3;
 const runningByWorkspace = new Map(); // workspaceId → count
 
+function parseTriggeredByUserId(triggeredBy) {
+  const raw = String(triggeredBy || "");
+  const match = raw.match(/user:(\d+)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function resolveExecutionIdentity(automation, triggeredBy) {
+  const triggeredByUserId = parseTriggeredByUserId(triggeredBy);
+  const userId = triggeredByUserId || automation.ownerId || null;
+
+  if (!userId) {
+    return { userId: null, userRole: null };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true },
+  });
+
+  return {
+    userId,
+    userRole: user?.role || null,
+  };
+}
+
 // ─── Template resolver ────────────────────────────────────────────
 
 /**
@@ -136,6 +163,7 @@ async function executeNode(node, runContext) {
  */
 async function runAutomationFromDag(automation, triggerData, triggeredBy) {
   const workspaceId = automation.workspaceId;
+  const executionIdentity = await resolveExecutionIdentity(automation, triggeredBy);
 
   // Créer le run
   const run = await prisma.automationRun.create({
@@ -150,7 +178,8 @@ async function runAutomationFromDag(automation, triggerData, triggeredBy) {
   // Contexte d'exécution
   const runContext = {
     workspaceId,
-    userId:  automation.ownerId,
+    userId:  executionIdentity.userId,
+    userRole: executionIdentity.userRole,
     runId:   run.id,
     trigger: triggerData,
     nodes:   {}, // nodeId → { output }
@@ -295,7 +324,8 @@ async function executeStepLegacy(step, runContext) {
         const resolvedConfig = resolveConfig(step.config || {}, runContext);
         output = await brick.execute(resolvedConfig, {
           workspaceId: runContext.workspaceId,
-          userId:      null,
+          userId:      runContext.userId || null,
+          userRole:    runContext.userRole || null,
           runId:       null,
         });
       } else {
@@ -333,6 +363,7 @@ async function executeStepToolLegacy(config, context) {
 
 async function runAutomationLegacy(automation, triggerData, triggeredBy) {
   const workspaceId = automation.workspaceId;
+  const executionIdentity = await resolveExecutionIdentity(automation, triggeredBy);
 
   const run = await prisma.automationRun.create({
     data: {
@@ -343,7 +374,13 @@ async function runAutomationLegacy(automation, triggerData, triggeredBy) {
     },
   });
 
-  const runContext = { workspaceId, trigger: triggerData, steps: {} };
+  const runContext = {
+    workspaceId,
+    userId: executionIdentity.userId,
+    userRole: executionIdentity.userRole,
+    trigger: triggerData,
+    steps: {},
+  };
   const stepsLog   = [];
   let finalStatus  = "success";
   let finalError   = null;

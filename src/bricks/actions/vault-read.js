@@ -10,6 +10,8 @@ export const vaultReadAction = {
 
   inputSchema: z.object({
     path: z.string().describe("Chemin de la note à lire (ex: rapports/hebdo.md)"),
+    defaultValue: z.string().optional().describe("Valeur de secours si la note est absente"),
+    failIfMissing: z.string().optional().describe("true pour echouer si la note est absente"),
   }),
 
   outputSchema: z.object({
@@ -19,16 +21,24 @@ export const vaultReadAction = {
   }),
 
   async execute(inputs, context) {
-    const { path: notePath } = inputs;
+    const { path: notePath, defaultValue, failIfMissing } = inputs;
     if (!notePath) throw new Error("path est requis");
     if (!context.workspaceId) throw new Error("workspaceId manquant dans le contexte");
 
     const { readNote } = await import("../../services/vault/vault-service.js");
     const content = await readNote(context.workspaceId, notePath);
 
+    const shouldFail = String(failIfMissing || "").toLowerCase() === "true";
+    if (content === null && shouldFail) {
+      throw new Error(`Note introuvable: ${notePath}`);
+    }
+
+    const fallback = typeof defaultValue === "string" ? defaultValue : "";
+    const finalContent = content === null ? fallback : content;
+
     return {
       path:    notePath,
-      content: content ?? "",
+      content: finalContent,
       found:   content !== null,
     };
   },

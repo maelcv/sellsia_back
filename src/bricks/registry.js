@@ -23,8 +23,12 @@ import { httpRequestAction } from "./actions/http-request.js";
 import { sendEmailAction }   from "./actions/send-email.js";
 import { vaultWriteAction }  from "./actions/vault-write.js";
 import { vaultReadAction }   from "./actions/vault-read.js";
+import { vaultDeleteAction } from "./actions/vault-delete.js";
 import { aiGenerateAction }  from "./actions/ai-generate.js";
 import { webSearchAction }   from "./actions/web-search.js";
+import { webScrapeAction }   from "./actions/web-scrape.js";
+import { createCalendarEventAction } from "./actions/create-calendar-event.js";
+import { generateReportAction } from "./actions/generate-report.js";
 
 // Logic
 import { conditionLogic } from "./logic/condition.js";
@@ -40,10 +44,14 @@ const BRICKS = [
   // Actions
   aiGenerateAction,
   webSearchAction,
+  webScrapeAction,
   httpRequestAction,
   sendEmailAction,
+  createCalendarEventAction,
+  generateReportAction,
   vaultWriteAction,
   vaultReadAction,
+  vaultDeleteAction,
   // Logic
   conditionLogic,
   delayLogic,

@@ -1278,6 +1278,15 @@ router.post("/seed", requireAuth, requireRole("admin"), async (req, res) => {
           apiKey: { type: "string" },
         },
       },
+      {
+        name: "Tavily Web Search",
+        category: "other",
+        logoUrl: null,
+        configSchema: {
+          apiKey: { type: "string" },
+          endpoint: { type: "string", default: "https://api.tavily.com" },
+        },
+      },
     ];
 
     const created = [];

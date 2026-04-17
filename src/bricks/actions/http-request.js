@@ -1,4 +1,8 @@
 import { z } from "../types.js";
+import {
+  normalizeKeyValueObject,
+  parseJsonLikeInput,
+} from "../../services/automations/integration-resolvers.js";
 
 // ─── Protection SSRF ─────────────────────────────────────────────────────────
 
@@ -46,6 +50,10 @@ const ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 const MAX_RESPONSE_BYTES = 1 * 1024 * 1024; // 1 MB
 const TIMEOUT_MS = 10_000;
 
+function hasContentType(headers) {
+  return Object.keys(headers).some((key) => key.toLowerCase() === "content-type");
+}
+
 export const httpRequestAction = {
   id: "action:http_request",
   category: "action",
@@ -58,7 +66,12 @@ export const httpRequestAction = {
     url:     z.string().describe("URL cible (HTTPS recommandé)"),
     method:  z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).describe("Méthode HTTP"),
     headers: z.record(z.string()).optional().describe("En-têtes HTTP (JSON)"),
+    headersJson: z.string().optional().describe("En-têtes HTTP au format JSON brut"),
+    headersMode: z.string().optional().describe("Mode d'edition des en-tetes: kv | json"),
     body:    z.any().optional().describe("Corps de la requête (JSON)"),
+    bodyJson: z.string().optional().describe("Corps JSON brut"),
+    bodyText: z.string().optional().describe("Corps texte brut"),
+    bodyMode: z.string().optional().describe("Mode du corps: auto | json | text"),
   }),
 
   outputSchema: z.object({
@@ -68,26 +81,71 @@ export const httpRequestAction = {
   }),
 
   async execute(inputs, context) {
-    const { url, method = "POST", headers = {}, body } = inputs;
+    const {
+      url,
+      method = "POST",
+      headers = {},
+      headersJson,
+      body,
+      bodyJson,
+      bodyText,
+      bodyMode,
+    } = inputs;
+
+    const methodUpper = String(method || "POST").toUpperCase();
 
     if (!url) throw new Error("url est requis");
-    if (!ALLOWED_METHODS.includes(method.toUpperCase())) {
+    if (!ALLOWED_METHODS.includes(methodUpper)) {
       throw new Error(`Méthode non autorisée: ${method}`);
     }
 
     validateUrl(url);
+
+    const normalizedHeaders = {
+      ...normalizeKeyValueObject(headers),
+      ...normalizeKeyValueObject(headersJson),
+    };
+
+    let resolvedBody = body;
+    if (bodyJson !== undefined && bodyJson !== null && bodyJson !== "") {
+      resolvedBody = parseJsonLikeInput(bodyJson, {});
+    }
+    if (bodyText !== undefined && bodyText !== null && bodyText !== "") {
+      resolvedBody = String(bodyText);
+    }
+
+    let serializedBody;
+    if (methodUpper !== "GET" && resolvedBody !== undefined) {
+      if (typeof resolvedBody === "string") {
+        const mode = String(bodyMode || "auto").toLowerCase();
+        if (mode === "json") {
+          const parsed = parseJsonLikeInput(resolvedBody, resolvedBody);
+          serializedBody = typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+          if (!hasContentType(normalizedHeaders)) {
+            normalizedHeaders["Content-Type"] = "application/json";
+          }
+        } else {
+          serializedBody = resolvedBody;
+          if (!hasContentType(normalizedHeaders)) {
+            normalizedHeaders["Content-Type"] = "text/plain";
+          }
+        }
+      } else {
+        serializedBody = JSON.stringify(resolvedBody);
+        if (!hasContentType(normalizedHeaders)) {
+          normalizedHeaders["Content-Type"] = "application/json";
+        }
+      }
+    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
     try {
       const res = await fetch(url, {
-        method: method.toUpperCase(),
-        headers: {
-          "Content-Type": "application/json",
-          ...headers,
-        },
-        body: body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined,
+        method: methodUpper,
+        headers: normalizedHeaders,
+        body: serializedBody,
         signal: controller.signal,
       });
 
