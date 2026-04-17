@@ -137,7 +137,7 @@ function _buildSystemPrompt(name, customPrompt, capabilities) {
   if (customPrompt?.trim()) {
     parts.push(customPrompt.trim());
   } else {
-    parts.push(`Tu es ${name}, un sous-agent spécialisé de la plateforme Sellsia.`);
+    parts.push(`Tu es ${name}, un sous-agent spécialisé de la plateforme Boatswain.`);
   }
 
   // 2. Capability context: tell the agent what domains it has access to

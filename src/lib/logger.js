@@ -1,5 +1,5 @@
 /**
- * Structured JSON logger for Sellsia Dashboard API.
+ * Structured JSON logger for Boatswain Dashboard API.
  * Emits newline-delimited JSON to stdout/stderr for Railway log ingestion.
  */
 

@@ -259,10 +259,10 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
     try {
       const { renderEmailTemplate } = await import("../services/email/email-service.js");
       const html = renderEmailTemplate({
-        title: "Bienvenue sur Sellsia",
+        title: "Bienvenue sur Boatswain",
         content: `
           <p>Bienvenue ${validatedClient.firstName}!</p>
-          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Sellsia.</p>
+          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Boatswain.</p>
           <p><strong>Accès initial :</strong></p>
           <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
             <li>Email : <strong>${result.client.email}</strong></li>
@@ -270,14 +270,14 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
           </ul>
           <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
         `,
-        buttonLabel: "Se connecter à Sellsia",
+        buttonLabel: "Se connecter à Boatswain",
         buttonUrl: `${appUrl}/login`
       });
       await sendEmail({
         userId: result.client.id,
         workspaceId: result.workspace.id,
         to: result.client.email,
-        subject: `Bienvenue sur Sellsia - Votre workspace est prêt`,
+        subject: `Bienvenue sur Boatswain - Votre workspace est prêt`,
         html
       });
     } catch (emailErr) {
@@ -291,7 +291,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
         const html = renderEmailTemplate({
           title: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
           content: `
-            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong> sur Sellsia.</p>
+            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong> sur Boatswain.</p>
             <p><strong>Vos identifiants :</strong></p>
             <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
               <li>Email : <strong>${member.user.email}</strong></li>
@@ -306,7 +306,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
           userId: result.client.id,
           workspaceId: result.workspace.id,
           to: member.user.email,
-          subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName} sur Sellsia`,
+          subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName} sur Boatswain`,
           html
         });
       } catch (emailErr) {
@@ -514,10 +514,10 @@ router.post(
     try {
       const { renderEmailTemplate } = await import("../services/email/email-service.js");
       const html = renderEmailTemplate({
-        title: "Bienvenue sur Sellsia",
+        title: "Bienvenue sur Boatswain",
         content: `
           <p>Bienvenue ${validatedClient.firstName}!</p>
-          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Sellsia.</p>
+          <p>Votre workspace <strong>${validatedWorkspace.workspaceName}</strong> est maintenant actif sur Boatswain.</p>
           <p><strong>Accès initial :</strong></p>
           <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
             <li>Email : <strong>${result.client.email}</strong></li>
@@ -525,14 +525,14 @@ router.post(
           </ul>
           <p>Vous devrez changer votre mot de passe lors de votre première connexion.</p>
         `,
-        buttonLabel: "Se connecter à Sellsia",
+        buttonLabel: "Se connecter à Boatswain",
         buttonUrl: `${appUrl}/login`
       });
       await sendEmail({
         userId: result.client.id,
         workspaceId: result.workspace.id,
         to: result.client.email,
-        subject: `Bienvenue sur Sellsia - Votre workspace est prêt`,
+        subject: `Bienvenue sur Boatswain - Votre workspace est prêt`,
         html
       });
     } catch (emailErr) {
@@ -545,7 +545,7 @@ router.post(
         const html = renderEmailTemplate({
           title: `Invitation à rejoindre ${validatedWorkspace.workspaceName}`,
           content: `
-            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong> sur Sellsia.</p>
+            <p>Vous êtes invité à rejoindre le workspace <strong>${validatedWorkspace.workspaceName}</strong> sur Boatswain.</p>
             <p><strong>Vos identifiants :</strong></p>
             <ul style="margin: 16px 0; padding-left: 20px; color: #A1A1AA;">
               <li>Email : <strong>${member.user.email}</strong></li>
@@ -560,7 +560,7 @@ router.post(
           userId: result.client.id,
           workspaceId: result.workspace.id,
           to: member.user.email,
-          subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName} sur Sellsia`,
+          subject: `Invitation à rejoindre ${validatedWorkspace.workspaceName} sur Boatswain`,
           html
         });
       } catch (emailErr) {

@@ -301,7 +301,7 @@ export class DirecteurAgent extends BaseAgent {
         .map((s) => ({ filename: s.replace("file:", ""), tool: "parse" }))
     };
 
-    const synthesisPrompt = `Tu es le Directeur Agent de Sellsia. Réponds directement comme un collègue expert en pilotage commercial.
+    const synthesisPrompt = `Tu es le Directeur Agent de Boatswain. Réponds directement comme un collègue expert en pilotage commercial.
 
 DEMANDE : ${userMessage}
 

@@ -154,7 +154,7 @@ app.get("/api/health", async (_req, res) => {
   }
   const criticalServices = ["db"];
   const status = criticalServices.every((s) => services[s] === "ok") ? "ok" : "degraded";
-  res.status(status === "ok" ? 200 : 503).json({ status, service: "sellsia-dashboard-api", services });
+  res.status(status === "ok" ? 200 : 503).json({ status, service: "boatswain-dashboard-api", services });
 });
 
 app.use("/api/auth", authRoutes);
@@ -257,7 +257,7 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`Sellsia dashboard API listening on http://localhost:${config.port}`);
+  console.log(`Boatswain dashboard API listening on http://localhost:${config.port}`);
   // Démarrer tous les workers après que le serveur est prêt
   startReminderWorker();
   startMarketReportsWorker(prisma).catch((err) =>

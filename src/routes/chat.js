@@ -164,7 +164,7 @@ async function getAllowedAgents(userId) {
         await prisma.agentPrompt.create({
           data: {
             agentId: "agent-admin",
-            systemPrompt: "Tu es un assistant administratif expert de la plateforme Sellsia. Tu aides à la gestion des workflows, des processus administratifs, et tu peux accéder à l'ensemble des données de la plateforme pour répondre aux questions.",
+            systemPrompt: "Tu es un assistant administratif expert de la plateforme Boatswain. Tu aides à la gestion des workflows, des processus administratifs, et tu peux accéder à l'ensemble des données de la plateforme pour répondre aux questions.",
             version: 1,
             isActive: true
           }

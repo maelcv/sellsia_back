@@ -80,7 +80,7 @@ router.post("/change-password", requireAuth, authRateLimit, async (req, res) => 
         subject: "Votre mot de passe a été changé",
         html: `
           <h2>Confirmation de changement de mot de passe</h2>
-          <p>Votre mot de passe Sellsia a été changé avec succès.</p>
+          <p>Votre mot de passe Boatswain a été changé avec succès.</p>
           <p>Si vous n'avez pas effectué cette action, veuillez <a href="${process.env.APP_URL || 'http://localhost:5173'}/forgot-password">réinitialiser votre mot de passe</a> immédiatement.</p>
         `
       });

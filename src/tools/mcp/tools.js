@@ -1167,12 +1167,12 @@ const sellsy_get_crm_stats = {
   }
 };
 
-// ── Admin — Stats plateforme Sellsia ─────────────────
+// ── Admin — Stats plateforme Boatswain ─────────────────
 
 const get_platform_stats = {
   name: "get_platform_stats",
   description:
-    "Interroge la base de données de la plateforme Sellsia pour retourner des métriques réelles : nombre d'utilisateurs, workspaces actifs, conversations, tokens consommés (global, par workspace, par utilisateur), agents actifs, providers IA configurés. RÉSERVÉ ADMIN. Utilise cet outil pour répondre à toute question sur l'état de la plateforme.",
+    "Interroge la base de données de la plateforme Boatswain pour retourner des métriques réelles : nombre d'utilisateurs, workspaces actifs, conversations, tokens consommés (global, par workspace, par utilisateur), agents actifs, providers IA configurés. RÉSERVÉ ADMIN. Utilise cet outil pour répondre à toute question sur l'état de la plateforme.",
   parameters: {
     type: "object",
     properties: {

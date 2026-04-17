@@ -317,7 +317,7 @@ async function processIncomingMessage(event) {
   const provider = await getProviderForUser(userId);
   if (!provider) {
     await sendWhatsAppReply(account, from,
-      "Aucun fournisseur IA configure. Connectez un service IA dans votre dashboard Sellsia.");
+      "Aucun fournisseur IA configure. Connectez un service IA dans votre dashboard Boatswain.");
     return;
   }
 
@@ -329,7 +329,7 @@ async function processIncomingMessage(event) {
 
   if (agentRows.length === 0) {
     await sendWhatsAppReply(account, from,
-      "Aucun agent IA active. Activez un agent depuis le dashboard Sellsia.");
+      "Aucun agent IA active. Activez un agent depuis le dashboard Boatswain.");
     return;
   }
 

@@ -1,5 +1,5 @@
 /**
- * FastMCP Server — Exposes Sellsia tools via MCP protocol for external consumption.
+ * FastMCP Server — Exposes Boatswain tools via MCP protocol for external consumption.
  *
  * This server wraps the same tools from tools.js in a proper MCP server,
  * allowing external MCP clients (Claude Desktop, Cursor, etc.) to connect.
@@ -23,7 +23,7 @@ const dashboardDir = resolve(__dirname, "../../dashboard");
 const require = createRequire(resolve(dashboardDir, "index.js"));
 
 /**
- * Create an MCP server instance with all Sellsia tools.
+ * Create an MCP server instance with all Boatswain tools.
  * @param {Object} context - Per-request context { sellsyClient, tavilyApiKey, uploadedFiles }
  * @returns {Promise<FastMCP>}
  */
@@ -32,7 +32,7 @@ export async function createMCPServer(context = {}) {
   const { z } = require("zod");
 
   const server = new FastMCP({
-    name: "sellsia-mcp",
+    name: "boatswain-mcp",
     version: "1.0.0"
   });
 
@@ -84,7 +84,7 @@ const isMainModule = process.argv[1]?.includes("mcp/server");
 
 if (isMainModule) {
   (async () => {
-    console.error("[MCP Server] Starting Sellsia MCP Server...");
+    console.error("[MCP Server] Starting Boatswain MCP Server...");
 
     const context = {};
 
@@ -98,6 +98,6 @@ if (isMainModule) {
       transportType: "stdio"
     });
 
-    console.error("[MCP Server] Sellsia MCP Server running on stdio");
+    console.error("[MCP Server] Boatswain MCP Server running on stdio");
   })();
 }

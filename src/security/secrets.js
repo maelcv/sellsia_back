@@ -12,7 +12,7 @@ function getKey() {
 
   _cachedKey = crypto.pbkdf2Sync(
     config.encryptionKey,
-    "sellsia-aes256gcm-v1",
+    "boatswain-aes256gcm-v1",
     100_000,
     32,
     "sha256"

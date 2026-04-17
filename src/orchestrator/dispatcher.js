@@ -1,5 +1,5 @@
 /**
- * Dispatcher / Orchestrateur — Le cerveau central de Sellsia.
+ * Dispatcher / Orchestrateur — Le cerveau central de Boatswain.
  *
  * Recoit une demande utilisateur et :
  * 1. Identifie l'intention via LLM (ou agent explicitement demande)

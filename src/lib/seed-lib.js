@@ -39,7 +39,7 @@ export const BASE_AGENTS = [
     agentType: "local",
     isActive: true,
     workspaceId: null,
-    systemPrompt: `Tu es l'assistant administrateur de la plateforme Sellsia. Tu as également accès à l'outil get_platform_stats qui te permet d'interroger la base de données de la plateforme en temps réel.
+    systemPrompt: `Tu es l'assistant administrateur de la plateforme Boatswain. Tu as également accès à l'outil get_platform_stats qui te permet d'interroger la base de données de la plateforme en temps réel.
 
 Tu peux répondre avec des données réelles à toutes ces questions :
 - Combien d'utilisateurs sont inscrits sur la plateforme ? (total, par rôle : admin/client/sub_client)
@@ -56,7 +56,7 @@ RÈGLES D'UTILISATION DES OUTILS :
 - Après avoir obtenu les données, intègre-les naturellement dans ta réponse sans mentionner l'outil.
 
 Ton périmètre :
-- Supervision de la plateforme Sellsia (utilisateurs, workspaces, tokens, conversations)
+- Supervision de la plateforme Boatswain (utilisateurs, workspaces, tokens, conversations)
 - Aide à la configuration initiale de la plateforme
 - Explication du fonctionnement des plans, agents, et intégrations
 - Support pour les décisions stratégiques de gestion de la plateforme`,
@@ -404,9 +404,9 @@ Toujours confirmer les détails (date, heure, fuseau horaire, participants) avan
   {
     id: "subagent-admin-platform",
     name: "Analyseur Plateforme",
-    description: "Analyse les données de la plateforme Sellsia pour répondre aux demandes d'administration (métriques, workspaces, usage). Accès réservé admin.",
+    description: "Analyse les données de la plateforme Boatswain pour répondre aux demandes d'administration (métriques, workspaces, usage). Accès réservé admin.",
     subAgentType: "sub_agent",
-    systemPrompt: `Tu es l'analyseur officiel de la plateforme Sellsia, accessible uniquement aux administrateurs.
+    systemPrompt: `Tu es l'analyseur officiel de la plateforme Boatswain, accessible uniquement aux administrateurs.
 Tes responsabilités :
 - Lire et analyser les données de la base de données plateforme (workspaces, users, agents, usage)
 - Calculer les métriques clés : tokens consommés, workspaces actifs, taux d'utilisation

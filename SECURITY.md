@@ -1,4 +1,4 @@
-# Sellsia — Règles de Sécurité Multi-Tenant
+# Boatswain — Règles de Sécurité Multi-Tenant
 
 ## Principes fondamentaux
 

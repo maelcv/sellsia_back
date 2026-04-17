@@ -66,7 +66,7 @@ function escapeHtml(value) {
 function buildOauthPopupHtml({ status, message, integrationTypeId, frontendOrigin }) {
   const safeOrigin = frontendOrigin || config.frontendUrl || "*";
   const payload = {
-    type: "sellsia_google_oauth",
+    type: "boatswain_google_oauth",
     status,
     integrationTypeId,
     message,

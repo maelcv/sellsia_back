@@ -701,7 +701,7 @@ router.post("/forgot-password", authRateLimit, async (req, res) => {
       const html = renderEmailTemplate({
         title: "Réinitialisation de mot de passe",
         content: `
-          <p>Vous avez demandé la réinitialisation de votre mot de passe Sellsia.</p>
+          <p>Vous avez demandé la réinitialisation de votre mot de passe Boatswain.</p>
           <p>Cliquez sur le bouton ci-dessous pour choisir un nouveau mot de passe :</p>
         `,
         buttonLabel: "Réinitialiser mon mot de passe",
@@ -712,7 +712,7 @@ router.post("/forgot-password", authRateLimit, async (req, res) => {
         userId: user.id,
         workspaceId: user.workspaceId,
         to: user.email,
-        subject: "Réinitialisation de votre mot de passe Sellsia",
+        subject: "Réinitialisation de votre mot de passe Boatswain",
         html
       });
     } catch (err) {
@@ -790,7 +790,7 @@ router.post("/reset-password", authRateLimit, async (req, res) => {
       const html = renderEmailTemplate({
         title: "Mot de passe réinitialisé",
         content: `
-          <p>Votre mot de passe Sellsia a été réinitialisé avec succès.</p>
+          <p>Votre mot de passe Boatswain a été réinitialisé avec succès.</p>
           <p>Vous pouvez maintenant vous connecter à votre tableau de bord.</p>
         `,
         buttonLabel: "Se connecter",

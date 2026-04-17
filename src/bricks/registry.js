@@ -12,20 +12,42 @@
 
 import { zodToJsonSchema } from "./types.js";
 
-import { webhookTrigger }   from "./triggers/webhook.js";
-import { scheduleTrigger }  from "./triggers/schedule.js";
+// Triggers
+import { webhookTrigger }  from "./triggers/webhook.js";
+import { scheduleTrigger } from "./triggers/schedule.js";
+import { eventTrigger }    from "./triggers/event.js";
+import { manualTrigger }   from "./triggers/manual.js";
+
+// Actions
 import { httpRequestAction } from "./actions/http-request.js";
 import { sendEmailAction }   from "./actions/send-email.js";
 import { vaultWriteAction }  from "./actions/vault-write.js";
-import { conditionLogic }    from "./logic/condition.js";
+import { vaultReadAction }   from "./actions/vault-read.js";
+import { aiGenerateAction }  from "./actions/ai-generate.js";
+import { webSearchAction }   from "./actions/web-search.js";
+
+// Logic
+import { conditionLogic } from "./logic/condition.js";
+import { delayLogic }     from "./logic/delay.js";
+import { loopLogic }      from "./logic/loop.js";
 
 const BRICKS = [
-  webhookTrigger,
+  // Triggers
   scheduleTrigger,
+  eventTrigger,
+  webhookTrigger,
+  manualTrigger,
+  // Actions
+  aiGenerateAction,
+  webSearchAction,
   httpRequestAction,
   sendEmailAction,
   vaultWriteAction,
+  vaultReadAction,
+  // Logic
   conditionLogic,
+  delayLogic,
+  loopLogic,
 ];
 
 // Lookup map pour accès O(1)

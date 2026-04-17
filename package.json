@@ -1,19 +1,18 @@
 {
-  "name": "sellsia-dashboard-backend",
+  "name": "boatswain-dashboard-backend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "build": "npx prisma generate && npx prisma migrate reset --force --skip-generate && npm run db:ensure-vector && npx prisma db push --skip-generate --accept-data-loss && node src/seed.js",
+    "build": "npx prisma generate && npm run db:ensure-vector && npx prisma db push --skip-generate --accept-data-loss && node src/seed.js",
     "db:generate": "npx prisma generate",
-    "db:migrate": "npx prisma migrate dev",
     "db:ensure-vector": "printf 'CREATE EXTENSION IF NOT EXISTS vector;\\n' | npx prisma db execute --stdin --schema prisma/schema.prisma",
     "db:push": "npm run db:ensure-vector && npx prisma db push",
     "db:seed": "node src/seed.js",
     "db:studio": "npx prisma studio",
-    "db:reset": "npx prisma generate && npx prisma migrate reset --force --skip-generate && npm run db:ensure-vector && npx prisma db push --skip-generate --accept-data-loss",
+    "db:reset": "npx prisma generate && npm run db:ensure-vector && npx prisma db push --skip-generate --force-reset --accept-data-loss",
     "postinstall": "npx prisma generate"
   },
   "dependencies": {

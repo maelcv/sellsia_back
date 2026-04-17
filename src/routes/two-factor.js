@@ -27,7 +27,7 @@ router.post("/setup", async (req, res) => {
   }
 
   const secret = generateSecret();
-  const otpauth = generateURI({ label: user.email, issuer: "Sellsia", secret });
+  const otpauth = generateURI({ label: user.email, issuer: "Boatswain", secret });
 
   // Stocker le secret temporairement (pas encore enabled)
   await prisma.user.update({
@@ -193,7 +193,7 @@ router.post("/request-email-code", async (req, res) => {
       userId: user.id,
       workspaceId: user.workspaceId,
       to: user.email,
-      subject: `[Sellsia] Votre code de vérification : ${code}`,
+      subject: `[Boatswain] Votre code de vérification : ${code}`,
       html,
     });
 

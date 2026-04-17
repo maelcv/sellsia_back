@@ -354,7 +354,7 @@ IMPORTANT : Formule des requetes de recherche PRECISES. Utilise le nom exact de 
         .map((s) => ({ filename: s.replace("file:", ""), tool: "parse" }))
     };
 
-    const synthesisPrompt = `Tu es le Commercial Agent de Sellsia. Réponds directement à la demande comme un collègue expert.
+    const synthesisPrompt = `Tu es le Commercial Agent de Boatswain. Réponds directement à la demande comme un collègue expert.
 
 DEMANDE : ${userMessage}
 
