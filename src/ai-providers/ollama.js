@@ -210,6 +210,18 @@ RÈGLES IMPORTANTES:
     return { textContent: content, toolCalls: [] };
   }
 
+  async vision({ base64, mediaType: _mediaType, prompt = "Décris cette image en détail." }) {
+    const visionModel = this.config?.capabilityModels?.vision || this.config?.capabilities?.visionModel || "llava";
+    const response = await fetch(`${this.baseUrl}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: visionModel, prompt, images: [base64], stream: false })
+    });
+    if (!response.ok) throw new Error(`Ollama vision error ${response.status}`);
+    const data = await response.json();
+    return data.response || "";
+  }
+
   async *stream({ model, messages, systemPrompt, temperature = 0.7, maxTokens = 2048 }) {
     const finalModel = model || this.defaultModel;
 

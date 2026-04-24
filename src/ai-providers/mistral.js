@@ -184,6 +184,31 @@ export class MistralProvider extends BaseLLMProvider {
    * @param {number} maxTokens - Maximum tokens to generate (default: 2048)
    * @returns {Promise<Object>} Response with content and token usage
    */
+  async vision({ base64, mediaType, prompt = "Décris cette image en détail." }) {
+    const visionModel = this.config?.capabilityModels?.vision || this.config?.capabilities?.visionModel || "pixtral-12b-2409";
+    const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model: visionModel,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: `data:${mediaType};base64,${base64}` } }
+          ]
+        }],
+        max_tokens: 1024
+      })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(`Mistral vision error ${response.status}: ${err.message || "Unknown error"}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+
   async chatWithAgent({ agentId, messages, temperature = 0.7, maxTokens = 2048 }) {
     if (!agentId) {
       throw new Error("Agent ID is required for chatWithAgent");

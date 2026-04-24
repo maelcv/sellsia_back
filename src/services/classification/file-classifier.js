@@ -27,7 +27,7 @@ import { getProviderForUser } from "../../ai-providers/index.js";
  * @param {object} file — multer file object { buffer, mimetype, originalname }
  * @returns {string} texte extrait (max 8000 chars)
  */
-async function extractText(file) {
+async function extractText(file, provider = null) {
   const { buffer, mimetype, originalname } = file;
   const MAX_CHARS = 8000;
 
@@ -43,7 +43,17 @@ async function extractText(file) {
       try {
         const pdfParse = (await import("pdf-parse")).default;
         const data = await pdfParse(buffer);
-        return (data.text || "").slice(0, MAX_CHARS);
+        const text = (data.text || "").trim();
+        // Image-based PDF: fallback to OCR if provider supports vision
+        if (text.length < 50 && provider?.hasCapability("vision")) {
+          const base64 = buffer.toString("base64");
+          const ocrText = await provider.vision({
+            base64, mediaType: "application/pdf",
+            prompt: "Extrais tout le texte visible dans ce document PDF (OCR complet)."
+          });
+          return (ocrText || "").slice(0, MAX_CHARS);
+        }
+        return text.slice(0, MAX_CHARS);
       } catch {
         return `[PDF file: ${originalname}] (text extraction unavailable)`;
       }
@@ -71,6 +81,48 @@ async function extractText(file) {
       } catch {
         return `[Word document: ${originalname}] (text extraction unavailable)`;
       }
+    }
+
+    // PPTX / OpenDocument
+    if (
+      mimetype.includes("presentationml") || mimetype.includes("ms-powerpoint") ||
+      mimetype.includes("opendocument") ||
+      originalname.match(/\.(pptx?|odp|odt|ods)$/i)
+    ) {
+      try {
+        const { parseOffice } = await import("officeparser");
+        const text = await parseOffice(buffer);
+        return (text || "").slice(0, MAX_CHARS);
+      } catch {
+        return `[Office file: ${originalname}] (text extraction unavailable)`;
+      }
+    }
+
+    // JSON
+    if (mimetype === "application/json" || originalname.endsWith(".json")) {
+      try {
+        const raw = buffer.toString("utf-8");
+        const parsed = JSON.parse(raw);
+        return JSON.stringify(parsed, null, 2).slice(0, MAX_CHARS);
+      } catch {
+        return buffer.toString("utf-8").slice(0, MAX_CHARS);
+      }
+    }
+
+    // Images — use vision model if available
+    if (mimetype.startsWith("image/") && provider?.hasCapability("vision")) {
+      const base64 = buffer.toString("base64");
+      const result = await provider.vision({
+        base64, mediaType: mimetype,
+        prompt: "Décris cette image en détail et extrais tout le texte visible (OCR complet)."
+      });
+      return (result || "").slice(0, MAX_CHARS);
+    }
+
+    // Audio — use audio transcription if available
+    if (mimetype.startsWith("audio/") && provider?.hasCapability("audio")) {
+      const transcription = await provider.audio({ buffer, mimeType: mimetype });
+      return (transcription || "").slice(0, MAX_CHARS);
     }
 
     return `[File: ${originalname}] (unsupported format for text extraction)`;
@@ -128,14 +180,12 @@ Required JSON format:
 }`;
 
   try {
-    let rawResponse = "";
-    for await (const chunk of provider.stream([
-      { role: "user", content: prompt }
-    ], { model: provider.config.defaultModel, temperature: 0.1, maxTokens: 600 })) {
-
-      if (chunk.type === "text") rawResponse += chunk.content;
-    }
-
+    const result = await provider.chat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
+      maxTokens: 600
+    });
+    const rawResponse = result?.content || "";
     const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     return JSON.parse(jsonMatch[0]);
@@ -260,8 +310,9 @@ async function updateAdminUploadsManifest(userId, { originalName, sizeBytes, cat
 
 async function runClassification(file, userId, conversationId, agentId, uploadedByName, scope = "workspace") {
   const uploadedAt = new Date().toISOString();
-  const text = await extractText(file);
   const provider = await getProviderForUser(userId);
+  // Reuse pre-extracted text if provided (avoids duplicate vision/audio API calls)
+  const text = file._preExtractedText || await extractText(file, provider);
 
   let classification = null;
   if (provider && text && !text.startsWith("[File:")) {
@@ -296,7 +347,7 @@ async function runClassification(file, userId, conversationId, agentId, uploaded
   }
 
   const noteContent = buildMarkdownNote({ file, classification, uploadedByName, conversationId, knowledgeDocId });
-  return { classification, knowledgeDocId, noteContent, uploadedAt };
+  return { classification, knowledgeDocId, noteContent, uploadedAt, extractedText: text };
 }
 
 // ── Main Entry Point ──────────────────────────────────────────────
@@ -333,7 +384,7 @@ export async function classifyUploadedFile({
       await saveAdminRawFile(userId, file);
 
       // 1–5. Extract + classify + build note
-      const { classification, knowledgeDocId, noteContent, uploadedAt } = await runClassification(
+      const { classification, knowledgeDocId, noteContent, uploadedAt, extractedText } = await runClassification(
         file, userId, conversationId, agentId, uploadedByName, "admin"
       );
 
@@ -350,6 +401,7 @@ export async function classifyUploadedFile({
       });
 
       console.log(`[FileClassifier:admin] "${file.originalname}" → vault:${vaultPath} knowledgeDoc:${knowledgeDocId}`);
+      return { vaultPath, classification, knowledgeDocId, extractedText, isAdmin: true };
     } else {
       // ── Workspace mode: Workspaces/<wsId>/<userId>/Uploads/ ──
       const vaultPath = getUploadVaultPath(userId, file.originalname);
@@ -358,7 +410,7 @@ export async function classifyUploadedFile({
       await saveRawFile(workspaceId, userId, file);
 
       // 1–5. Extract + classify + build note
-      const { classification, knowledgeDocId, noteContent, uploadedAt } = await runClassification(
+      const { classification, knowledgeDocId, noteContent, uploadedAt, extractedText } = await runClassification(
         file, userId, conversationId, agentId, uploadedByName
       );
 
@@ -390,8 +442,10 @@ export async function classifyUploadedFile({
       });
 
       console.log(`[FileClassifier:ws] "${file.originalname}" → vault:${vaultPath} knowledgeDoc:${knowledgeDocId}`);
+      return { vaultPath, classification, knowledgeDocId, extractedText, isAdmin: false };
     }
   } catch (err) {
     console.warn("[FileClassifier] Non-critical error:", err.message);
+    return null;
   }
 }

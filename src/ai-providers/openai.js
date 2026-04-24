@@ -107,6 +107,50 @@ export class OpenAIProvider extends BaseLLMProvider {
     };
   }
 
+  async vision({ base64, mediaType, prompt = "Décris cette image en détail." }) {
+    const visionModel = this.config?.capabilityModels?.vision || this.config?.capabilities?.visionModel || this.defaultModel;
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({
+        model: visionModel,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: `data:${mediaType};base64,${base64}` } }
+          ]
+        }],
+        max_tokens: 1024
+      })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(`OpenAI vision error ${response.status}: ${err.error?.message || "Unknown error"}`);
+    }
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+  }
+
+  async audio({ buffer, mimeType }) {
+    const ext = (mimeType?.split("/")?.[1] || "mp3").replace("mpeg", "mp3").replace("x-wav", "wav");
+    const form = new FormData();
+    form.append("file", new Blob([buffer], { type: mimeType }), `audio.${ext}`);
+    form.append("model", "whisper-1");
+
+    const response = await fetch(`${this.baseUrl}/audio/transcriptions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+      body: form
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(`OpenAI audio error ${response.status}: ${err.error?.message || "Unknown error"}`);
+    }
+    const data = await response.json();
+    return data.text || "";
+  }
+
   async *stream({ model, messages, systemPrompt, temperature = 0.7, maxTokens = 2048 }) {
     const finalModel = model || this.defaultModel;
 

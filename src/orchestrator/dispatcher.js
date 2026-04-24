@@ -33,6 +33,12 @@ const GENERALIST_TOOL_ALLOWLIST = new Set([
   "parse_csv",
   "parse_excel",
   "parse_word",
+  "parse_powerpoint",
+  "parse_opendocument",
+  "parse_json",
+  "parse_text",
+  "parse_image",
+  "parse_audio",
   "get_user_gps",
   "get_meteo",
 ]);
@@ -117,10 +123,13 @@ function selectToolsForAgent(agentId, tools = []) {
 function buildToolContextForAgent(agentId, toolContext = null) {
   if (agentId !== GENERALIST_AGENT_ID) return toolContext;
   const base = toolContext ? { ...toolContext } : {};
+  // Never force web search when files are uploaded — parse tools take priority.
+  // forceWebSearch only comes from the user-toggled webSearch preference.
+  const hasFiles = (base.uploadedFiles?.length || 0) > 0;
   return {
     ...base,
     sellsyClient: null,
-    forceWebSearch: true
+    forceWebSearch: hasFiles ? false : Boolean(base.forceWebSearch)
   };
 }
 

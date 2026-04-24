@@ -109,7 +109,7 @@ export class BaseAgent {
   /**
    * Build the full system prompt from base + context blocks.
    */
-  _buildFullSystemPrompt({ sellsyData, pageContext, knowledgeContext, tools, thinkingMode = "low", forceWebSearch = false, activeSkillBlock = "", userLanguage = null }) {
+  _buildFullSystemPrompt({ sellsyData, pageContext, knowledgeContext, tools, thinkingMode = "low", forceWebSearch = false, activeSkillBlock = "", userLanguage = null, uploadedFiles = [] }) {
     const contextBlock = this.buildContextBlock(sellsyData, pageContext);
     const pageContextBlock = this.buildPageContextBlock(pageContext);
 
@@ -159,6 +159,39 @@ RÈGLES CRITIQUES POUR LA RECHERCHE WEB :
 3. Scraping ciblé : n'appelle web_scrape QUE sur des URLs dont le titre ou le domaine indique clairement qu'elles correspondent à l'entité recherchée. En cas de doute, abstiens-toi de scraper.
 4. En cas de mauvais résultats : reformule la requête avec plus de détails (secteur, SIRET, site officiel, etc.) plutôt que de scraper des pages non pertinentes.
 N'hésite PAS à appeler plusieurs outils si nécessaire. Les résultats seront injectés automatiquement.`;
+    }
+
+    // ── Uploaded files instructions (injected for ALL agents) ──
+    const hasFiles = Array.isArray(uploadedFiles) && uploadedFiles.length > 0;
+    if (hasFiles) {
+      const hasParseTools = Array.isArray(tools) && tools.some((t) => t?.name?.startsWith("parse_"));
+      if (hasParseTools) {
+        const fileInstructions = uploadedFiles.map((f, i) => {
+          const name = f.originalname || "";
+          const mime = f.mimetype || "";
+          const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+          let tool;
+          if (ext === "pdf" || mime === "application/pdf") tool = "parse_pdf";
+          else if (ext === "csv" || mime === "text/csv") tool = "parse_csv";
+          else if (["xlsx", "xls"].includes(ext) || mime.includes("spreadsheet")) tool = "parse_excel";
+          else if (["docx", "doc"].includes(ext) || mime.includes("wordprocessingml")) tool = "parse_word";
+          else if (["pptx", "ppt"].includes(ext) || mime.includes("presentationml") || mime.includes("ms-powerpoint")) tool = "parse_powerpoint";
+          else if (["odt", "ods", "odp"].includes(ext) || mime.includes("opendocument")) tool = "parse_opendocument";
+          else if (ext === "json" || mime === "application/json") tool = "parse_json";
+          else if (["txt", "md"].includes(ext) || mime === "text/plain") tool = "parse_text";
+          else if (mime.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext)) tool = "parse_image";
+          else if (mime.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a", "aac", "webm"].includes(ext)) tool = "parse_audio";
+          else tool = "parse_pdf";
+          return `  [${i}] ${name} → appelle OBLIGATOIREMENT : ${tool}({"file_index": ${i}})`;
+        }).join("\n");
+
+        fullSystemPrompt += `\n\n--- FICHIERS JOINTS — PRIORITE ABSOLUE ---
+L'utilisateur a joint ${uploadedFiles.length} fichier(s). Appelle EXACTEMENT le tool indiqué pour chaque fichier AVANT de répondre :
+${fileInstructions}
+
+INTERDIT : Ne jamais utiliser web_search pour analyser un fichier joint.
+Si tu réponds sans avoir appelé le tool indiqué, ta réponse sera incomplète.`;
+      }
     }
 
     const hasWebSearchTool = Array.isArray(tools) && tools.some((tool) => tool.name === "web_search");
@@ -495,7 +528,8 @@ OBLIGATOIRE :
       thinkingMode,
       forceWebSearch: Boolean(toolContext?.forceWebSearch),
       activeSkillBlock,
-      userLanguage
+      userLanguage,
+      uploadedFiles: toolContext?.uploadedFiles || []
     });
     const maxToolIterations = thinkingMode === "high" ? 8 : 3;
     // Force web search fallback when user explicitly toggled it ON, regardless of thinking mode.
@@ -606,7 +640,8 @@ OBLIGATOIRE :
         }
 
         const _toolStart = Date.now();
-        const output = await executeTool(toolCall.name, parsedArgs, toolContext || {});
+        const enrichedContext = { ...(toolContext || {}), provider: this.provider };
+        const output = await executeTool(toolCall.name, parsedArgs, enrichedContext);
         logger.info("tool.execute", { toolName: toolCall.name, agentId: this.agentId, success: !output?.error, durationMs: Date.now() - _toolStart });
 
         toolResults.push({
@@ -626,7 +661,7 @@ OBLIGATOIRE :
         this._collectSourcesFromToolCall(
           { name: toolCall.name, args: parsedArgs },
           output,
-          toolContext || {},
+          enrichedContext,
           sourcesUsed
         );
       }
@@ -711,7 +746,8 @@ OBLIGATOIRE :
       thinkingMode,
       forceWebSearch: Boolean(toolContext?.forceWebSearch),
       activeSkillBlock,
-      userLanguage
+      userLanguage,
+      uploadedFiles: toolContext?.uploadedFiles || []
     });
     const maxToolIterations = thinkingMode === "high" ? 8 : 3;
     // Force web search fallback when user explicitly toggled it ON, regardless of thinking mode.
@@ -856,7 +892,8 @@ OBLIGATOIRE :
         };
 
         const _toolStart = Date.now();
-        const output = await executeTool(toolCall.name, parsedArgs, toolContext || {});
+        const enrichedCtx = { ...(toolContext || {}), provider: this.provider };
+        const output = await executeTool(toolCall.name, parsedArgs, enrichedCtx);
         logger.info("tool.execute", { toolName: toolCall.name, agentId: this.agentId, success: !output?.error, durationMs: Date.now() - _toolStart });
         toolResults.push({ toolCallId: toolCall.id, name: toolCall.name, output });
         toolsUsed.push({ name: toolCall.name, args: parsedArgs, iteration });
@@ -865,7 +902,7 @@ OBLIGATOIRE :
         this._collectSourcesFromToolCall(
           { name: toolCall.name, args: parsedArgs },
           output,
-          toolContext || {},
+          enrichedCtx,
           sourcesUsed
         );
 

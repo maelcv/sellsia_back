@@ -1295,6 +1295,38 @@ const get_platform_stats = {
 
 // ── File Processing Tools ─────────────────────────────
 
+/**
+ * Fire-and-forget: create/update the vault metadata note for an uploaded file.
+ * Called after extraction so the agent gets the content immediately while the note is written async.
+ * Only writes if no note exists yet (_vaultPath not set by pre-classification).
+ */
+async function _saveFileVaultNote(file, extractedText, context) {
+  if (file._vaultPath) return; // already written by pre-classification
+  if (!context.userId) return;
+  try {
+    const { classifyUploadedFile } = await import("../../services/classification/file-classifier.js");
+    const user = { id: context.userId, email: context.userEmail };
+    // Inject pre-extracted text so classifier doesn't re-extract
+    const fileWithText = Object.assign(Object.create(Object.getPrototypeOf(file)), file);
+    fileWithText._preExtractedText = extractedText;
+    classifyUploadedFile({
+      file: fileWithText,
+      userId: context.userId,
+      workspaceId: context.tenantId || null,
+      conversationId: context.conversationId || null,
+      agentId: context.agentId || null,
+      user
+    }).then((result) => {
+      if (result) {
+        file._vaultPath = result.vaultPath;
+        file._classification = result.classification;
+      }
+    }).catch((err) => console.warn("[parse_tool] vault note creation failed:", err.message));
+  } catch (err) {
+    console.warn("[parse_tool] vault import failed:", err.message);
+  }
+}
+
 const parse_pdf = {
   name: "parse_pdf",
   description:
@@ -1316,14 +1348,46 @@ const parse_pdf = {
       return { error: "Le fichier n'est pas un PDF" };
     }
 
+    // Reuse pre-classification OCR result for image-based PDFs
+    if (file._extractedContent && file._classification) {
+      try {
+        const pdfParse = require("pdf-parse");
+        const result = await pdfParse(file.buffer);
+        if ((result.text || "").trim().length < 50) {
+          return { filename: file.originalname, pages: result.numpages, text: file._extractedContent, ocrFallback: true, fromVaultNote: true };
+        }
+      } catch { /* fall through to normal parse */ }
+    }
+
     try {
       const pdfParse = require("pdf-parse");
       const result = await pdfParse(file.buffer);
+      const text = result.text || "";
+
+      // Image-based PDF (no extractable text) → fallback to vision OCR
+      if (text.trim().length < 50 && context.provider?.hasCapability("vision")) {
+        try {
+          const base64 = file.buffer.toString("base64");
+          const ocrText = await context.provider.vision({
+            base64,
+            mediaType: "application/pdf",
+            prompt: "Extrais tout le texte visible dans ce document PDF (OCR complet)."
+          });
+          const finalText = ocrText?.slice(0, 8000) || "";
+          _saveFileVaultNote(file, finalText, context);
+          return { filename: file.originalname, pages: result.numpages, text: finalText, ocrFallback: true, truncated: (ocrText?.length || 0) > 8000 };
+        } catch {
+          // OCR failed — return what we have
+        }
+      }
+
+      const finalText = text.slice(0, 8000);
+      _saveFileVaultNote(file, finalText, context);
       return {
         filename: file.originalname,
         pages: result.numpages,
-        text: result.text?.slice(0, 8000),
-        truncated: (result.text?.length || 0) > 8000
+        text: finalText,
+        truncated: text.length > 8000
       };
     } catch (error) {
       return { error: `Erreur parsing PDF: ${error.message}` };
@@ -1359,6 +1423,8 @@ const parse_csv = {
       const result = Papa.parse(csvText, { header: true, skipEmptyLines: true });
 
       const maxRows = params.max_rows || 100;
+      const preview = result.data?.slice(0, maxRows).map(r => Object.values(r).join(",")).join("\n");
+      _saveFileVaultNote(file, preview || csvText.slice(0, 4000), context);
       return {
         filename: file.originalname,
         headers: result.meta?.fields || [],
@@ -1413,7 +1479,8 @@ const parse_excel = {
 
       const data = XLSX.utils.sheet_to_json(sheet);
       const maxRows = params.max_rows || 100;
-
+      const preview = XLSX.utils.sheet_to_csv(sheet).slice(0, 4000);
+      _saveFileVaultNote(file, preview, context);
       return {
         filename: file.originalname,
         sheetNames: workbook.SheetNames,
@@ -1450,15 +1517,196 @@ const parse_word = {
     try {
       const mammoth = require("mammoth");
       const result = await mammoth.extractRawText({ buffer: file.buffer });
-
+      const text = result.value?.slice(0, 8000) || "";
+      _saveFileVaultNote(file, text, context);
       return {
         filename: file.originalname,
-        text: result.value?.slice(0, 8000),
+        text,
         truncated: (result.value?.length || 0) > 8000,
         warnings: result.messages?.filter((m) => m.type === "warning").map((m) => m.message).slice(0, 5)
       };
     } catch (error) {
       return { error: `Erreur parsing Word: ${error.message}` };
+    }
+  }
+};
+
+const parse_powerpoint = {
+  name: "parse_powerpoint",
+  description: "Extrait le texte d'un fichier PowerPoint (PPTX/PPT) uploadé, slide par slide.",
+  parameters: {
+    type: "object",
+    properties: {
+      file_index: { type: "number", description: "Index du fichier uploadé (commence à 0)" }
+    },
+    required: ["file_index"]
+  },
+  async execute(params, context) {
+    const file = context.uploadedFiles?.[params.file_index];
+    if (!file) return { error: "Fichier non trouvé à l'index spécifié" };
+    try {
+      const { parseOffice } = await import("officeparser");
+      const text = await parseOffice(file.buffer);
+      const finalText = text?.slice(0, 10000) || "";
+      _saveFileVaultNote(file, finalText, context);
+      return { filename: file.originalname, text: finalText, truncated: (text?.length || 0) > 10000 };
+    } catch (error) {
+      return { error: `Erreur parsing PowerPoint: ${error.message}` };
+    }
+  }
+};
+
+const parse_opendocument = {
+  name: "parse_opendocument",
+  description: "Extrait le texte d'un fichier OpenDocument (ODT Writer, ODS Calc, ODP Présentation) uploadé.",
+  parameters: {
+    type: "object",
+    properties: {
+      file_index: { type: "number", description: "Index du fichier uploadé (commence à 0)" }
+    },
+    required: ["file_index"]
+  },
+  async execute(params, context) {
+    const file = context.uploadedFiles?.[params.file_index];
+    if (!file) return { error: "Fichier non trouvé à l'index spécifié" };
+    try {
+      const { parseOffice } = await import("officeparser");
+      const text = await parseOffice(file.buffer);
+      const finalText = text?.slice(0, 10000) || "";
+      _saveFileVaultNote(file, finalText, context);
+      return { filename: file.originalname, text: finalText, truncated: (text?.length || 0) > 10000 };
+    } catch (error) {
+      return { error: `Erreur parsing OpenDocument: ${error.message}` };
+    }
+  }
+};
+
+const parse_text = {
+  name: "parse_text",
+  description: "Lit le contenu d'un fichier texte brut (.txt, .md) uploadé.",
+  parameters: {
+    type: "object",
+    properties: {
+      file_index: { type: "number", description: "Index du fichier uploadé (commence à 0)" }
+    },
+    required: ["file_index"]
+  },
+  async execute(params, context) {
+    const file = context.uploadedFiles?.[params.file_index];
+    if (!file) return { error: "Fichier non trouvé à l'index spécifié" };
+    try {
+      const text = file.buffer.toString("utf-8");
+      _saveFileVaultNote(file, text.slice(0, 4000), context);
+      return { filename: file.originalname, text: text.slice(0, 10000), truncated: text.length > 10000 };
+    } catch (error) {
+      return { error: `Erreur lecture fichier texte: ${error.message}` };
+    }
+  }
+};
+
+const parse_json = {
+  name: "parse_json",
+  description: "Parse et formate un fichier JSON uploadé pour l'analyse.",
+  parameters: {
+    type: "object",
+    properties: {
+      file_index: { type: "number", description: "Index du fichier uploadé (commence à 0)" }
+    },
+    required: ["file_index"]
+  },
+  async execute(params, context) {
+    const file = context.uploadedFiles?.[params.file_index];
+    if (!file) return { error: "Fichier non trouvé à l'index spécifié" };
+    try {
+      const text = file.buffer.toString("utf-8");
+      const parsed = JSON.parse(text);
+      const preview = JSON.stringify(parsed, null, 2);
+      _saveFileVaultNote(file, text.slice(0, 4000), context);
+      return { filename: file.originalname, data: parsed, preview: preview.slice(0, 8000), truncated: preview.length > 8000 };
+    } catch (error) {
+      return { error: `Erreur parsing JSON: ${error.message}` };
+    }
+  }
+};
+
+const parse_image = {
+  name: "parse_image",
+  description: "Analyse une image uploadée via un modèle IA vision : extrait le texte (OCR) et décrit le contenu visuellement. Nécessite un provider avec la capacité 'vision' activée.",
+  parameters: {
+    type: "object",
+    properties: {
+      file_index: { type: "number", description: "Index du fichier uploadé (commence à 0)" },
+      prompt: { type: "string", description: "Question spécifique sur l'image, ex: 'Extrais tout le texte visible' (optionnel)" }
+    },
+    required: ["file_index"]
+  },
+  async execute(params, context) {
+    const file = context.uploadedFiles?.[params.file_index];
+    if (!file) return { error: "Fichier non trouvé à l'index spécifié" };
+
+    // Reuse pre-classification result to avoid duplicate vision API call
+    if (file._extractedContent && !params.prompt) {
+      return {
+        filename: file.originalname,
+        description: file._extractedContent,
+        fromVaultNote: true,
+        classification: file._classification || undefined
+      };
+    }
+
+    if (!context.provider) return { error: "Provider IA non disponible dans ce contexte" };
+    if (!context.provider.hasCapability("vision")) {
+      return { error: "Le provider actuel ne supporte pas la vision. Activez la capacité 'vision' dans les paramètres du provider IA." };
+    }
+    try {
+      const base64 = file.buffer.toString("base64");
+      const description = await context.provider.vision({
+        base64,
+        mediaType: file.mimetype,
+        prompt: params.prompt || "Décris cette image en détail et extrais tout le texte visible (OCR)."
+      });
+      _saveFileVaultNote(file, description || "", context);
+      return { filename: file.originalname, description };
+    } catch (error) {
+      return { error: `Erreur analyse image: ${error.message}` };
+    }
+  }
+};
+
+const parse_audio = {
+  name: "parse_audio",
+  description: "Transcrit un fichier audio uploadé en texte via Whisper. Nécessite un provider avec la capacité 'audio' activée (OpenAI).",
+  parameters: {
+    type: "object",
+    properties: {
+      file_index: { type: "number", description: "Index du fichier uploadé (commence à 0)" }
+    },
+    required: ["file_index"]
+  },
+  async execute(params, context) {
+    const file = context.uploadedFiles?.[params.file_index];
+    if (!file) return { error: "Fichier non trouvé à l'index spécifié" };
+
+    // Reuse pre-classification result to avoid duplicate audio transcription API call
+    if (file._extractedContent) {
+      return {
+        filename: file.originalname,
+        transcription: file._extractedContent,
+        fromVaultNote: true,
+        classification: file._classification || undefined
+      };
+    }
+
+    if (!context.provider) return { error: "Provider IA non disponible dans ce contexte" };
+    if (!context.provider.hasCapability("audio")) {
+      return { error: "Le provider actuel ne supporte pas la transcription audio. Activez la capacité 'audio' dans les paramètres du provider IA (OpenAI uniquement)." };
+    }
+    try {
+      const transcription = await context.provider.audio({ buffer: file.buffer, mimeType: file.mimetype });
+      _saveFileVaultNote(file, transcription || "", context);
+      return { filename: file.originalname, transcription };
+    } catch (error) {
+      return { error: `Erreur transcription audio: ${error.message}` };
     }
   }
 };
@@ -2030,7 +2278,7 @@ const generate_report = {
 
 // ── Tool Domain Subsets (for sub-agents) ─────────────
 
-export const FILE_TOOLS = [parse_pdf, parse_csv, parse_excel, parse_word];
+export const FILE_TOOLS = [parse_pdf, parse_csv, parse_excel, parse_word, parse_powerpoint, parse_opendocument, parse_json, parse_text, parse_image, parse_audio];
 
 export const SELLSY_TOOLS = [
   // Read
@@ -2931,6 +3179,11 @@ export const ALL_TOOLS = [
   parse_csv,
   parse_excel,
   parse_word,
+  parse_powerpoint,
+  parse_opendocument,
+  parse_json,
+  parse_image,
+  parse_audio,
   // Report generation
   generate_report,
   // Reminders
@@ -3001,7 +3254,7 @@ export function getAvailableTools(context = {}, options = {}) {
 
   // File tools only if there are uploaded files
   if (includeFileTools && context.uploadedFiles?.length > 0) {
-    tools.push(parse_pdf, parse_csv, parse_excel, parse_word);
+    tools.push(parse_pdf, parse_csv, parse_excel, parse_word, parse_powerpoint, parse_opendocument, parse_json, parse_text, parse_image, parse_audio);
   }
 
   // Report generation — always available

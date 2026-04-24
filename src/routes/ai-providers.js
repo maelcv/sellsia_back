@@ -226,6 +226,11 @@ const providerSchema = z.object({
   model: z.string().optional(),
   baseUrl: z.string().url().optional(),
   host: z.string().url().optional(),
+  capabilities: z.object({
+    vision: z.boolean().optional(),
+    audio: z.boolean().optional(),
+    nativeDocuments: z.boolean().optional(),
+  }).optional(),
 });
 
 router.post("/default", requireAuth, requireRole("admin"), async (req, res) => {
@@ -253,30 +258,25 @@ router.post("/default", requireAuth, requireRole("admin"), async (req, res) => {
     }
 
     // Save to system settings
+    const providerJson = {
+      code: validated.code,
+      name: validated.name,
+      category: validated.category,
+      model: validated.model || null,
+      baseUrl: validated.baseUrl || null,
+      host: validated.host || null,
+      apiKeyEncrypted,
+      capabilities: validated.capabilities || null,
+      setAt: new Date().toISOString()
+    };
+
     await prisma.systemSetting.upsert({
       where: { key: "default_ai_provider" },
-      update: {
-        value: JSON.stringify({
-          code: validated.code,
-          name: validated.name,
-          category: validated.category,
-          model: validated.model || null,
-          baseUrl: validated.baseUrl || null,
-          host: validated.host || null,
-          apiKeyEncrypted,
-          setAt: new Date().toISOString()
-        })
-      },
+      update: { value: JSON.stringify(providerJson) },
       create: {
         key: "default_ai_provider",
         value: JSON.stringify({
-          code: validated.code,
-          name: validated.name,
-          category: validated.category,
-          model: validated.model || null,
-          baseUrl: validated.baseUrl || null,
-          host: validated.host || null,
-          apiKeyEncrypted,
+          ...providerJson,
           setAt: new Date().toISOString()
         })
       }

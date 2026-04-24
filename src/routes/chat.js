@@ -46,22 +46,49 @@ const router = express.Router();
 
 // ── Multer for file uploads (in-memory, max 10MB, up to 5 files) ──
 const ALLOWED_MIMETYPES = new Set([
+  // Documents textuels
   "application/pdf",
   "text/csv",
+  "text/plain",
+  "application/json",
+  // Excel
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  // Word
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/msword",
-  "text/plain"
+  // PowerPoint
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  // OpenDocument
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
+  // Images
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  // Audio
+  "audio/mpeg",
+  "audio/wav",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/webm",
+  "audio/aac",
+  "audio/x-wav",
 ]);
+
+const ALLOWED_EXTENSIONS = /\.(pdf|csv|xlsx?|docx?|txt|json|pptx?|odp|odt|ods|jpe?g|png|gif|webp|bmp|mp3|wav|ogg|m4a|webm|aac)$/i;
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 5 },
+  limits: { fileSize: 25 * 1024 * 1024, files: 5 },
   fileFilter: (_req, file, cb) => {
     // Les deux conditions doivent être vraies : MIME type ET extension (anti-spoofing)
     const mimeOk = ALLOWED_MIMETYPES.has(file.mimetype);
-    const extOk = /\.(pdf|csv|xlsx?|docx?|txt)$/i.test(file.originalname);
+    const extOk = ALLOWED_EXTENSIONS.test(file.originalname);
     if (mimeOk && extOk) {
       cb(null, true);
     } else {
@@ -830,6 +857,23 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
         })
       : Promise.resolve(null);
 
+    // Pre-classify media files (images/audio) in parallel with context building.
+    // This avoids duplicate AI calls: the agent reads _extractedContent from the file
+    // instead of calling parse_image/parse_audio (which would re-invoke the vision/audio API).
+    const userForClassifier = { id: userId, email: req.user?.email, name: req.user?.name };
+    const mediaTypes = ["image/", "audio/"];
+    const classifyPromises = uploadedFiles.map((file) => {
+      const isMedia = mediaTypes.some((t) => file.mimetype?.startsWith(t));
+      if (!isMedia) return Promise.resolve(null);
+      return classifyUploadedFile({
+        file, userId, workspaceId: req.workspaceId || null,
+        conversationId, agentId: effectiveRequestedAgentId || requestedAgentId, user: userForClassifier
+      }).catch((err) => {
+        console.warn("[chat/stream] media pre-classify failed:", err.message);
+        return null;
+      });
+    });
+
     const userMsgContent = uploadedFiles.length > 0
       ? `${message}\n\n[Fichiers joints: ${uploadedFiles.map((f) => f.originalname).join(", ")}]`
       : message;
@@ -837,13 +881,23 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     const historyForLLM = (await getConversationHistory(conversationId, 20)).slice(0, -1);
     const isFirstMessage = historyForLLM.length === 0;
 
-    const [sellsyData, knowledgeContext, toolBundle, pipelineData] = await Promise.all([
+    const [sellsyData, knowledgeContext, toolBundle, pipelineData, ...classifyResults] = await Promise.all([
       sellsyDataPromise,
       knowledgeContextPromise,
       toolBundlePromise,
-      pipelineDataPromise
+      pipelineDataPromise,
+      ...classifyPromises
     ]);
     const { toolContext, tools } = toolBundle;
+
+    // Attach pre-classification results to file objects so parse tools can reuse them
+    classifyResults.forEach((result, idx) => {
+      if (result) {
+        uploadedFiles[idx]._vaultPath = result.vaultPath;
+        uploadedFiles[idx]._extractedContent = result.extractedText || null;
+        uploadedFiles[idx]._classification = result.classification || null;
+      }
+    });
 
     // 3. Enrich pipeline data if directeur might be involved
     if (pipelineData && sellsyData?.data) {
@@ -1268,17 +1322,19 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     // These run asynchronously and NEVER block the SSE response.
 
     // 1. Classify uploaded files → vault note + KnowledgeDocument
-    // workspaceId is null for admins — classifyUploadedFile handles both modes
+    // Media files (images/audio) were already pre-classified synchronously before the agent ran.
+    // Skip those to avoid duplicate AI calls and double vault writes.
     if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "admin")) {
-      const userForClassifier = { id: userId, email: req.user?.email, name: req.user?.name };
+      const userForClassifier2 = { id: userId, email: req.user?.email, name: req.user?.name };
       for (const file of uploadedFiles) {
+        if (file._vaultPath) continue; // already classified pre-stream
         classifyUploadedFile({
           file,
           userId,
           workspaceId: req.workspaceId || null,
           conversationId,
           agentId: activeAgentId || agentId,
-          user: userForClassifier
+          user: userForClassifier2
         }).catch(err => console.warn("[chat/stream] file-classify failed:", err.message));
       }
     }

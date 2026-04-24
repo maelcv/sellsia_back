@@ -10,6 +10,40 @@ export class BaseLLMProvider {
   }
 
   /**
+   * Returns true if this provider instance has the given capability declared in its config.
+   * @param {"vision"|"audio"|"nativeDocuments"} cap
+   */
+  hasCapability(cap) {
+    // Primary: per-model capability assignments (capabilityModels.vision / .audio)
+    if (this.config?.capabilityModels) {
+      if (cap === "vision") return Boolean(this.config.capabilityModels.vision);
+      if (cap === "audio") return Boolean(this.config.capabilityModels.audio);
+    }
+    // Legacy: boolean flags from AIProviderSettings global default
+    return Boolean(this.config?.capabilities?.[cap]);
+  }
+
+  /**
+   * Analyze an image and return a textual description (OCR + description).
+   * Override in providers that support vision.
+   * @param {{ base64: string, mediaType: string, prompt?: string }} params
+   * @returns {Promise<string>}
+   */
+  async vision(_params) {
+    throw new Error(`vision() not implemented for provider: ${this.providerName}`);
+  }
+
+  /**
+   * Transcribe an audio file to text.
+   * Override in providers that support audio (OpenAI Whisper).
+   * @param {{ buffer: Buffer, mimeType: string }} params
+   * @returns {Promise<string>}
+   */
+  async audio(_params) {
+    throw new Error(`audio() not implemented for provider: ${this.providerName}`);
+  }
+
+  /**
    * Envoie un message au LLM et retourne la réponse complète.
    * @param {Object} params
    * @param {string} params.model - Modèle à utiliser

@@ -1,0 +1,8 @@
+id,userEmail,agentName,title,contextType,contextEntityId,messageCount,startedAt,updatedAt
+"12d12e46-ff93-4ae5-867e-51f625ed0f0b","mael.chebbi-vigneau@linctra.com","Administrateur","Est ce pertienent daller pecher a arcachon demain…","generic",,"2","2026-04-24T12:49:51.057Z","2026-04-24T12:49:55.328Z"
+"0d968196-f386-4a11-a6c4-5e78597cb87e","mael.chebbi-vigneau@linctra.com","Administrateur","Pêche Arcachon demain","generic",,"2","2026-04-24T12:31:04.306Z","2026-04-24T12:31:08.404Z"
+"9a9e4d0d-80ff-4ff8-80a5-508c8f44135d","thibault.lapart@linctra.com","Administrateur","Contrat confidentialité salariés Kiliogene","generic",,"4","2026-04-24T12:26:29.292Z","2026-04-24T12:27:41.352Z"
+"4f9b86f1-56b6-4b72-91fb-d1e2ef769179","thibault.lapart@linctra.com","Administrateur","GT Solutions Bassens","generic",,"4","2026-04-24T11:07:35.596Z","2026-04-24T11:08:42.972Z"
+"fd784926-0d9d-47b8-b1c8-a897bcadb9af","thibault.lapart@linctra.com","Administrateur","Pêche à Arcachon ce week-end","generic",,"8","2026-04-24T10:26:50.561Z","2026-04-24T10:29:05.182Z"
+"410ab12e-c31d-4455-b7ac-9ee96dba229a","thibault.lapart@linctra.com","Administrateur","Voilier en mer","generic",,"2","2026-04-24T10:26:18.783Z","2026-04-24T10:26:20.834Z"
+"4a5fb155-9710-4690-b2f6-9d8b41158ba6","mael.chebbi-vigneau@linctra.com","Administrateur","Pêche à Arcachon demain","generic",,"4","2026-04-24T09:13:20.840Z","2026-04-24T09:15:48.991Z"

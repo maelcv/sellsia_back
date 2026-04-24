@@ -139,6 +139,8 @@ function extractProviderConfigFromWorkspaceIntegrationRow(row) {
     models: normalizeModels(decrypted.models),
     baseUrl: decrypted.baseUrl || BASE_URLS[code] || undefined,
     host: decrypted.host || undefined,
+    capabilities: decrypted.capabilities || undefined,
+    capabilityModels: decrypted.capabilityModels || undefined,
   };
 }
 
@@ -149,9 +151,11 @@ function instantiateProviderFromConfig(providerConfig) {
 
   return new ProviderClass({
     apiKey: providerConfig.apiKey || "",
-    defaultModel: resolveDefaultModel(providerConfig.code, providerConfig),
+    defaultModel: providerConfig.capabilityModels?.llm || resolveDefaultModel(providerConfig.code, providerConfig),
     baseUrl: providerConfig.baseUrl || BASE_URLS[providerConfig.code] || undefined,
     host: providerConfig.host || undefined,
+    capabilities: providerConfig.capabilities || undefined,
+    capabilityModels: providerConfig.capabilityModels || undefined,
   });
 }
 
@@ -187,6 +191,8 @@ async function getSystemDefaultProviderConfig() {
     models: normalizeModels(parsed.models),
     baseUrl: parsed.baseUrl || BASE_URLS[code] || undefined,
     host: parsed.host || undefined,
+    capabilities: parsed.capabilities || undefined,
+    capabilityModels: parsed.capabilityModels || undefined,
   };
 }
 
@@ -281,9 +287,11 @@ function instantiateProvider(link) {
 
   return new ProviderClass({
     apiKey,
-    defaultModel: resolveDefaultModel(link.code, cfg),
+    defaultModel: cfg.capabilityModels?.llm || resolveDefaultModel(link.code, cfg),
     baseUrl: cfg.baseUrl || BASE_URLS[link.code] || undefined,
-    host: cfg.host || undefined
+    host: cfg.host || undefined,
+    capabilities: cfg.capabilities || undefined,
+    capabilityModels: cfg.capabilityModels || undefined,
   });
 }
 
