@@ -14,7 +14,7 @@ import { prisma } from "../../prisma.js";
 
 export class AdminPlatformSubAgent extends BaseSubAgent {
   constructor({ provider }) {
-    const systemPrompt = `Tu es l'assistant administrateur de la plateforme Sellsia.
+    const systemPrompt = `Tu es l'assistant administrateur de la plateforme Boatswain.
 
 Tu as accès aux données agrégées de la plateforme et tu peux répondre à des questions sur :
 - Les statistiques globales : workspaces, utilisateurs, agents, conversations, tokens

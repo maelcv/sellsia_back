@@ -23,7 +23,7 @@ export async function sendReminderViaEmail(reminder) {
   });
 
   const html = renderEmailTemplate({
-    title: "Rappel Sellsia",
+    title: "Rappel Boatswain",
     content: `
       <p>Bonjour,</p>
       <p>Voici votre rappel :</p>
@@ -37,8 +37,8 @@ export async function sendReminderViaEmail(reminder) {
   await sendEmail({
     userId: reminder.userId,
     to: reminder.targetEmail,
-    subject: `Rappel Sellsia: ${reminder.taskDescription.slice(0, 80)}`,
-    text: `Bonjour,\n\nVoici votre rappel :\n\n${reminder.taskDescription}\n\nPlanifié pour : ${scheduledTime}\n\n- Sellsia`,
+    subject: `Rappel Boatswain: ${reminder.taskDescription.slice(0, 80)}`,
+    text: `Bonjour,\n\nVoici votre rappel :\n\n${reminder.taskDescription}\n\nPlanifié pour : ${scheduledTime}\n\n- Boatswain`,
     html,
     reminderId: reminder.id,
   });

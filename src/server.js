@@ -22,13 +22,14 @@ import usageRoutes from "./routes/usage.js";
 import whatsappRoutes from "./routes/whatsapp.js";
 import remindersRoutes from "./routes/reminders.js";
 import invitationsRoutes from "./routes/invitations.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, toCanonicalRole, toLegacyRole } from "./middleware/auth.js";
 import { requireWorkspaceContext } from "./middleware/tenant.js";
 import workspacesRoutes from "./routes/workspaces.js";
 import setupRoutes from "./routes/setup.js";
 import userAccessRoutes from "./routes/user-access.js";
 import twoFactorRoutes from "./routes/two-factor.js";
 import emailRoutes from "./routes/email.js";
+import adminSystemEmailRoutes from "./routes/admin-system-email.js";
 import calendarRoutes from "./routes/calendar.js";
 import crmOperationsRoutes from "./routes/crm-operations.js";
 import documentsRoutes from "./routes/documents.js";
@@ -40,6 +41,7 @@ import clientOnboardingRoutes from "./routes/client-onboarding.js";
 import agentsManagementRoutes from "./routes/agents-management.js";
 import subAgentsRoutes from "./routes/sub-agents.js";
 import aiProvidersRoutes from "./routes/ai-providers.js";
+import workspaceRolesRoutes from "./routes/workspace-roles.js";
 import orgchartRoutes from "./routes/orgchart.js";
 import profileSecurityRoutes from "./routes/profile-security.js";
 import { startReminderWorker, stopReminderWorker } from "./services/reminders/reminder-service.js";
@@ -53,6 +55,7 @@ import marketReportsRoutes from "./routes/market-reports.js";
 import vaultRoutes from "./routes/vault.js";
 import automationsRoutes from "./routes/automations.js";
 import { startAutomationWorker, stopAutomationWorker } from "./workers/automation-worker.js";
+import { startWorkflowQueue, stopWorkflowQueue } from "./workers/workflow-queue.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -153,7 +156,7 @@ app.get("/api/health", async (_req, res) => {
   }
   const criticalServices = ["db"];
   const status = criticalServices.every((s) => services[s] === "ok") ? "ok" : "degraded";
-  res.status(status === "ok" ? 200 : 503).json({ status, service: "sellsia-dashboard-api", services });
+  res.status(status === "ok" ? 200 : 503).json({ status, service: "boatswain-dashboard-api", services });
 });
 
 app.use("/api/auth", authRoutes);
@@ -175,6 +178,7 @@ app.use("/api/workspaces", workspacesRoutes);
 app.use("/api/user-access", userAccessRoutes);
 app.use("/api/2fa", twoFactorRoutes);
 app.use("/api/email", emailRoutes);
+app.use("/api/admin/system-email", adminSystemEmailRoutes);
 app.use("/api/calendar", calendarRoutes);
 app.use("/api/crm", crmOperationsRoutes);
 app.use("/api/documents", documentsRoutes);
@@ -187,6 +191,7 @@ app.use("/api/onboarding", clientOnboardingRoutes);
 app.use("/api/agents-management", agentsManagementRoutes);
 app.use("/api/sub-agents", subAgentsRoutes);
 app.use("/api/ai-providers", aiProvidersRoutes);
+app.use("/api/workspace-roles", workspaceRolesRoutes);
 app.use("/api/onboarding/orgchart", orgchartRoutes);
 app.use("/api/profile", profileSecurityRoutes);
 app.use("/api/market-reports", marketReportsRoutes);
@@ -197,11 +202,17 @@ app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
   // Enrich with fields not in JWT (like twoFactorEnabled)
   const dbUser = await prisma.user.findUnique({
     where: { id: req.user.sub },
-    select: { twoFactorEnabled: true, workspaceId: true },
+    select: { twoFactorEnabled: true, workspaceId: true, role: true },
   });
+
+  const canonicalRole = toCanonicalRole(dbUser?.role || req.user?.roleCanonical || req.user?.role);
+  const legacyRole = toLegacyRole(canonicalRole);
+
   res.json({
     user: { 
-      ...req.user, 
+      ...req.user,
+      role: canonicalRole,
+      roleLegacy: legacyRole,
       twoFactorEnabled: dbUser?.twoFactorEnabled ?? false,
       workspaceId: dbUser?.workspaceId || null
     },
@@ -228,6 +239,7 @@ process.on("SIGTERM", async () => {
   stopReminderWorker();
   stopMarketReportsWorker();
   stopAutomationWorker();
+  await stopWorkflowQueue();
   await prisma.$disconnect();
   process.exit(0);
 });
@@ -255,7 +267,7 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`Sellsia dashboard API listening on http://localhost:${config.port}`);
+  console.log(`Boatswain dashboard API listening on http://localhost:${config.port}`);
   // Démarrer tous les workers après que le serveur est prêt
   startReminderWorker();
   startMarketReportsWorker(prisma).catch((err) =>
@@ -263,6 +275,9 @@ app.listen(config.port, () => {
   );
   startEnrichmentWorker();
   startImportWorker();
+  startWorkflowQueue().catch((err) =>
+    console.error("[Server] workflow queue failed to start:", err)
+  );
   startAutomationWorker().catch((err) =>
     console.error("[Server] automation worker failed to start:", err)
   );

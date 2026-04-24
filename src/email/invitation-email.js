@@ -16,7 +16,7 @@ function getGlobalTransporter() {
   const port = parseInt(process.env.SMTP_PORT || "587", 10);
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM || "noreply@sellsia.io";
+  const from = process.env.SMTP_FROM || "noreply@boatswain.io";
 
   if (!host || !user || !pass) {
     return null;
@@ -49,7 +49,7 @@ export async function sendInvitationEmail({ to, workspaceName, inviterName, invi
     throw new Error("Configuration SMTP non définie (SMTP_HOST, SMTP_USER, SMTP_PASS)");
   }
 
-  const frontendUrl = process.env.FRONTEND_URL || "https://app.sellsia.io";
+  const frontendUrl = process.env.FRONTEND_URL || "https://app.boatswain.io";
   const acceptLink = `${frontendUrl}/accept-invitation?token=${encodeURIComponent(invitationToken)}`;
   const expiresInDays = Math.ceil((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 
@@ -63,14 +63,14 @@ export async function sendInvitationEmail({ to, workspaceName, inviterName, invi
     text: `
 Bonjour,
 
-${escapedInviterName} vous invite à rejoindre l'espace de travail "${escapedWorkspaceName}" sur Sellsia.
+${escapedInviterName} vous invite à rejoindre l'espace de travail "${escapedWorkspaceName}" sur Boatswain.
 
 Cliquez sur ce lien pour accepter l'invitation :
 ${acceptLink}
 
 Cette invitation expirera dans ${expiresInDays} jours.
 
-— Sellsia
+— Boatswain
     `,
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
@@ -118,7 +118,7 @@ Cette invitation expirera dans ${expiresInDays} jours.
         </div>
 
         <div style="text-align: center; padding: 16px; color: #999; font-size: 12px;">
-          <p>© ${new Date().getFullYear()} Sellsia. Tous droits réservés.</p>
+          <p>© ${new Date().getFullYear()} Boatswain. Tous droits réservés.</p>
         </div>
       </div>
     `,

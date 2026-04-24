@@ -132,7 +132,7 @@ router.post("/test", async (req, res) => {
     userId:   req.user.sub,
     tenantId: req.workspaceId,
     to,
-    subject:  "Test de connexion Sellsia",
+    subject:  "Test de connexion Boatswain",
     html:     "<p>Si vous recevez cet email, votre configuration SMTP fonctionne ✅</p>",
   });
 

@@ -10,7 +10,7 @@ import crypto from "crypto";
 import { prisma } from "../../prisma.js";
 import { decryptSecret } from "../../security/secrets.js";
 
-const ENCRYPTION_KEY = process.env.SMTP_ENCRYPTION_KEY || "sellsia-default-32-byte-key------";
+const ENCRYPTION_KEY = process.env.SMTP_ENCRYPTION_KEY || "boatswain-default-32-byte-key------";
 const IV_LENGTH = 16;
 
 /**
@@ -65,30 +65,41 @@ export async function getTransporterForUser(userId) {
   }
 
   // 2. Config globale (sauvegardée lors du setup wizard)
+  let systemSmtpSetting = null;
   try {
-    const systemSmtpSetting = await prisma.systemSetting.findUnique({
+    systemSmtpSetting = await prisma.systemSetting.findUnique({
       where: { key: "system_smtp_config" }
     });
-
-    if (systemSmtpSetting && systemSmtpSetting.value) {
-      const globalConfig = JSON.parse(systemSmtpSetting.value);
-      const decryptedPass = decryptSecret(globalConfig.passEncrypted);
-
-      return {
-        transporter: nodemailer.createTransport({
-          host: globalConfig.host,
-          port: globalConfig.port,
-          secure: globalConfig.secure,
-          auth: { user: globalConfig.user, pass: decryptedPass },
-        }),
-        from: globalConfig.fromName
-          ? `"${globalConfig.fromName}" <${globalConfig.fromEmail}>`
-          : globalConfig.fromEmail,
-        configId: null,
-      };
-    }
   } catch (err) {
-    console.warn("[email-service] Failed to load global SMTP config:", err.message);
+    console.warn("[email-service] Failed to read system SMTP setting:", err.message);
+  }
+
+  if (systemSmtpSetting?.value) {
+    const globalConfig = JSON.parse(systemSmtpSetting.value);
+    let decryptedPass = null;
+    if (globalConfig.passEncrypted) {
+      try {
+        decryptedPass = decryptSecret(globalConfig.passEncrypted);
+      } catch {
+        throw new Error("SMTP password cannot be decrypted — please re-enter it in Platform Settings > Email");
+      }
+    }
+    if (!decryptedPass) {
+      throw new Error("SMTP password missing — configure it in Platform Settings > Email");
+    }
+
+    return {
+      transporter: nodemailer.createTransport({
+        host: globalConfig.host,
+        port: globalConfig.port,
+        secure: globalConfig.secure,
+        auth: { user: globalConfig.user, pass: decryptedPass },
+      }),
+      from: globalConfig.fromName
+        ? `"${globalConfig.fromName}" <${globalConfig.fromEmail}>`
+        : globalConfig.fromEmail,
+      configId: null,
+    };
   }
 
   // 3. Fallback variable d'environnement (SMTP_HOST, SMTP_PORT, etc.)
@@ -96,7 +107,7 @@ export async function getTransporterForUser(userId) {
   const port = parseInt(process.env.SMTP_PORT || "587");
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
-  const from = process.env.SMTP_FROM || `"Sellsia" <noreply@sellsia.ai>`;
+  const from = process.env.SMTP_FROM || `"Boatswain" <noreply@boatswain.ai>`;
 
   return {
     transporter: nodemailer.createTransport({
@@ -111,7 +122,7 @@ export async function getTransporterForUser(userId) {
 }
 
 /**
- * Génère un template HTML élégant pour les emails Sellsia.
+ * Génère un template HTML élégant pour les emails Boatswain.
  */
 export function renderEmailTemplate({ title, content, buttonLabel, buttonUrl }) {
   const brandColor = "#1DD3A7";
@@ -245,7 +256,7 @@ export function renderEmailTemplate({ title, content, buttonLabel, buttonUrl }) 
         <div class="container">
           <div class="accent-line"></div>
           <div class="header">
-            <div class="logo">Sellsia</div>
+            <div class="logo">Boatswain</div>
             <div class="badge">Intelligence Artificielle</div>
           </div>
           <div class="content">
@@ -258,8 +269,8 @@ export function renderEmailTemplate({ title, content, buttonLabel, buttonUrl }) 
             ` : ""}
           </div>
           <div class="footer">
-            <p class="footer-text">© ${new Date().getFullYear()} Sellsia AI Platform. Excellence en relation client.</p>
-            <p class="footer-text">Cet email a été généré par l'infrastructure sécurisée de Sellsia.</p>
+            <p class="footer-text">© ${new Date().getFullYear()} Boatswain AI Platform. Excellence en relation client.</p>
+            <p class="footer-text">Cet email a été généré par l'infrastructure sécurisée de Boatswain.</p>
           </div>
         </div>
       </div>

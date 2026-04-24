@@ -8,6 +8,7 @@ Ce dossier contiens les sous dossiers des préférences utilisateur. Chaque doss
 
 ### Liste des utilisateurs
 - [[Global/Users/1|User#1]]
+- [[Global/Users/2|User#2]]
 
 
 ## Prompt

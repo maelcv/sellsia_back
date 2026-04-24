@@ -1,59 +1,109 @@
 /**
  * Automation Engine — Moteur d'exécution des automations.
  *
- * Fonctions clés :
- *  - resolveTemplate(str, context) → remplace {{...}} par valeurs réelles
- *  - executeStep(step, runContext) → exécute une étape selon son type
- *  - runAutomation(automationId, triggerData, triggeredBy) → crée un run + exécute
+ * Deux modes d'exécution :
+ *  1. DAG (nouveau) — lit `definitionJson` : { nodes, edges }
+ *     Utilisé par les workflows créés via le Visual Builder.
+ *  2. Legacy (séquentiel) — lit `steps[]`
+ *     Utilisé par les automations créées avant le Visual Builder.
+ *
+ * Point d'entrée unique : runAutomation(automationId, triggerData, triggeredBy)
+ *   → route automatiquement vers runAutomationFromDag ou runAutomationLegacy
+ *
+ * Résolution de variables :
+ *  - {{trigger.data}}              → payload du trigger
+ *  - {{trigger.data.field}}        → champ du payload
+ *  - {{node_XYZ.output}}           → output complet d'un nœud (DAG)
+ *  - {{node_XYZ.output.field}}     → champ d'un output (DAG)
+ *  - {{step_{id}.output}}          → output d'une étape (legacy)
+ *  - {{now}} / {{date}} / {{workspaceId}}
  *
  * Concurrence : max 3 runs simultanés par workspace.
  */
 
-import { prisma } from "../../prisma.js";
-import { logger } from "../../lib/logger.js";
+import { prisma }  from "../../prisma.js";
+import { logger }  from "../../lib/logger.js";
+import { getBrick } from "../../bricks/registry.js";
 
 const MAX_CONCURRENT_PER_WORKSPACE = 3;
 const runningByWorkspace = new Map(); // workspaceId → count
+
+function parseTriggeredByUserId(triggeredBy) {
+  const raw = String(triggeredBy || "");
+  const match = raw.match(/user:(\d+)/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+async function resolveExecutionIdentity(automation, triggeredBy) {
+  const triggeredByUserId = parseTriggeredByUserId(triggeredBy);
+  const userId = triggeredByUserId || automation.ownerId || null;
+
+  if (!userId) {
+    return { userId: null, userRole: null };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true },
+  });
+
+  return {
+    userId,
+    userRole: user?.role || null,
+  };
+}
 
 // ─── Template resolver ────────────────────────────────────────────
 
 /**
  * Remplace {{variable}} dans une chaîne avec les valeurs de context.
- * Supporte :
- *   {{trigger.data}}          → JSON.stringify(context.trigger)
- *   {{step_{id}.output}}      → JSON.stringify(context.steps[id].output)
- *   {{now}}                   → ISO timestamp
- *   {{date}}                  → date YYYY-MM-DD
- *   {{workspaceId}}           → context.workspaceId
- *
- * Pas d'eval — résolution par dictionnaire simple.
  */
 export function resolveTemplate(str, context) {
   if (typeof str !== "string") return str;
   return str.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
     const k = key.trim();
 
-    if (k === "now") return new Date().toISOString();
-    if (k === "date") return new Date().toISOString().slice(0, 10);
+    if (k === "now")         return new Date().toISOString();
+    if (k === "date")        return new Date().toISOString().slice(0, 10);
     if (k === "workspaceId") return context.workspaceId || "";
 
+    // trigger.data or trigger.data.field
     if (k === "trigger.data" || k === "trigger") {
       return JSON.stringify(context.trigger ?? {});
     }
+    const triggerFieldMatch = k.match(/^trigger\.data\.(.+)$/);
+    if (triggerFieldMatch) {
+      const path = triggerFieldMatch[1].split(".");
+      let val = context.trigger;
+      for (const seg of path) val = val?.[seg];
+      return val === undefined ? "" : String(val);
+    }
 
-    // step_{id}.output
+    // DAG: node_XYZ.output or node_XYZ.output.field
+    const nodeMatch = k.match(/^node_(.+?)\.output(.*)$/);
+    if (nodeMatch) {
+      const [, nodeId, rest] = nodeMatch;
+      const nodeOutput = context.nodes?.[nodeId]?.output;
+      if (nodeOutput === undefined) return "";
+      if (!rest) return JSON.stringify(nodeOutput);
+      const path = rest.replace(/^\./, "").split(".");
+      let val = nodeOutput;
+      for (const seg of path) val = val?.[seg];
+      return val === undefined ? "" : String(val);
+    }
+
+    // Legacy: step_{id}.output or step_{id}.output.field
     const stepMatch = k.match(/^step_(.+?)\.output(.*)$/);
     if (stepMatch) {
       const [, stepId, rest] = stepMatch;
       const stepOutput = context.steps?.[stepId]?.output;
       if (stepOutput === undefined) return "";
       if (!rest) return JSON.stringify(stepOutput);
-      // Support basic dot-path: .field or .field.subfield
       const path = rest.replace(/^\./, "").split(".");
       let val = stepOutput;
-      for (const seg of path) {
-        val = val?.[seg];
-      }
+      for (const seg of path) val = val?.[seg];
       return val === undefined ? "" : String(val);
     }
 
@@ -61,12 +111,9 @@ export function resolveTemplate(str, context) {
   });
 }
 
-/**
- * Résout récursivement tous les templates dans un objet config.
- */
 function resolveConfig(config, context) {
   if (typeof config === "string") return resolveTemplate(config, context);
-  if (Array.isArray(config)) return config.map((v) => resolveConfig(v, context));
+  if (Array.isArray(config))       return config.map((v) => resolveConfig(v, context));
   if (config && typeof config === "object") {
     const out = {};
     for (const [k, v] of Object.entries(config)) {
@@ -77,161 +124,269 @@ function resolveConfig(config, context) {
   return config;
 }
 
-// ─── Step executors ───────────────────────────────────────────────
-
-async function executeStepAgent(config, context) {
-  const { agentId, prompt } = resolveConfig(config, context);
-  if (!agentId) throw new Error("agentId requis pour l'étape agent");
-
-  const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { name: true } });
-  if (!agent) throw new Error(`Agent ${agentId} introuvable`);
-
-  // Placeholder — dans un vrai run, on appellerait orchestratorService ou directement LLM
-  return { agentId, prompt, result: `[Agent ${agent.name} exécuté avec: ${prompt}]` };
-}
-
-async function executeStepTool(config, context) {
-  const { toolName, params } = resolveConfig(config, context);
-  // Import dynamique du registry tools pour éviter la dépendance circulaire
-  const { ALL_TOOLS } = await import("../../tools/mcp/tools.js");
-  const tool = ALL_TOOLS.find((t) => t.name === toolName);
-  if (!tool) throw new Error(`Outil inconnu: ${toolName}`);
-
-  return tool.execute(params || {}, {
-    tenantId: context.workspaceId,
-    isAdmin: false,
-  });
-}
-
-async function executeStepHttpRequest(config, context) {
-  const { url, method = "POST", headers = {}, body } = resolveConfig(config, context);
-  if (!url) throw new Error("url requis pour http_request");
-
-  const res = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json", ...headers },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  const data = await res.json().catch(() => ({ status: res.status }));
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(data)}`);
-  return data;
-}
-
-async function executeStepSendEmail(config, context) {
-  const { to, subject, body } = resolveConfig(config, context);
-  const { sendEmail } = await import("../email/email-service.js");
-  await sendEmail({ to, subject, html: body });
-  return { sent: true, to, subject };
-}
-
-async function executeStepVaultWrite(config, context) {
-  const { path: notePath, content } = resolveConfig(config, context);
-  const { writeNote } = await import("../vault/vault-service.js");
-  return writeNote(context.workspaceId, notePath, content);
-}
-
-async function executeStepCondition(config, context) {
-  const { expression } = resolveConfig(config, context);
-  // Évaluation sécurisée : on supporte uniquement des comparaisons simples
-  // ex: "42 > 10", "hello == hello", "3 != 5"
-  const result = evalSimpleExpression(expression);
-  return { result, expression };
-}
+// ─── DAG Executor ─────────────────────────────────────────────────
 
 /**
- * Évalue une expression simple de comparaison (sans eval()).
- * Supporte : ==, !=, >, <, >=, <=
+ * Exécute un nœud via son brick.
+ * Retourne { output, error, durationMs }
  */
-function evalSimpleExpression(expr) {
-  if (typeof expr !== "string") return Boolean(expr);
-  const ops = [">=", "<=", "!=", "==", ">", "<"];
-  for (const op of ops) {
-    const idx = expr.indexOf(op);
-    if (idx === -1) continue;
-    const left = expr.slice(0, idx).trim();
-    const right = expr.slice(idx + op.length).trim();
-    const l = isNaN(Number(left)) ? left : Number(left);
-    const r = isNaN(Number(right)) ? right : Number(right);
-    switch (op) {
-      case "==": return l == r;
-      case "!=": return l != r;
-      case ">":  return l > r;
-      case "<":  return l < r;
-      case ">=": return l >= r;
-      case "<=": return l <= r;
-    }
-  }
-  // Si expression non reconnue, retourner vrai si non vide
-  return Boolean(expr && expr !== "false" && expr !== "0");
-}
-
-// ─── Step dispatcher ─────────────────────────────────────────────
-
-export async function executeStep(step, runContext) {
+async function executeNode(node, runContext) {
   const start = Date.now();
+  const brick = getBrick(node.brickId);
+
+  if (!brick) {
+    return {
+      output: null,
+      error:  `Brique inconnue: ${node.brickId}`,
+      durationMs: Date.now() - start,
+    };
+  }
+
   try {
-    let output;
-    switch (step.type) {
-      case "agent":        output = await executeStepAgent(step.config, runContext); break;
-      case "tool":         output = await executeStepTool(step.config, runContext); break;
-      case "http_request": output = await executeStepHttpRequest(step.config, runContext); break;
-      case "send_email":   output = await executeStepSendEmail(step.config, runContext); break;
-      case "vault_write":  output = await executeStepVaultWrite(step.config, runContext); break;
-      case "condition":    output = await executeStepCondition(step.config, runContext); break;
-      default: throw new Error(`Type d'étape inconnu: ${step.type}`);
-    }
+    const resolvedInputs = resolveConfig(node.config || {}, runContext);
+
+    const context = {
+      workspaceId: runContext.workspaceId,
+      userId:      runContext.userId || null,
+      runId:       runContext.runId  || null,
+    };
+
+    const output = await brick.execute(resolvedInputs, context);
     return { output, error: null, durationMs: Date.now() - start };
   } catch (err) {
     return { output: null, error: err.message, durationMs: Date.now() - start };
   }
 }
 
-// ─── Run automation ───────────────────────────────────────────────
-
-export async function runAutomation(automationId, triggerData = {}, triggeredBy = "manual") {
-  const automation = await prisma.automation.findUnique({
-    where: { id: automationId },
-  });
-
-  if (!automation) throw new Error(`Automation ${automationId} introuvable`);
-  if (!automation.isActive) throw new Error("Automation désactivée");
-
+/**
+ * Moteur DAG — parse definitionJson et exécute les nœuds.
+ */
+async function runAutomationFromDag(automation, triggerData, triggeredBy) {
   const workspaceId = automation.workspaceId;
-
-  // Vérifier la concurrence
-  const current = runningByWorkspace.get(workspaceId) || 0;
-  if (current >= MAX_CONCURRENT_PER_WORKSPACE) {
-    throw new Error(`Trop de runs simultanés pour ce workspace (max ${MAX_CONCURRENT_PER_WORKSPACE})`);
-  }
-  runningByWorkspace.set(workspaceId, current + 1);
+  const executionIdentity = await resolveExecutionIdentity(automation, triggeredBy);
 
   // Créer le run
   const run = await prisma.automationRun.create({
     data: {
-      automationId,
-      status: "running",
+      automationId: automation.id,
+      status:       "running",
       triggeredBy,
-      inputData: JSON.stringify(triggerData),
+      inputData:    JSON.stringify(triggerData),
     },
   });
 
   // Contexte d'exécution
   const runContext = {
     workspaceId,
+    userId:  executionIdentity.userId,
+    userRole: executionIdentity.userRole,
+    runId:   run.id,
+    trigger: triggerData,
+    nodes:   {}, // nodeId → { output }
+  };
+
+  const stepsLog    = [];
+  let finalStatus   = "success";
+  let finalError    = null;
+
+  try {
+    const { nodes, edges } = JSON.parse(automation.definitionJson);
+
+    if (!Array.isArray(nodes) || !nodes.length) {
+      throw new Error("Workflow vide : aucun nœud défini");
+    }
+
+    // Construire la map nœuds + adjacency list (source → [target])
+    const nodeMap  = Object.fromEntries(nodes.map((n) => [n.id, n]));
+    const children = {}; // nodeId → [childId]
+    const parents  = {}; // nodeId → [parentId]
+    for (const node of nodes) {
+      children[node.id] = [];
+      parents[node.id]  = [];
+    }
+    for (const edge of (edges || [])) {
+      (children[edge.source] ||= []).push(edge.target);
+      (parents[edge.target]  ||= []).push(edge.source);
+
+      // Gérer les edges avec handle (true/false pour condition)
+      if (edge.sourceHandle === "true"  && nodeMap[edge.source]) {
+        nodeMap[edge.source]._trueTarget  = edge.target;
+      }
+      if (edge.sourceHandle === "false" && nodeMap[edge.source]) {
+        nodeMap[edge.source]._falseTarget = edge.target;
+      }
+    }
+
+    // Trouver le nœud de départ (trigger = pas de parents)
+    const startNodes = nodes.filter((n) => (parents[n.id] || []).length === 0);
+    if (!startNodes.length) {
+      throw new Error("Aucun nœud de départ (trigger) trouvé");
+    }
+
+    // Exécution séquentielle avec BFS depuis le(s) trigger(s)
+    const queue      = [...startNodes.map((n) => n.id)];
+    const visited    = new Set();
+    const completed  = new Set();
+
+    while (queue.length) {
+      const nodeId = queue.shift();
+      if (visited.has(nodeId) || !nodeMap[nodeId]) continue;
+
+      // Attendre que tous les parents soient complétés (join pour branches parallèles)
+      const nodeParents = parents[nodeId] || [];
+      if (!nodeParents.every((p) => completed.has(p))) {
+        queue.push(nodeId); // Remettre en attente
+        continue;
+      }
+
+      visited.add(nodeId);
+      const node = nodeMap[nodeId];
+
+      logger.info("[automation-engine] Executing node", {
+        automationId: automation.id,
+        runId:        run.id,
+        nodeId,
+        brickId:      node.brickId,
+      });
+
+      const result = await executeNode(node, runContext);
+
+      stepsLog.push({
+        stepId:     nodeId,
+        type:       node.brickId,
+        name:       node.name || nodeId,
+        status:     result.error ? "error" : "success",
+        output:     result.output,
+        error:      result.error,
+        durationMs: result.durationMs,
+      });
+
+      runContext.nodes[nodeId] = { output: result.output };
+      completed.add(nodeId);
+
+      if (result.error) {
+        const onError = node.onError || "stop";
+        if (onError === "stop") {
+          finalStatus = "error";
+          finalError  = `Node '${node.name || nodeId}' failed: ${result.error}`;
+          break;
+        }
+        // "continue" → on ajoute quand même les enfants
+      }
+
+      // Naviguer vers les enfants
+      if (node.brickId === "logic:condition" && result.output) {
+        const nextId = result.output.result
+          ? node._trueTarget
+          : node._falseTarget;
+        if (nextId) queue.push(nextId);
+      } else {
+        for (const childId of (children[nodeId] || [])) {
+          queue.push(childId);
+        }
+      }
+    }
+  } catch (err) {
+    finalStatus = "error";
+    finalError  = err.message;
+    logger.error("[automation-engine] DAG run failed", err, {
+      automationId: automation.id,
+      runId:        run.id,
+    });
+  } finally {
+    runningByWorkspace.set(
+      workspaceId,
+      Math.max(0, (runningByWorkspace.get(workspaceId) || 1) - 1)
+    );
+  }
+
+  return finalizeRun(run.id, automation.id, finalStatus, finalError, stepsLog);
+}
+
+// ─── Legacy Executor ──────────────────────────────────────────────
+
+async function executeStepLegacy(step, runContext) {
+  const start = Date.now();
+  try {
+    let output;
+
+    // Mapper les anciens types vers les briques
+    const brickId = {
+      http_request: "action:http_request",
+      send_email:   "action:send_email",
+      vault_write:  "action:vault_write",
+      condition:    "logic:condition",
+    }[step.type];
+
+    if (brickId) {
+      const brick = getBrick(brickId);
+      if (brick) {
+        const resolvedConfig = resolveConfig(step.config || {}, runContext);
+        output = await brick.execute(resolvedConfig, {
+          workspaceId: runContext.workspaceId,
+          userId:      runContext.userId || null,
+          userRole:    runContext.userRole || null,
+          runId:       null,
+        });
+      } else {
+        throw new Error(`Brique introuvable pour type legacy: ${step.type}`);
+      }
+    } else if (step.type === "agent") {
+      output = await executeStepAgentLegacy(step.config, runContext);
+    } else if (step.type === "tool") {
+      output = await executeStepToolLegacy(step.config, runContext);
+    } else {
+      throw new Error(`Type d'étape inconnu: ${step.type}`);
+    }
+
+    return { output, error: null, durationMs: Date.now() - start };
+  } catch (err) {
+    return { output: null, error: err.message, durationMs: Date.now() - start };
+  }
+}
+
+async function executeStepAgentLegacy(config, context) {
+  const { agentId, prompt } = resolveConfig(config, context);
+  if (!agentId) throw new Error("agentId requis pour l'étape agent");
+  const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { name: true } });
+  if (!agent) throw new Error(`Agent ${agentId} introuvable`);
+  return { agentId, prompt, result: `[Agent ${agent.name} exécuté avec: ${prompt}]` };
+}
+
+async function executeStepToolLegacy(config, context) {
+  const { toolName, params } = resolveConfig(config, context);
+  const { ALL_TOOLS } = await import("../../tools/mcp/tools.js");
+  const tool = ALL_TOOLS.find((t) => t.name === toolName);
+  if (!tool) throw new Error(`Outil inconnu: ${toolName}`);
+  return tool.execute(params || {}, { tenantId: context.workspaceId, isAdmin: false });
+}
+
+async function runAutomationLegacy(automation, triggerData, triggeredBy) {
+  const workspaceId = automation.workspaceId;
+  const executionIdentity = await resolveExecutionIdentity(automation, triggeredBy);
+
+  const run = await prisma.automationRun.create({
+    data: {
+      automationId: automation.id,
+      status:       "running",
+      triggeredBy,
+      inputData:    JSON.stringify(triggerData),
+    },
+  });
+
+  const runContext = {
+    workspaceId,
+    userId: executionIdentity.userId,
+    userRole: executionIdentity.userRole,
     trigger: triggerData,
     steps: {},
   };
-
-  const stepsLog = [];
-  let steps;
-  let finalStatus = "success";
-  let finalError = null;
+  const stepsLog   = [];
+  let finalStatus  = "success";
+  let finalError   = null;
 
   try {
-    steps = JSON.parse(automation.steps || "[]");
-
-    // Exécution séquentielle avec support conditions
+    const steps   = JSON.parse(automation.steps || "[]");
     let currentStepId = steps[0]?.id || null;
     const stepMap = Object.fromEntries(steps.map((s) => [s.id, s]));
 
@@ -239,43 +394,33 @@ export async function runAutomation(automationId, triggerData = {}, triggeredBy 
       const step = stepMap[currentStepId];
       if (!step) break;
 
-      logger.info("[automation-engine] Executing step", {
-        automationId,
-        runId: run.id,
-        stepId: step.id,
-        type: step.type,
-      });
-
-      const result = await executeStep(step, runContext);
+      const result = await executeStepLegacy(step, runContext);
 
       stepsLog.push({
-        stepId: step.id,
-        type: step.type,
-        name: step.name,
-        status: result.error ? "error" : "success",
-        output: result.output,
-        error: result.error,
+        stepId:     step.id,
+        type:       step.type,
+        name:       step.name,
+        status:     result.error ? "error" : "success",
+        output:     result.output,
+        error:      result.error,
         durationMs: result.durationMs,
       });
 
-      // Stocker la sortie pour les templates
       runContext.steps[step.id] = { output: result.output };
 
       if (result.error) {
         const onError = step.onError || "stop";
         if (onError === "stop") {
           finalStatus = "error";
-          finalError = `Step '${step.name}' failed: ${result.error}`;
+          finalError  = `Step '${step.name}' failed: ${result.error}`;
           break;
         }
-        // "continue" → on passe à nextStepId quand même
         if (typeof onError === "string" && onError !== "continue") {
-          currentStepId = onError; // goto error handler step
+          currentStepId = onError;
           continue;
         }
       }
 
-      // Navigation selon type condition
       if (step.type === "condition") {
         currentStepId = result.output?.result ? step.thenStepId : step.elseStepId;
       } else {
@@ -284,31 +429,61 @@ export async function runAutomation(automationId, triggerData = {}, triggeredBy 
     }
   } catch (err) {
     finalStatus = "error";
-    finalError = err.message;
-    logger.error("[automation-engine] Run failed", err, { automationId, runId: run.id });
+    finalError  = err.message;
   } finally {
-    runningByWorkspace.set(workspaceId, Math.max(0, (runningByWorkspace.get(workspaceId) || 1) - 1));
+    runningByWorkspace.set(
+      workspaceId,
+      Math.max(0, (runningByWorkspace.get(workspaceId) || 1) - 1)
+    );
   }
 
-  // Mettre à jour le run
+  return finalizeRun(run.id, automation.id, finalStatus, finalError, stepsLog);
+}
+
+// ─── Finalize run ─────────────────────────────────────────────────
+
+async function finalizeRun(runId, automationId, status, error, stepsLog) {
   const finishedRun = await prisma.automationRun.update({
-    where: { id: run.id },
+    where: { id: runId },
     data: {
-      status: finalStatus,
-      stepsLog: JSON.stringify(stepsLog),
-      error: finalError,
+      status,
+      stepsLog:   JSON.stringify(stepsLog),
+      error,
       finishedAt: new Date(),
     },
   });
 
-  // Mettre à jour l'automation
   await prisma.automation.update({
     where: { id: automationId },
     data: {
-      lastRunAt: new Date(),
-      lastRunStatus: finalStatus,
+      lastRunAt:     new Date(),
+      lastRunStatus: status,
     },
   });
 
   return finishedRun;
 }
+
+// ─── Point d'entrée public ────────────────────────────────────────
+
+export async function runAutomation(automationId, triggerData = {}, triggeredBy = "manual") {
+  const automation = await prisma.automation.findUnique({ where: { id: automationId } });
+
+  if (!automation)          throw new Error(`Automation ${automationId} introuvable`);
+  if (!automation.isActive) throw new Error("Automation désactivée");
+
+  const workspaceId = automation.workspaceId;
+  const current     = runningByWorkspace.get(workspaceId) || 0;
+
+  if (current >= MAX_CONCURRENT_PER_WORKSPACE) {
+    throw new Error(`Trop de runs simultanés pour ce workspace (max ${MAX_CONCURRENT_PER_WORKSPACE})`);
+  }
+  runningByWorkspace.set(workspaceId, current + 1);
+
+  // Routage : DAG si definitionJson présent, sinon legacy
+  if (automation.definitionJson) {
+    return runAutomationFromDag(automation, triggerData, triggeredBy);
+  }
+  return runAutomationLegacy(automation, triggerData, triggeredBy);
+}
+

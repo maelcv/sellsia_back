@@ -27,7 +27,7 @@ router.post("/setup", async (req, res) => {
   }
 
   const secret = generateSecret();
-  const otpauth = generateURI({ label: user.email, issuer: "Sellsia", secret });
+  const otpauth = generateURI({ label: user.email, issuer: "Boatswain", secret });
 
   // Stocker le secret temporairement (pas encore enabled)
   await prisma.user.update({
@@ -193,14 +193,14 @@ router.post("/request-email-code", async (req, res) => {
       userId: user.id,
       workspaceId: user.workspaceId,
       to: user.email,
-      subject: `[Sellsia] Votre code de vérification : ${code}`,
+      subject: `[Boatswain] Votre code de vérification : ${code}`,
       html,
     });
 
     return res.json({ success: true, message: "Code envoyé par email" });
   } catch (err) {
     console.error("[2FA] Email failed:", err);
-    return res.status(500).json({ error: "Échec de l'envoi de l'email" });
+    return res.status(500).json({ error: `Échec de l'envoi de l'email: ${err.message}` });
   }
 });
 

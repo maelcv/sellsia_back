@@ -18,7 +18,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
 import { config } from "../config.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, isPlatformAdminRole } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { encryptSecret, decryptSecret } from "../security/secrets.js";
 import { validateWhatsappSignature } from "../middleware/whatsapp-signature.js";
@@ -47,6 +47,39 @@ function normalizePhone(phone) {
   return phone.replace(/^whatsapp:/i, "").replace(/^\+/, "").trim();
 }
 
+async function resolveAssignedAgentForAccount({ routingMode, assignedAgentId, accountUserId }) {
+  if (routingMode !== "agent") return null;
+
+  if (!assignedAgentId) {
+    throw new Error("assignedAgentId is required when routingMode is 'agent'");
+  }
+
+  const owner = await prisma.user.findUnique({
+    where: { id: accountUserId },
+    select: { workspaceId: true },
+  });
+
+  const allowedWorkspaceFilters = [{ workspaceId: null }];
+  if (owner?.workspaceId) {
+    allowedWorkspaceFilters.push({ workspaceId: owner.workspaceId });
+  }
+
+  const agent = await prisma.agent.findFirst({
+    where: {
+      id: assignedAgentId,
+      isActive: true,
+      OR: allowedWorkspaceFilters,
+    },
+    select: { id: true },
+  });
+
+  if (!agent) {
+    throw new Error("Assigned agent is invalid or not accessible in this workspace");
+  }
+
+  return agent.id;
+}
+
 // ── Schemas ──
 
 const accountSchema = z.object({
@@ -55,7 +88,9 @@ const accountSchema = z.object({
   phoneNumber: z.string().min(6).max(20),
   displayName: z.string().max(128).optional(),
   appSecret: z.string().min(10).max(256),
-  provider: z.enum(["meta", "twilio"]).optional().default("meta")
+  provider: z.enum(["meta", "twilio"]).optional().default("meta"),
+  routingMode: z.enum(["orchestrator", "agent"]).optional().default("orchestrator"),
+  assignedAgentId: z.string().optional()
 });
 
 const sendSchema = z.object({
@@ -317,23 +352,57 @@ async function processIncomingMessage(event) {
   const provider = await getProviderForUser(userId);
   if (!provider) {
     await sendWhatsAppReply(account, from,
-      "Aucun fournisseur IA configure. Connectez un service IA dans votre dashboard Sellsia.");
+      "Aucun fournisseur IA configure. Connectez un service IA dans votre dashboard Boatswain.");
     return;
   }
 
-  // Get allowed agents
-  const agentRows = await prisma.$queryRaw`
-    SELECT a.id FROM user_agent_access uaa
-    JOIN agents a ON a.id = uaa.agent_id
-    WHERE uaa.user_id = ${userId} AND uaa.status = 'granted' AND a.is_active = true`;
+  let requestedAgentId = null;
+  if (account.routingMode === "agent" && account.assignedAgentId) {
+    const workspaceFilters = [{ workspaceId: null }];
+    if (tenantId) {
+      workspaceFilters.push({ workspaceId: tenantId });
+    }
 
-  if (agentRows.length === 0) {
+    const assignedAgent = await prisma.agent.findFirst({
+      where: {
+        id: account.assignedAgentId,
+        isActive: true,
+        OR: workspaceFilters,
+      },
+      select: { id: true },
+    });
+
+    if (assignedAgent?.id) {
+      requestedAgentId = assignedAgent.id;
+    } else {
+      console.warn(`[WhatsApp] Assigned agent ${account.assignedAgentId} is not available, fallback to orchestrator`);
+    }
+  }
+
+  let resolvedAllowedIds = new Set();
+
+  if (requestedAgentId) {
+    resolvedAllowedIds.add(requestedAgentId);
+  } else {
+    const agentRows = await prisma.$queryRaw`
+      SELECT a.id FROM user_agent_access uaa
+      JOIN agents a ON a.id = uaa.agent_id
+      WHERE uaa.user_id = ${userId} AND uaa.status = 'granted' AND a.is_active = true`;
+
+    if (agentRows.length === 0) {
+      await sendWhatsAppReply(account, from,
+        "Aucun agent IA active. Activez un agent depuis le dashboard Boatswain.");
+      return;
+    }
+
+    resolvedAllowedIds = new Set(agentRows.map((row) => row.id).filter(Boolean));
+  }
+
+  if (resolvedAllowedIds.size === 0) {
     await sendWhatsAppReply(account, from,
-      "Aucun agent IA active. Activez un agent depuis le dashboard Sellsia.");
+      "Aucun agent IA disponible pour ce numéro WhatsApp.");
     return;
   }
-
-  const allowedIds = new Set(agentRows.map((r) => r.id));
 
   try {
     // Enrich context (no page context for WhatsApp)
@@ -366,11 +435,11 @@ async function processIncomingMessage(event) {
         pageContext: {},
         sellsyData,
         conversationHistory,
-        userRole: "client",
+        userRole,
         clientId: userId,
         conversationId,
-        allowedAgents: allowedIds,
-        requestedAgentId: null,
+        allowedAgents: resolvedAllowedIds,
+        requestedAgentId,
         tools,
         toolContext,
         knowledgeContext,
@@ -731,7 +800,7 @@ router.post("/send-template", requireAuth, requireWorkspaceContext, async (req, 
 
 router.get("/accounts", requireAuth, async (req, res) => {
   const userId = req.user.sub;
-  const isAdmin = req.user.role === "admin";
+  const isAdmin = isPlatformAdminRole(req.user?.roleCanonical || req.user?.role);
 
   const rows = await prisma.whatsappAccount.findMany({
     where: isAdmin ? {} : { userId },
@@ -745,6 +814,8 @@ router.get("/accounts", requireAuth, async (req, res) => {
     phoneNumber: row.phoneNumber,
     displayName: row.displayName,
     provider: row.provider,
+    routingMode: row.routingMode,
+    assignedAgentId: row.assignedAgentId,
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
@@ -763,8 +834,28 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
     return res.status(400).json({ error: "Invalid account payload" });
   }
 
-  const { businessPhoneNumberId, accessToken, phoneNumber, displayName, appSecret, provider } = parse.data;
+  const {
+    businessPhoneNumberId,
+    accessToken,
+    phoneNumber,
+    displayName,
+    appSecret,
+    provider,
+    routingMode,
+    assignedAgentId,
+  } = parse.data;
   const userId = req.user.sub;
+
+  let resolvedAssignedAgentId = null;
+  try {
+    resolvedAssignedAgentId = await resolveAssignedAgentForAccount({
+      routingMode,
+      assignedAgentId,
+      accountUserId: userId,
+    });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   // Check duplicate
   const existing = await prisma.whatsappAccount.findFirst({
@@ -796,6 +887,8 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
       appSecretEncrypted: encryptSecret(appSecret),
       webhookVerifyToken,
       provider,
+      routingMode,
+      assignedAgentId: resolvedAssignedAgentId,
       status: "active"
     }
   });
@@ -810,6 +903,8 @@ router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => 
       displayName: displayName || null,
       webhookVerifyToken,
       provider,
+      routingMode,
+      assignedAgentId: resolvedAssignedAgentId,
       status: "active"
     }
   });
@@ -824,7 +919,9 @@ const accountUpdateSchema = z.object({
   appSecret: z.string().min(10).max(256).optional(),
   displayName: z.string().max(128).optional(),
   status: z.enum(["active", "inactive"]).optional(),
-  provider: z.enum(["meta", "twilio"]).optional()
+  provider: z.enum(["meta", "twilio"]).optional(),
+  routingMode: z.enum(["orchestrator", "agent"]).optional(),
+  assignedAgentId: z.string().nullable().optional()
 });
 
 router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) => {
@@ -836,13 +933,26 @@ router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) 
   const accountId = req.params.id;
   const account = await prisma.whatsappAccount.findUnique({
     where: { id: accountId },
-    select: { id: true }
+    select: {
+      id: true,
+      userId: true,
+      routingMode: true,
+      assignedAgentId: true,
+    }
   });
   if (!account) {
     return res.status(404).json({ error: "Account not found" });
   }
 
-  const { accessToken, appSecret, displayName, status, provider } = parse.data;
+  const {
+    accessToken,
+    appSecret,
+    displayName,
+    status,
+    provider,
+    routingMode,
+    assignedAgentId,
+  } = parse.data;
   const data = {};
 
   if (accessToken) {
@@ -861,6 +971,27 @@ router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) 
     data.provider = provider;
   }
 
+  const routingTouched = routingMode !== undefined || assignedAgentId !== undefined;
+  if (routingTouched) {
+    const nextRoutingMode = routingMode || account.routingMode || "orchestrator";
+    const nextAssignedAgentId = assignedAgentId !== undefined
+      ? assignedAgentId
+      : account.assignedAgentId;
+
+    try {
+      const resolvedAssignedAgentId = await resolveAssignedAgentForAccount({
+        routingMode: nextRoutingMode,
+        assignedAgentId: nextAssignedAgentId,
+        accountUserId: account.userId,
+      });
+
+      data.routingMode = nextRoutingMode;
+      data.assignedAgentId = resolvedAssignedAgentId;
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+  }
+
   if (Object.keys(data).length === 0) {
     return res.status(400).json({ error: "No fields to update" });
   }
@@ -870,7 +1001,7 @@ router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) 
   // If we are setting this account to active, deactivate all others
   if (status === "active") {
     await prisma.whatsappAccount.updateMany({
-      where: { userId: req.user.sub, id: { not: accountId }, status: "active" },
+      where: { userId: account.userId, id: { not: accountId }, status: "active" },
       data: { status: "inactive", updatedAt: new Date() }
     });
   }

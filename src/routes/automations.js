@@ -21,8 +21,20 @@ import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { prisma } from "../prisma.js";
-import { runAutomation } from "../services/automations/automation-engine.js";
+import { enqueueWorkflow } from "../workers/workflow-queue.js";
 import { reloadAutomations } from "../workers/automation-worker.js";
+import { getAllBricksForClient } from "../bricks/registry.js";
+import { listAutomationMetadataOptions } from "../services/automations/integration-resolvers.js";
+import {
+  getIntegrationAutomationBlocks,
+  RUDIMENTARY_AUTOMATION_BLOCK_IDS,
+} from "../services/integrations/catalog.js";
+import {
+  listTree,
+  ensureWorkspaceBaseStructure,
+  createWorkspacePathPolicy,
+  filterTreeByPathPolicy,
+} from "../services/vault/vault-service.js";
 import {
   canReadAutomationsRequest,
   canWriteAutomationsRequest,
@@ -50,6 +62,130 @@ function requireWriteAccess(req, res) {
   return false;
 }
 
+function collectVaultHints(tree, maxResults = 200) {
+  const dirHints = [];
+  const fileHints = [];
+
+  function walk(nodes = []) {
+    for (const node of nodes) {
+      if (!node?.path || typeof node.path !== "string") continue;
+      if (node.type === "dir") {
+        dirHints.push(`${node.path.replace(/\\/g, "/")}/`);
+        walk(Array.isArray(node.children) ? node.children : []);
+      } else if (node.type === "file") {
+        fileHints.push(node.path.replace(/\\/g, "/"));
+      }
+
+      if (dirHints.length >= maxResults && fileHints.length >= maxResults) {
+        return;
+      }
+    }
+  }
+
+  walk(tree);
+
+  return {
+    rootHints: [...new Set(dirHints)].slice(0, maxResults),
+    pathSuggestions: [...new Set([...dirHints, ...fileHints])].slice(0, maxResults),
+  };
+}
+
+// ── Catalogue des briques ─────────────────────────────────────────
+
+router.get("/bricks", requireAuth, requireWorkspaceContext, async (req, res) => {
+  try {
+    const allBricks = getAllBricksForClient();
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+
+    // Admin without explicit workspace keeps full catalog visibility.
+    if (!workspaceId) {
+      return res.json({ bricks: allBricks });
+    }
+
+    const enabledIntegrations = await prisma.workspaceIntegration.findMany({
+      where: {
+        workspaceId,
+        isEnabled: true,
+        integrationType: {
+          isActive: true,
+        },
+      },
+      include: {
+        integrationType: {
+          select: {
+            id: true,
+            name: true,
+            category: true,
+            configSchema: true,
+          },
+        },
+      },
+    });
+
+    const allowedBrickIds = new Set(RUDIMENTARY_AUTOMATION_BLOCK_IDS);
+    for (const integration of enabledIntegrations) {
+      const boundBlocks = getIntegrationAutomationBlocks(integration.integrationType);
+      for (const blockId of boundBlocks) {
+        allowedBrickIds.add(blockId);
+      }
+    }
+
+    const bricks = allBricks.filter((brick) => allowedBrickIds.has(brick.id));
+    return res.json({ bricks });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/metadata", requireAuth, requireWorkspaceContext, async (req, res) => {
+  if (!requireReadAccess(req, res)) return;
+
+  try {
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+    const metadata = await listAutomationMetadataOptions({
+      workspaceId,
+      userId: req.user.sub,
+      userRole: req.user.role,
+    });
+
+    let vault = {
+      rootHints: [],
+      pathSuggestions: [],
+    };
+
+    if (req.user.role === "admin" && !workspaceId) {
+      vault = {
+        rootHints: ["Global/", "Workspaces/"],
+        pathSuggestions: ["Global/", "Workspaces/"],
+      };
+    } else if (workspaceId) {
+      await ensureWorkspaceBaseStructure(
+        workspaceId,
+        req.user.role === "admin" ? null : req.user.sub
+      );
+
+      const tree = await listTree(workspaceId, "");
+      const visibleTree = req.user.role === "admin"
+        ? tree
+        : filterTreeByPathPolicy(
+          tree,
+          (await createWorkspacePathPolicy(workspaceId, req.user.sub, req.user.role)).canReadPath
+        );
+
+      vault = collectVaultHints(visibleTree, 200);
+    }
+
+    res.json({
+      metadata: {
+        ...metadata,
+        vault,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Liste ─────────────────────────────────────────────────────────
 
 router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
@@ -74,7 +210,7 @@ router.post("/", requireAuth, requireWorkspaceContext, async (req, res) => {
   if (!requireWriteAccess(req, res)) return;
   try {
     const workspaceId = resolveWorkspaceIdFromRequest(req);
-    const { name, description, scope, triggerType, triggerConfig, steps } = req.body;
+    const { name, description, scope, triggerType, triggerConfig, steps, definitionJson } = req.body;
 
     if (!name || !triggerType) {
       return res.status(400).json({ error: "name et triggerType requis" });
@@ -83,13 +219,14 @@ router.post("/", requireAuth, requireWorkspaceContext, async (req, res) => {
     const automation = await prisma.automation.create({
       data: {
         name,
-        description: description || null,
+        description:   description || null,
         workspaceId,
-        ownerId: req.user.sub,
-        scope: scope || "workspace",
+        ownerId:       req.user.sub,
+        scope:         scope || "workspace",
         triggerType,
         triggerConfig: JSON.stringify(triggerConfig || {}),
-        steps: JSON.stringify(steps || []),
+        steps:         JSON.stringify(steps || []),
+        definitionJson: definitionJson ? JSON.stringify(definitionJson) : null,
       },
     });
 
@@ -125,16 +262,17 @@ router.put("/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
       return res.status(404).json({ error: "Automation introuvable" });
     }
 
-    const { name, description, triggerType, triggerConfig, steps, scope } = req.body;
+    const { name, description, triggerType, triggerConfig, steps, scope, definitionJson } = req.body;
     const automation = await prisma.automation.update({
       where: { id: req.params.id },
       data: {
-        ...(name !== undefined && { name }),
-        ...(description !== undefined && { description }),
-        ...(triggerType !== undefined && { triggerType }),
-        ...(triggerConfig !== undefined && { triggerConfig: JSON.stringify(triggerConfig) }),
-        ...(steps !== undefined && { steps: JSON.stringify(steps) }),
-        ...(scope !== undefined && { scope }),
+        ...(name !== undefined           && { name }),
+        ...(description !== undefined    && { description }),
+        ...(triggerType !== undefined     && { triggerType }),
+        ...(triggerConfig !== undefined   && { triggerConfig: JSON.stringify(triggerConfig) }),
+        ...(steps !== undefined           && { steps: JSON.stringify(steps) }),
+        ...(scope !== undefined           && { scope }),
+        ...(definitionJson !== undefined  && { definitionJson: definitionJson ? JSON.stringify(definitionJson) : null }),
       },
     });
 
@@ -196,12 +334,24 @@ router.post("/:id/run", requireAuth, requireWorkspaceContext, async (req, res) =
       return res.status(404).json({ error: "Automation introuvable" });
     }
 
-    const run = await runAutomation(
+    // Enfile le job dans BullMQ (fallback synchrone si Redis indispo)
+    const jobId = await enqueueWorkflow(
       req.params.id,
       req.body || {},
       `manual:user:${req.user.sub}`
     );
-    res.json(run);
+    // En mode queue, on retourne immédiatement un accusé de réception
+    // En mode synchrone (fallback), le run est déjà terminé — on retourne le dernier run
+    if (jobId) {
+      res.json({ queued: true, jobId });
+    } else {
+      const runs = await prisma.automationRun.findMany({
+        where: { automationId: req.params.id },
+        orderBy: { startedAt: "desc" },
+        take: 1,
+      });
+      res.json(runs[0] || { queued: false });
+    }
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
   }
@@ -271,8 +421,18 @@ router.post("/webhook/:token", async (req, res) => {
       return res.status(401).json({ error: "Token invalide" });
     }
 
-    const run = await runAutomation(automation.id, req.body || {}, "webhook");
-    res.json({ runId: run.id, status: run.status });
+    const jobId = await enqueueWorkflow(automation.id, req.body || {}, "webhook");
+    if (jobId) {
+      res.json({ queued: true, jobId });
+    } else {
+      const runs = await prisma.automationRun.findMany({
+        where: { automationId: automation.id },
+        orderBy: { startedAt: "desc" },
+        take: 1,
+      });
+      const run = runs[0];
+      res.json({ runId: run?.id, status: run?.status });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

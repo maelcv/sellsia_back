@@ -47,7 +47,7 @@ router.post("/test-mail", async (req, res) => {
       pass: password,
       secure: process.env.SMTP_SECURE === "true",
       fromEmail: process.env.SMTP_FROM_EMAIL || email,
-      fromName: process.env.SMTP_FROM_NAME || "Sellsia"
+      fromName: process.env.SMTP_FROM_NAME || "Boatswain"
     };
 
     // Validate that required SMTP env vars are set

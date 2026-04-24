@@ -617,7 +617,7 @@ router.get("/feed/:token", async (req, res) => {
 
   const ical = buildIcal(events);
   res.setHeader("Content-Type", "text/calendar; charset=utf-8");
-  res.setHeader("Content-Disposition", 'attachment; filename="sellsia-calendar.ics"');
+  res.setHeader("Content-Disposition", 'attachment; filename="boatswain-calendar.ics"');
   res.send(ical);
 });
 
@@ -635,7 +635,7 @@ function buildIcal(events) {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Sellsia//Calendar//FR",
+    "PRODID:-//Boatswain//Calendar//FR",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
   ];
@@ -643,7 +643,7 @@ function buildIcal(events) {
   for (const ev of events) {
     lines.push(
       "BEGIN:VEVENT",
-      `UID:sellsia-event-${ev.id}@sellsia.io`,
+      `UID:boatswain-event-${ev.id}@boatswain.io`,
       `DTSTAMP:${toIcalDate(ev.createdAt)}`,
       `DTSTART:${toIcalDate(ev.startAt)}`,
       `DTEND:${toIcalDate(ev.endAt)}`,

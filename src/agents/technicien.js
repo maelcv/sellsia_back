@@ -212,7 +212,7 @@ export class TechnicienAgent extends BaseAgent {
         .map((s) => ({ filename: s.replace("file:", ""), tool: "parse" }))
     };
 
-    const synthesisPrompt = `Tu es le Technicien Agent de Sellsia. Réponds directement comme un collègue technicien expert.
+    const synthesisPrompt = `Tu es le Technicien Agent de Boatswain. Réponds directement comme un collègue technicien expert.
 
 DEMANDE : ${userMessage}
 

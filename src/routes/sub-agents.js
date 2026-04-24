@@ -14,7 +14,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma, logAudit } from "../prisma.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, isPlatformAdminRole } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 
 const router = Router();
@@ -41,6 +41,9 @@ export const BUILTIN_CAPABILITIES = [
   // ── Knowledge ──────────────────────────────────────────────────────────────
   { key: "knowledge_cache",      label: "Cache — réutilisation de réponses",   category: "knowledge" },
   { key: "knowledge_sort",       label: "Tri et optimisation de la base de connaissance", category: "knowledge" },
+  { key: "content_write",        label: "Rédaction de contenus commerciaux",     category: "content" },
+  { key: "content_classify_backlinks", label: "Classification de contenus + backlinks Vault", category: "content" },
+  { key: "user_profile_learning", label: "Apprentissage du profil utilisateur",  category: "learning" },
   // ── Communication ──────────────────────────────────────────────────────────
   { key: "email_read",           label: "Lire et chercher des emails",         category: "communication" },
   { key: "email_send",           label: "Rédiger et envoyer des emails",       category: "communication" },
@@ -56,6 +59,8 @@ const createSubAgentSchema = z.object({
   subAgentType: z.enum(["tool", "sub_agent"]).default("sub_agent"),
   systemPrompt: z.string().max(20000).optional(),
   capabilities: z.array(z.string()).default([]),
+  defaultProviderCode: z.string().max(64).optional(),
+  defaultModel: z.string().max(128).optional(),
   isActive: z.boolean().default(true),
 });
 
@@ -64,8 +69,60 @@ const updateSubAgentSchema = z.object({
   description: z.string().min(8).max(500).optional(),
   systemPrompt: z.string().max(20000).optional(),
   capabilities: z.array(z.string()).optional(),
+  defaultProviderCode: z.string().max(64).optional(),
+  defaultModel: z.string().max(128).optional(),
   isActive: z.boolean().optional(),
 });
+
+const DEFAULT_SUB_AGENT_PRESETS = [
+  {
+    name: "Content Writer",
+    description: "Rédige des contenus commerciaux structurés et orientés conversion.",
+    subAgentType: "sub_agent",
+    systemPrompt: "You are a sales content specialist. Produce concise, action-oriented copy aligned with the workspace tone and business context.",
+    capabilities: ["content_write", "web_search"],
+  },
+  {
+    name: "Content Classifier",
+    description: "Classe les contenus et génère des backlinks contextuels vers le Vault.",
+    subAgentType: "sub_agent",
+    systemPrompt: "You classify incoming content by topic, intent and confidence, then suggest explicit Vault backlink references to related notes.",
+    capabilities: ["content_classify_backlinks", "knowledge_sort", "knowledge_cache"],
+  },
+  {
+    name: "User Profile Learner",
+    description: "Extrait et consolide les préférences utilisateur depuis les conversations.",
+    subAgentType: "sub_agent",
+    systemPrompt: "You infer user preferences and communication style from conversation history and summarize stable profile traits for future personalization.",
+    capabilities: ["user_profile_learning", "knowledge_cache"],
+  },
+];
+
+/**
+ * Seeds default sub-agent presets for a workspace (idempotent).
+ * Called automatically on workspace creation.
+ */
+export async function seedSubAgentsForWorkspace(prismaClient, workspaceId, ownerId) {
+  for (const preset of DEFAULT_SUB_AGENT_PRESETS) {
+    const existing = await prismaClient.subAgentDefinition.findFirst({
+      where: { name: preset.name, workspaceId },
+      select: { id: true },
+    });
+    if (existing) continue;
+    await prismaClient.subAgentDefinition.create({
+      data: {
+        name: preset.name,
+        description: preset.description,
+        subAgentType: preset.subAgentType,
+        systemPrompt: preset.systemPrompt,
+        capabilities: JSON.stringify(preset.capabilities),
+        workspaceId,
+        ownerId,
+        isActive: true,
+      },
+    });
+  }
+}
 
 /**
  * GET /api/sub-agents/capabilities
@@ -73,6 +130,69 @@ const updateSubAgentSchema = z.object({
  */
 router.get("/capabilities", requireAuth, (_req, res) => {
   return res.json({ capabilities: BUILTIN_CAPABILITIES });
+});
+
+router.post("/seed-presets", requireAuth, requireWorkspaceContext, async (req, res) => {
+  try {
+    const isAdmin = isPlatformAdminRole(req.user?.roleCanonical || req.user?.role);
+    const targetWorkspaceId = isAdmin ? (String(req.query.workspaceId || "").trim() || null) : req.workspaceId;
+
+    if (!isAdmin) {
+      const perms = req.workspacePlan?.permissions || {};
+      if (!perms.custom_agent) {
+        return res.status(403).json({ error: "Votre plan ne permet pas de créer des sous-agents personnalisés." });
+      }
+    }
+
+    const created = [];
+    const skipped = [];
+
+    for (const preset of DEFAULT_SUB_AGENT_PRESETS) {
+      const existing = await prisma.subAgentDefinition.findFirst({
+        where: {
+          name: preset.name,
+          workspaceId: targetWorkspaceId,
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        skipped.push(preset.name);
+        continue;
+      }
+
+      const subAgent = await prisma.subAgentDefinition.create({
+        data: {
+          name: preset.name,
+          description: preset.description,
+          subAgentType: preset.subAgentType,
+          systemPrompt: preset.systemPrompt,
+          capabilities: JSON.stringify(preset.capabilities),
+          workspaceId: targetWorkspaceId,
+          ownerId: req.user.sub,
+          isActive: true,
+        },
+      });
+
+      created.push(subAgent.id);
+    }
+
+    await logAudit(req.user.sub, "SUB_AGENT_PRESETS_SEEDED", {
+      workspaceId: targetWorkspaceId,
+      createdCount: created.length,
+      skippedCount: skipped.length,
+    });
+
+    return res.json({
+      success: true,
+      workspaceId: targetWorkspaceId,
+      createdCount: created.length,
+      skipped,
+    });
+  } catch (err) {
+    console.error("[sub-agents] seed presets error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 /**
@@ -105,6 +225,8 @@ router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
         subAgentType: true,
         systemPrompt: true,
         capabilities: true,
+        defaultProviderCode: true,
+        defaultModel: true,
         isActive: true,
         workspaceId: true,
         ownerId: true,
@@ -185,6 +307,7 @@ router.post(
     }
 
     const { name, description, subAgentType, systemPrompt, capabilities, isActive } = parse.data;
+    const { defaultProviderCode, defaultModel } = parse.data;
 
     // Validate capabilities against known list (prevent injection)
     const validKeys = new Set(BUILTIN_CAPABILITIES.map((c) => c.key));
@@ -198,6 +321,8 @@ router.post(
           subAgentType,
           systemPrompt: systemPrompt || null,
           capabilities: JSON.stringify(sanitizedCapabilities),
+          defaultProviderCode: defaultProviderCode || null,
+          defaultModel: defaultModel || null,
           isActive,
           workspaceId: isAdmin ? null : req.workspaceId,
           ownerId: req.user.sub,
@@ -245,7 +370,15 @@ router.patch(
         }
       }
 
-      const { name, description, systemPrompt, capabilities, isActive } = parse.data;
+      const {
+        name,
+        description,
+        systemPrompt,
+        capabilities,
+        defaultProviderCode,
+        defaultModel,
+        isActive,
+      } = parse.data;
 
       let sanitizedCapabilities;
       if (capabilities !== undefined) {
@@ -260,6 +393,8 @@ router.patch(
           ...(description !== undefined && { description }),
           ...(systemPrompt !== undefined && { systemPrompt }),
           ...(sanitizedCapabilities !== undefined && { capabilities: JSON.stringify(sanitizedCapabilities) }),
+          ...(defaultProviderCode !== undefined && { defaultProviderCode: defaultProviderCode || null }),
+          ...(defaultModel !== undefined && { defaultModel: defaultModel || null }),
           ...(isActive !== undefined && { isActive }),
         },
       });

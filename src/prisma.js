@@ -6,7 +6,19 @@
 import { PrismaClient } from "@prisma/client";
 
 export const prisma = new PrismaClient({
-  log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"]
+  log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
+  datasources: {
+    db: {
+      url: (() => {
+        const base = process.env.DATABASE_URL || "postgresql://localhost:5432/boatswain";
+        // PgBouncer in Session mode caps real connections — limit Prisma pool aggressively
+        const url = new URL(base);
+        if (!url.searchParams.has("connection_limit")) url.searchParams.set("connection_limit", "5");
+        if (!url.searchParams.has("pool_timeout")) url.searchParams.set("pool_timeout", "10");
+        return url.toString();
+      })(),
+    },
+  },
 });
 
 // ── Helper functions ──

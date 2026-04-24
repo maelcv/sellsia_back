@@ -348,16 +348,17 @@ export async function isRootPathProtected(rootPath) {
   const normalizedPath = normalizeVaultPath(rootPath);
   if (!normalizedPath) return false;
 
+  // Vérifie d'abord la root-protections map (couvre Workspaces/<id> et leurs ancêtres)
+  const rootProtections = await readRootProtectionsMap();
+  if (hasPathOrAncestorInSet(rootProtections, normalizedPath)) return true;
+
   const target = resolveRootScopedPath(normalizedPath);
   if (target.scope === "workspace") {
     if (!target.notePath) return false;
     return isWorkspacePathProtected(target.workspaceId, target.notePath);
   }
 
-  if (!target.notePath) return false;
-
-  const protections = await readRootProtectionsMap();
-  return hasPathOrAncestorInSet(protections, normalizedPath);
+  return false; // Global/* déjà couvert par le check root protections ci-dessus
 }
 
 export async function setRootPathProtection(rootPath, protectedState = null) {
@@ -373,7 +374,15 @@ export async function setRootPathProtection(rootPath, protectedState = null) {
   const target = resolveRootScopedPath(normalizedPath);
   if (target.scope === "workspace") {
     if (!target.notePath) {
-      throw Object.assign(new Error("Impossible de modifier la protection sur la racine d'un workspace"), { statusCode: 403 });
+      // Racine d'un workspace (Workspaces/<id>) : stockée dans la root-protections map
+      const protections = await readRootProtectionsMap();
+      const shouldProtect = typeof protectedState === "boolean"
+        ? protectedState
+        : !protections.has(normalizedPath);
+      if (shouldProtect) protections.add(normalizedPath);
+      else protections.delete(normalizedPath);
+      await writeRootProtectionsMap(protections);
+      return { path: normalizedPath, protected: protections.has(normalizedPath) };
     }
     const result = await setWorkspacePathProtection(target.workspaceId, target.notePath, protectedState);
     return {

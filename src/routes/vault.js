@@ -12,6 +12,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
+import { prisma } from "../prisma.js";
 import {
   canReadVaultRequest,
   canWriteVaultRequest,
@@ -159,14 +160,20 @@ function decorateTreeForUi(tree, options = {}) {
     canManageFolderPath = () => false,
     getPathOwner = () => null,
     isPathProtected = () => false,
+    // Override custom pour la détermination system-locked (workspace sync)
+    isSystemLockedOverride = null,
   } = options;
 
   function decorate(node) {
     const normalizedPath = normalizeVaultPath(node.path);
     const isDir = node.type === "dir";
-    const systemLocked = isDir
-      ? (rootScope ? isRootLockedFolderPath(normalizedPath) : isWorkspaceLockedFolderPath(normalizedPath))
-      : false;
+
+    const systemLocked = isSystemLockedOverride
+      ? isSystemLockedOverride(normalizedPath, node)
+      : (isDir
+          ? (rootScope ? isRootLockedFolderPath(normalizedPath) : isWorkspaceLockedFolderPath(normalizedPath))
+          : false);
+
     const protectedPath = isPathProtected(normalizedPath);
     const locked = systemLocked || protectedPath;
     const canModifyNode = !protectedPath && (allowSystemLockedActions || !systemLocked);
@@ -180,9 +187,12 @@ function decorateTreeForUi(tree, options = {}) {
       : (!protectedPath && canWritePath(normalizedPath));
 
     const canCreateChild = isDir && canModifyNode && canManageFolderPath(normalizedPath);
-    const canToggleProtection = allowProtectionToggle && !systemLocked && (isDir
-      ? canManageFolderPath(normalizedPath)
-      : canWritePath(normalizedPath));
+
+    // Admin avec allowSystemLockedActions peut toggler la protection même sur les dossiers système
+    const canToggleProtection = allowProtectionToggle &&
+      (allowSystemLockedActions || !systemLocked) &&
+      (isDir ? canManageFolderPath(normalizedPath) : canWritePath(normalizedPath));
+
     const ownerId = isDir ? (getPathOwner(normalizedPath) || null) : null;
 
     return {
@@ -235,6 +245,11 @@ router.get("/tree", requireAuth, requireWorkspaceContext, async (req, res) => {
     if (isAdminRootScope(req)) {
       const tree = await listRootTree(folder);
       const protectionMap = await buildProtectionMap(tree, (pathValue) => isRootPathProtected(pathValue));
+
+      // Sync workspace folders: Workspaces/<id> est system-locked seulement si le workspace existe
+      const existingWs = await prisma.workspace.findMany({ select: { id: true } });
+      const existingWsIds = new Set(existingWs.map((w) => w.id));
+
       const decoratedTree = decorateTreeForUi(tree, {
         rootScope: true,
         allowSystemLockedActions: true,
@@ -243,6 +258,17 @@ router.get("/tree", requireAuth, requireWorkspaceContext, async (req, res) => {
         canManageFolderPath: () => true,
         getPathOwner: () => null,
         isPathProtected: (pathValue) => protectionMap.get(pathValue) === true,
+        isSystemLockedOverride: (normalizedPath, node) => {
+          if (node.type !== "dir") return false;
+          // Racines absolues toujours verrouillées
+          if (normalizedPath === GLOBAL_DIR || normalizedPath === WORKSPACES_DIR) return true;
+          const parts = normalizedPath.split("/");
+          // Workspaces/<id> : verrouillé seulement si le workspace existe encore
+          if (parts[0] === WORKSPACES_DIR && parts[1] && parts.length === 2) {
+            return existingWsIds.has(parts[1]);
+          }
+          return isRootLockedFolderPath(normalizedPath);
+        },
       });
       return res.json({ tree: decoratedTree });
     }

@@ -1,6 +1,42 @@
 import jwt from "jsonwebtoken";
 import { config } from "../config.js";
 
+const ROLE_TO_CANONICAL = {
+  admin: "admin_platform",
+  admin_platform: "admin_platform",
+  client: "workspace_manager",
+  workspace_manager: "workspace_manager",
+  sub_client: "workspace_user",
+  workspace_user: "workspace_user",
+};
+
+const CANONICAL_TO_LEGACY = {
+  admin_platform: "admin",
+  workspace_manager: "client",
+  workspace_user: "sub_client",
+};
+
+export function toCanonicalRole(role) {
+  return ROLE_TO_CANONICAL[String(role || "")] || String(role || "");
+}
+
+export function toLegacyRole(role) {
+  const canonicalRole = toCanonicalRole(role);
+  return CANONICAL_TO_LEGACY[canonicalRole] || canonicalRole;
+}
+
+export function isPlatformAdminRole(role) {
+  return toCanonicalRole(role) === "admin_platform";
+}
+
+export function isWorkspaceManagerRole(role) {
+  return toCanonicalRole(role) === "workspace_manager";
+}
+
+export function isWorkspaceUserRole(role) {
+  return toCanonicalRole(role) === "workspace_user";
+}
+
 export function requireAuth(req, res, next) {
   const authorization = req.headers.authorization || "";
   const [, token] = authorization.split(" ");
@@ -11,7 +47,15 @@ export function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, config.jwtSecret);
-    req.user = payload;
+    const roleCanonical = toCanonicalRole(payload?.role);
+    const roleLegacy = toLegacyRole(roleCanonical);
+    req.user = {
+      ...payload,
+      role: roleLegacy,
+      roleCanonical,
+      roleLegacy,
+      roleOriginal: payload?.role,
+    };
     return next();
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
@@ -20,7 +64,10 @@ export function requireAuth(req, res, next) {
 
 export function requireRole(...allowedRoles) {
   return (req, res, next) => {
-    if (!req.user || !allowedRoles.includes(req.user.role)) {
+    const userCanonicalRole = toCanonicalRole(req.user?.roleCanonical || req.user?.role);
+    const allowedCanonicalRoles = new Set(allowedRoles.map((role) => toCanonicalRole(role)));
+
+    if (!req.user || !allowedCanonicalRoles.has(userCanonicalRole)) {
       return res.status(403).json({ error: "Forbidden" });
     }
     return next();
@@ -44,7 +91,7 @@ export function requireRole(...allowedRoles) {
 export function requireFeature(featureName) {
   return (req, res, next) => {
     // Super-admins : bypass total
-    if (req.user?.role === "admin") return next();
+    if (isPlatformAdminRole(req.user?.roleCanonical || req.user?.role)) return next();
 
     // Fail-closed: workspace sans plan assigné
     if (!req.workspacePlan) {

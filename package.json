@@ -1,18 +1,18 @@
 {
-  "name": "sellsia-dashboard-backend",
+  "name": "boatswain-dashboard-backend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "build": "npx prisma generate && npx prisma migrate reset --force --skip-generate && npx prisma db push --skip-generate --accept-data-loss && node src/seed.js",
+    "build": "npx prisma generate && npm run db:ensure-vector && npx prisma db push --skip-generate --accept-data-loss && node src/seed.js",
     "db:generate": "npx prisma generate",
-    "db:migrate": "npx prisma migrate dev",
-    "db:push": "npx prisma db push",
+    "db:ensure-vector": "printf 'CREATE EXTENSION IF NOT EXISTS vector;\\n' | npx prisma db execute --stdin --schema prisma/schema.prisma",
+    "db:push": "npm run db:ensure-vector && npx prisma db push",
     "db:seed": "node src/seed.js",
     "db:studio": "npx prisma studio",
-    "db:reset": "npx prisma generate && npx prisma migrate reset --force --skip-generate && npx prisma db push --skip-generate --accept-data-loss",
+    "db:reset": "npx prisma generate && npm run db:ensure-vector && npx prisma db push --skip-generate --force-reset --accept-data-loss",
     "postinstall": "npx prisma generate"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
     "@tavily/core": "^0.7.2",
     "axios": "^1.15.0",
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.74.1",
     "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
