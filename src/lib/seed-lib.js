@@ -93,7 +93,7 @@ export const INTEGRATION_TYPES = [
   {
     name: "Gmail",
     category: "mail",
-    logoUrl: "https://mail.google.com/favicon.ico",
+    logoUrl: "https://www.gstatic.com/images/branding/product/1x/gmail_2020q4_32dp.png",
     configSchema: { clientId: { type: "string" }, clientSecret: { type: "string" }, refreshToken: { type: "string" } },
   },
   // Calendrier

@@ -22,6 +22,7 @@
  */
 
 import { prisma } from "../prisma.js";
+import { isPlatformAdminRole } from "./auth.js";
 
 /**
  * Middleware principal : résout et injecte req.workspaceId.
@@ -36,7 +37,7 @@ export async function requireWorkspaceContext(req, res, next) {
 
     // Super-admin plateforme : bypass de l'isolation workspace
     // Il voit les données de tous les workspaces, permissions toutes actives
-    if (req.user.role === "admin") {
+    if (isPlatformAdminRole(req.user?.roleCanonical || req.user?.role)) {
       req.workspaceId = null;
       req.workspaceParentId = null;
       req.workspacePlan = null; // Les admins bypass requireFeature de toute façon
@@ -167,7 +168,7 @@ export async function requireWorkspaceContext(req, res, next) {
  */
 export function validateWorkspaceOwnership(resource, req) {
   // Les super-admins peuvent accéder à toutes les ressources
-  if (req.user?.role === "admin") return true;
+  if (isPlatformAdminRole(req.user?.roleCanonical || req.user?.role)) return true;
 
   if (!resource) {
     throw Object.assign(new Error("Ressource introuvable"), { statusCode: 404 });

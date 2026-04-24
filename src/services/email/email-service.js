@@ -65,30 +65,41 @@ export async function getTransporterForUser(userId) {
   }
 
   // 2. Config globale (sauvegardée lors du setup wizard)
+  let systemSmtpSetting = null;
   try {
-    const systemSmtpSetting = await prisma.systemSetting.findUnique({
+    systemSmtpSetting = await prisma.systemSetting.findUnique({
       where: { key: "system_smtp_config" }
     });
-
-    if (systemSmtpSetting && systemSmtpSetting.value) {
-      const globalConfig = JSON.parse(systemSmtpSetting.value);
-      const decryptedPass = decryptSecret(globalConfig.passEncrypted);
-
-      return {
-        transporter: nodemailer.createTransport({
-          host: globalConfig.host,
-          port: globalConfig.port,
-          secure: globalConfig.secure,
-          auth: { user: globalConfig.user, pass: decryptedPass },
-        }),
-        from: globalConfig.fromName
-          ? `"${globalConfig.fromName}" <${globalConfig.fromEmail}>`
-          : globalConfig.fromEmail,
-        configId: null,
-      };
-    }
   } catch (err) {
-    console.warn("[email-service] Failed to load global SMTP config:", err.message);
+    console.warn("[email-service] Failed to read system SMTP setting:", err.message);
+  }
+
+  if (systemSmtpSetting?.value) {
+    const globalConfig = JSON.parse(systemSmtpSetting.value);
+    let decryptedPass = null;
+    if (globalConfig.passEncrypted) {
+      try {
+        decryptedPass = decryptSecret(globalConfig.passEncrypted);
+      } catch {
+        throw new Error("SMTP password cannot be decrypted — please re-enter it in Platform Settings > Email");
+      }
+    }
+    if (!decryptedPass) {
+      throw new Error("SMTP password missing — configure it in Platform Settings > Email");
+    }
+
+    return {
+      transporter: nodemailer.createTransport({
+        host: globalConfig.host,
+        port: globalConfig.port,
+        secure: globalConfig.secure,
+        auth: { user: globalConfig.user, pass: decryptedPass },
+      }),
+      from: globalConfig.fromName
+        ? `"${globalConfig.fromName}" <${globalConfig.fromEmail}>`
+        : globalConfig.fromEmail,
+      configId: null,
+    };
   }
 
   // 3. Fallback variable d'environnement (SMTP_HOST, SMTP_PORT, etc.)

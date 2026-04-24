@@ -16,7 +16,8 @@ import { encryptSecret, decryptSecret } from "../security/secrets.js";
 const router = Router();
 
 function requireAdmin(req, res, next) {
-  if (req.user?.role !== "admin") return res.status(403).json({ error: "Admin only" });
+  const role = req.user?.roleCanonical || req.user?.role;
+  if (role !== "admin" && role !== "admin_platform") return res.status(403).json({ error: "Admin only" });
   next();
 }
 
@@ -123,18 +124,35 @@ router.put("/", async (req, res) => {
 // ── POST /api/admin/system-email/test ────────────────────────────
 router.post("/test", async (req, res) => {
   try {
-    const { to } = z.object({ to: z.string().email() }).parse(req.body);
+    const parse = z.object({ to: z.string().email() }).safeParse(req.body);
+    if (!parse.success) {
+      return res.status(400).json({ error: "Adresse destinataire invalide" });
+    }
+    const { to } = parse.data;
 
     const cfg = await loadConfig();
 
-    // Résoudre le mot de passe
-    let pass;
+    if (!cfg.smtpHost) return res.status(400).json({ error: "SMTP non configuré (host manquant)" });
+    if (!cfg.fromEmail) return res.status(400).json({ error: "SMTP non configuré (fromEmail manquant)" });
+
+    let pass = null;
     const row = await prisma.systemSetting.findUnique({ where: { key: SETTING_KEY } });
     if (row?.value) {
       const raw = JSON.parse(row.value);
-      pass = raw.passEncrypted ? decryptSecret(raw.passEncrypted) : null;
-    } else {
-      pass = process.env.SMTP_PASS || null;
+      if (raw.passEncrypted) {
+        try {
+          pass = decryptSecret(raw.passEncrypted);
+        } catch (decryptErr) {
+          return res.status(400).json({
+            error: "Mot de passe SMTP illisible (clé de chiffrement différente). Ressaisir le mot de passe.",
+          });
+        }
+      }
+    }
+    if (!pass) pass = process.env.SMTP_PASS || null;
+
+    if (cfg.smtpUser && !pass) {
+      return res.status(400).json({ error: "Mot de passe SMTP manquant" });
     }
 
     const transporter = nodemailer.createTransport({
@@ -145,7 +163,12 @@ router.post("/test", async (req, res) => {
       connectionTimeout: 10000,
     });
 
-    await transporter.verify();
+    try {
+      await transporter.verify();
+    } catch (verifyErr) {
+      console.error("[system-email] verify failed:", verifyErr);
+      return res.status(400).json({ error: `SMTP verify: ${verifyErr.message}` });
+    }
 
     await transporter.sendMail({
       from:    cfg.fromName ? `"${cfg.fromName}" <${cfg.fromEmail}>` : cfg.fromEmail,
@@ -156,6 +179,7 @@ router.post("/test", async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
+    console.error("[system-email] test failed:", err);
     res.status(400).json({ error: err.message });
   }
 });

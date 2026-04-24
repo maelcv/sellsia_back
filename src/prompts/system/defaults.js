@@ -21,6 +21,7 @@ export const SYSTEM_PROMPTS = {
   directeur:    loadJSON("directeur").systemPrompt || "",
   commercial:   loadJSON("commercial").systemPrompt || "",
   technicien:   loadJSON("technicien").systemPrompt || "",
+  generaliste:  loadJSON("generaliste").systemPrompt || "",
 };
 
 export const ORCHESTRATOR_PLAN_PROMPT      = orchestratorData.planPrompt || "";

@@ -3,7 +3,7 @@
  *
  * Recoit une demande utilisateur et :
  * 1. Identifie l'intention via LLM (ou agent explicitement demande)
- * 2. Route vers le bon agent (Directeur, Commercial, Technicien)
+ * 2. Route vers le bon agent (Directeur, Commercial, Technicien, Generaliste)
  * 3. L'agent gere en interne ses sous-agents (File → Sellsy → Web)
  * 4. Journalise l'orchestration
  */
@@ -14,17 +14,113 @@ import { logger } from "../lib/logger.js";
 import { DirecteurAgent } from "../agents/directeur.js";
 import { CommercialAgent } from "../agents/commercial.js";
 import { TechnicienAgent } from "../agents/technicien.js";
+import { GeneralisteAgent } from "../agents/generaliste.js";
 import { BaseAgent, detectUserLanguage } from "../agents/base-agent.js";
 import { TemplateAgent } from "../agents/template-agent.js";
 import { prisma, logProviderError } from "../prisma.js";
 import { selectSkill } from "../skills/router.js";
 import { formatSkillForInjection } from "../skills/catalog.js";
 
+const GENERALIST_AGENT_ID = "generaliste";
+const SPECIALIST_AGENT_IDS = new Set(["directeur", "commercial", "technicien"]);
+const ROUTABLE_AGENT_IDS = new Set([...SPECIALIST_AGENT_IDS, GENERALIST_AGENT_ID]);
+
+const GENERALIST_TOOL_ALLOWLIST = new Set([
+  "ask_user",
+  "web_search",
+  "web_scrape",
+  "parse_pdf",
+  "parse_csv",
+  "parse_excel",
+  "parse_word",
+]);
+
 const AGENT_CLASSES = {
   "directeur": DirecteurAgent,
   "commercial": CommercialAgent,
-  "technicien": TechnicienAgent
+  "technicien": TechnicienAgent,
+  [GENERALIST_AGENT_ID]: GeneralisteAgent
 };
+
+function getRoutingCandidates(allowedAgents) {
+  const candidates = new Set(allowedAgents || []);
+  candidates.add(GENERALIST_AGENT_ID);
+  return candidates;
+}
+
+function pickPreferredSpecialist(allowedAgents) {
+  if (!allowedAgents || allowedAgents.size === 0) return "commercial";
+  if (allowedAgents.has("commercial")) return "commercial";
+  if (allowedAgents.has("directeur")) return "directeur";
+  if (allowedAgents.has("technicien")) return "technicien";
+  return [...allowedAgents][0];
+}
+
+function normalizeClassification(classification, allowedAgents, userMessage = "") {
+  const rawAgent = String(classification?.agent || "").trim().toLowerCase();
+  const rawIntent = String(classification?.intent || "").trim().toLowerCase();
+  const normalizedMessage = String(userMessage || "").toLowerCase();
+  const parsedConfidence = Number(classification?.confidence);
+  const confidence = Number.isFinite(parsedConfidence)
+    ? Math.min(Math.max(parsedConfidence, 0), 1)
+    : 0.5;
+
+  const outOfScopeIntent = new Set([
+    "general",
+    "generaliste",
+    "hors_sujet",
+    "hors-sujet",
+    "out_of_scope",
+    "out-of-scope"
+  ]);
+
+  const isOutOfScope = outOfScopeIntent.has(rawIntent) || outOfScopeIntent.has(rawAgent);
+  const hasUnknownAgent = rawAgent !== "" && !ROUTABLE_AGENT_IDS.has(rawAgent);
+  const lowConfidence = confidence < 0.45;
+  const hasSpecialistHint = /(pipeline|kpi|reporting|forecast|ca\b|prospect|client|relance|devis|opportunit[eé]|vente|closing|contact|api|workflow|automatisation|webhook|integration|parametrage|sellsy)/.test(normalizedMessage);
+
+  if (isOutOfScope || hasUnknownAgent || (lowConfidence && !hasSpecialistHint)) {
+    return {
+      intent: GENERALIST_AGENT_ID,
+      agent: GENERALIST_AGENT_ID,
+      confidence: Math.max(confidence, 0.45),
+      reasoning: classification?.reasoning || "Demande hors specialite metier: fallback vers l'agent generaliste."
+    };
+  }
+
+  if (ROUTABLE_AGENT_IDS.has(rawAgent)) {
+    return {
+      intent: rawIntent || rawAgent,
+      agent: rawAgent,
+      confidence,
+      reasoning: classification?.reasoning || ""
+    };
+  }
+
+  const fallbackAgent = pickPreferredSpecialist(allowedAgents);
+  return {
+    intent: fallbackAgent,
+    agent: fallbackAgent,
+    confidence: 0.5,
+    reasoning: classification?.reasoning || `Classification incertaine pour: ${String(userMessage || "").slice(0, 120)}`
+  };
+}
+
+function selectToolsForAgent(agentId, tools = []) {
+  if (!Array.isArray(tools)) return [];
+  if (agentId !== GENERALIST_AGENT_ID) return tools;
+  return tools.filter((tool) => GENERALIST_TOOL_ALLOWLIST.has(tool?.name));
+}
+
+function buildToolContextForAgent(agentId, toolContext = null) {
+  if (agentId !== GENERALIST_AGENT_ID) return toolContext;
+  const base = toolContext ? { ...toolContext } : {};
+  return {
+    ...base,
+    sellsyClient: null,
+    forceWebSearch: true
+  };
+}
 
 /**
  * Wrapper agent for Mistral AI Studio remote agents
@@ -154,7 +250,7 @@ class RemoteAgent {
 
 /**
  * Classifie l'intention de l'utilisateur via le LLM.
- * Retourne l'agent a utiliser : commercial, directeur ou technicien.
+ * Retourne l'agent a utiliser : commercial, directeur, technicien ou generaliste.
  */
 export async function classifyIntent(provider, userMessage, pageContext, userRole, allowedAgents = null) {
   let availableAgentsInfo = "";
@@ -162,7 +258,8 @@ export async function classifyIntent(provider, userMessage, pageContext, userRol
     const agentDescriptions = {
       "commercial": "Commercial — aide a la vente, briefs comptes, relances, opportunites, contacts, devis",
       "directeur": "Directeur — reporting, analyse pipeline, KPIs, previsions, pilotage direction",
-      "technicien": "Technicien — configuration Sellsy, API, automatisation, integration technique"
+      "technicien": "Technicien — configuration Sellsy, API, automatisation, integration technique",
+      "generaliste": "Generaliste — fallback hors specialite, recherche web, synthese multi-sujets"
     };
     const allowed = [...allowedAgents]
       .filter((id) => agentDescriptions[id])
@@ -185,12 +282,12 @@ export async function classifyIntent(provider, userMessage, pageContext, userRol
       return fallbackClassification(userMessage, allowedAgents);
     }
 
-    return {
+    return normalizeClassification({
       intent: result.intent || "commercial",
       agent: result.agent || "commercial",
       confidence: result.confidence || 0.5,
       reasoning: result.reasoning || ""
-    };
+    }, allowedAgents, userMessage);
   } catch (error) {
     console.error("[Dispatcher] Classification error:", error.message);
     return fallbackClassification(userMessage, allowedAgents);
@@ -222,7 +319,25 @@ function fallbackClassification(message, allowedAgents = null) {
     };
   }
 
-  const defaultAgent = has("commercial") ? "commercial" : (allowedAgents ? [...allowedAgents][0] : "commercial");
+  if (has("commercial") && /(prospect|client|relance|devis|opportunit[eé]|vente|closing|rdv|contact|compte)/.test(m)) {
+    return {
+      intent: "commercial",
+      agent: "commercial",
+      confidence: 0.6,
+      reasoning: "Fallback regex: mots-cles commerciaux detectes"
+    };
+  }
+
+  if (has(GENERALIST_AGENT_ID)) {
+    return {
+      intent: GENERALIST_AGENT_ID,
+      agent: GENERALIST_AGENT_ID,
+      confidence: 0.55,
+      reasoning: "Fallback regex: demande hors scope CRM, routage vers generaliste"
+    };
+  }
+
+  const defaultAgent = pickPreferredSpecialist(allowedAgents);
   return {
     intent: defaultAgent,
     agent: defaultAgent,
@@ -237,6 +352,56 @@ function fallbackClassification(message, allowedAgents = null) {
 function safeJson(str, fallback = []) {
   if (!str) return fallback;
   try { return JSON.parse(str); } catch { return fallback; }
+}
+
+function mapProviderCodeToFamily(providerCode) {
+  const code = String(providerCode || "").trim();
+  if (!code) return "";
+  if (code === "openai-cloud" || code === "openrouter-cloud" || code === "lmstudio-local") return "openai";
+  if (code === "anthropic-cloud") return "anthropic";
+  if (code === "mistral-cloud") return "mistral";
+  if (code === "ollama-local") return "ollama";
+  return "";
+}
+
+function buildProviderOverrides(providerCode) {
+  const code = String(providerCode || "").trim();
+  if (code === "openrouter-cloud") {
+    return { baseUrl: "https://openrouter.ai/api/v1" };
+  }
+  if (code === "lmstudio-local") {
+    return { baseUrl: "http://localhost:1234/v1" };
+  }
+  return {};
+}
+
+function applyAgentProviderOverrides(baseProvider, { defaultProviderCode, defaultModel }) {
+  if (!baseProvider) return baseProvider;
+  if (!defaultProviderCode && !defaultModel) return baseProvider;
+
+  const currentFamily = String(baseProvider.providerName || "").trim();
+  const targetFamily = mapProviderCodeToFamily(defaultProviderCode) || currentFamily;
+
+  if (targetFamily && currentFamily && targetFamily !== currentFamily) {
+    console.warn(
+      `[Dispatcher] Agent provider override skipped: requested family '${targetFamily}' ` +
+      `but active provider family is '${currentFamily}'`
+    );
+    return baseProvider;
+  }
+
+  try {
+    const ProviderClass = baseProvider.constructor;
+    const overrides = {
+      ...(baseProvider.config || {}),
+      ...(defaultModel ? { defaultModel } : {}),
+      ...buildProviderOverrides(defaultProviderCode),
+    };
+    return new ProviderClass(overrides);
+  } catch (err) {
+    console.warn("[Dispatcher] Failed to apply agent provider/model override:", err.message);
+    return baseProvider;
+  }
 }
 
 /**
@@ -259,8 +424,11 @@ async function createAgent(agentId, provider, clientId, workspaceId = null) {
         agentType: true,
         mistralAgentId: true,
         workspaceId: true,
+        templateId: true,
         allowedSubAgents: true,
         allowedTools: true,
+        defaultProviderCode: true,
+        defaultModel: true,
         agentPrompts: { where: { isActive: true }, take: 1, select: { systemPrompt: true } }
       }
     });
@@ -276,8 +444,12 @@ async function createAgent(agentId, provider, clientId, workspaceId = null) {
       }
 
       if (agentRow.agentType === "mistral_remote" && agentRow.mistralAgentId) {
+        const providerForAgent = applyAgentProviderOverrides(provider, {
+          defaultProviderCode: agentRow.defaultProviderCode,
+          defaultModel: agentRow.defaultModel,
+        });
         return new RemoteAgent({
-          provider,
+          provider: providerForAgent,
           mistralAgentId: agentRow.mistralAgentId,
           agentName: agentRow.name
         });
@@ -292,18 +464,30 @@ async function createAgent(agentId, provider, clientId, workspaceId = null) {
 
       // Template-based agent: charge prompt + tools depuis la DB dynamiquement
       if (agentRow.templateId) {
-        return new TemplateAgent({ ...agentRow, provider });
+        const providerForAgent = applyAgentProviderOverrides(provider, {
+          defaultProviderCode: agentRow.defaultProviderCode,
+          defaultModel: agentRow.defaultModel,
+        });
+        return new TemplateAgent({ ...agentRow, provider: providerForAgent });
       }
 
       const AgentClass = AGENT_CLASSES[agentId];
       if (AgentClass) {
         const systemPrompt = await loadPrompt(agentId, clientId);
-        return new AgentClass({ provider, systemPrompt, agentConfig });
+        const providerForAgent = applyAgentProviderOverrides(provider, {
+          defaultProviderCode: agentRow.defaultProviderCode,
+          defaultModel: agentRow.defaultModel,
+        });
+        return new AgentClass({ provider: providerForAgent, systemPrompt, agentConfig });
       }
 
       // Generic workspace/custom agent
       const systemPrompt = dbSystemPrompt || await loadPrompt(agentId, clientId);
-      return new BaseAgent({ agentId, provider, systemPrompt, agentConfig });
+      const providerForAgent = applyAgentProviderOverrides(provider, {
+        defaultProviderCode: agentRow.defaultProviderCode,
+        defaultModel: agentRow.defaultModel,
+      });
+      return new BaseAgent({ agentId, provider: providerForAgent, systemPrompt, agentConfig });
     }
   } catch (err) {
     console.warn("[createAgent] Could not fetch agent from DB:", err.message);
@@ -324,7 +508,8 @@ async function getAgentName(agentId) {
   const localNames = {
     "directeur": "Directeur",
     "commercial": "Commercial",
-    "technicien": "Technicien"
+    "technicien": "Technicien",
+    "generaliste": "Generaliste"
   };
 
   if (localNames[agentId]) return localNames[agentId];
@@ -366,8 +551,9 @@ export async function orchestrate({
   // Step 1: Determine which agent to use
   let agentId;
   let classification;
+  const routingCandidates = getRoutingCandidates(allowedAgents);
 
-  if (requestedAgentId && allowedAgents.has(requestedAgentId)) {
+  if (requestedAgentId && (allowedAgents.has(requestedAgentId) || requestedAgentId === GENERALIST_AGENT_ID)) {
     agentId = requestedAgentId;
     classification = {
       intent: requestedAgentId,
@@ -376,11 +562,19 @@ export async function orchestrate({
       reasoning: "Agent selectionne manuellement"
     };
   } else {
-    classification = await classifyIntent(provider, userMessage, pageContext, userRole, allowedAgents);
+    classification = await classifyIntent(provider, userMessage, pageContext, userRole, routingCandidates);
     agentId = classification.agent;
-    // Ensure agent is allowed
-    if (!allowedAgents.has(agentId)) {
-      agentId = [...allowedAgents][0];
+
+    if (agentId !== GENERALIST_AGENT_ID && !allowedAgents.has(agentId)) {
+      const fallbackAgent = pickPreferredSpecialist(allowedAgents);
+      classification = {
+        ...classification,
+        intent: fallbackAgent,
+        agent: fallbackAgent,
+        confidence: Math.min(classification.confidence || 0.5, 0.5),
+        reasoning: `${classification.reasoning || ""} Agent non autorise, fallback vers ${fallbackAgent}.`.trim()
+      };
+      agentId = fallbackAgent;
     }
   }
 
@@ -418,8 +612,11 @@ export async function orchestrate({
   }
 
   // Enrichit le toolContext avec l'agentId et tenantId courants
-  const enrichedToolContext = toolContext
-    ? { ...toolContext, agentId, tenantId }
+  const effectiveTools = selectToolsForAgent(agentId, tools);
+  const effectiveToolContext = buildToolContextForAgent(agentId, toolContext);
+
+  const enrichedToolContext = effectiveToolContext
+    ? { ...effectiveToolContext, agentId, tenantId }
     : { agentId, tenantId };
 
   const result = await agent.execute({
@@ -428,7 +625,7 @@ export async function orchestrate({
     sellsyData,
     pageContext,
     knowledgeContext,
-    tools,
+    tools: effectiveTools,
     toolContext: enrichedToolContext,
     thinkingMode,
     clientId,
@@ -548,8 +745,9 @@ export async function* orchestrateStream({
   // Step 2: Determine which agent to use
   let agentId;
   let classification;
+  const routingCandidates = getRoutingCandidates(allowedAgents);
 
-  if (requestedAgentId && allowedAgents.has(requestedAgentId)) {
+  if (requestedAgentId && (allowedAgents.has(requestedAgentId) || requestedAgentId === GENERALIST_AGENT_ID)) {
     agentId = requestedAgentId;
     classification = { agent: agentId, intent: agentId, confidence: 1.0, reasoning: "Agent sélectionné manuellement" };
   } else {
@@ -558,10 +756,19 @@ export async function* orchestrateStream({
       type: "orchestrator_thinking",
       content: `Analyse de la demande... Contexte : ${pageContext?.type || "generic"}${pageContext?.entityName ? ` — ${pageContext.entityName}` : ""}`
     };
-    classification = await classifyIntent(provider, userMessage, pageContext, userRole, allowedAgents);
+    classification = await classifyIntent(provider, userMessage, pageContext, userRole, routingCandidates);
     agentId = classification.agent;
-    if (!allowedAgents.has(agentId)) {
-      agentId = [...allowedAgents][0];
+
+    if (agentId !== GENERALIST_AGENT_ID && !allowedAgents.has(agentId)) {
+      const fallbackAgent = pickPreferredSpecialist(allowedAgents);
+      classification = {
+        ...classification,
+        intent: fallbackAgent,
+        agent: fallbackAgent,
+        confidence: Math.min(classification.confidence || 0.5, 0.5),
+        reasoning: `${classification.reasoning || ""} Agent non autorise, fallback vers ${fallbackAgent}.`.trim()
+      };
+      agentId = fallbackAgent;
     }
     // Emit routing decision
     yield {
@@ -603,8 +810,11 @@ export async function* orchestrateStream({
   };
 
   // Enrichit le toolContext avec l'agentId et tenantId courants
-  const enrichedToolContext = toolContext
-    ? { ...toolContext, agentId, tenantId }
+  const effectiveTools = selectToolsForAgent(agentId, tools);
+  const effectiveToolContext = buildToolContextForAgent(agentId, toolContext);
+
+  const enrichedToolContext = effectiveToolContext
+    ? { ...effectiveToolContext, agentId, tenantId }
     : { agentId, tenantId };
 
   // Step 6: Stream from the agent (which internally manages sub-agents)
@@ -615,7 +825,7 @@ export async function* orchestrateStream({
       sellsyData,
       pageContext,
       knowledgeContext,
-      tools,
+      tools: effectiveTools,
       toolContext: enrichedToolContext,
       thinkingMode,
       clientId,

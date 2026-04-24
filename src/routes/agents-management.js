@@ -65,6 +65,8 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
       systemPrompt: z.string().max(20000).optional(),
       allowedSubAgents: z.array(z.string()).optional().default([]),
       allowedTools: z.array(z.string()).optional().default([]),
+      defaultProviderCode: z.string().max(64).optional(),
+      defaultModel: z.string().max(128).optional(),
     });
     const parse = createSchema.safeParse(req.body);
     if (!parse.success) {
@@ -73,6 +75,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
     const { name, description, isActive, agentType, mistralAgentId, imageUrl, systemPrompt, allowedSubAgents, allowedTools } = parse.data;
     const agentId = `agent-${randomUUID().slice(0, 12)}`;
     const prismaAgentType = agentType === "mistral-remote" ? "mistral_remote" : agentType === "openai-remote" ? "openai_remote" : "local";
+    const { defaultProviderCode, defaultModel } = parse.data;
 
     const agent = await prisma.agent.create({
       data: {
@@ -85,6 +88,8 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
         imageUrl: imageUrl || null,
         allowedSubAgents: JSON.stringify(allowedSubAgents),
         allowedTools: JSON.stringify(allowedTools),
+        defaultProviderCode: defaultProviderCode || null,
+        defaultModel: defaultModel || null,
         workspaceId: null, // global
       }
     });
@@ -115,6 +120,7 @@ router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) =>
   try {
     const { agentId } = req.params;
     const { name, description, isActive, systemPrompt, imageUrl, allowedSubAgents, allowedTools } = req.body;
+    const { defaultProviderCode, defaultModel } = req.body;
 
     const agent = await prisma.agent.findUnique({ where: { id: agentId } });
     if (!agent) return res.status(404).json({ error: "Agent not found" });
@@ -128,6 +134,8 @@ router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) =>
         ...(imageUrl !== undefined && { imageUrl }),
         ...(allowedSubAgents !== undefined && { allowedSubAgents: JSON.stringify(allowedSubAgents) }),
         ...(allowedTools !== undefined && { allowedTools: JSON.stringify(allowedTools) }),
+        ...(defaultProviderCode !== undefined && { defaultProviderCode: defaultProviderCode || null }),
+        ...(defaultModel !== undefined && { defaultModel: defaultModel || null }),
       }
     });
 
@@ -558,6 +566,8 @@ router.post("/from-template", requireAuth, async (req, res) => {
       overrides: z.object({
         defaultPrompt: z.string().optional(),
         allowedTools: z.array(z.string()).optional(),
+        defaultProviderCode: z.string().max(64).optional(),
+        defaultModel: z.string().max(128).optional(),
       }).optional(),
     });
 
@@ -586,6 +596,8 @@ router.post("/from-template", requireAuth, async (req, res) => {
         allowedTools,
         allowedSubAgents: template.defaultSubAgents || "[]",
         imageUrl: template.imageUrl,
+        defaultProviderCode: overrides.defaultProviderCode || null,
+        defaultModel: overrides.defaultModel || null,
       },
     });
 

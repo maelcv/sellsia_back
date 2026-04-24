@@ -18,6 +18,9 @@ enum UserRole {
   admin
   client
   sub_client
+  admin_platform
+  workspace_manager
+  workspace_user
 }
 
 enum AccessStatus {
@@ -484,6 +487,8 @@ model Agent {
   // Configuration sous-agents et outils autorisés (JSON arrays of IDs/names)
   allowedSubAgents String?  @default("[]") @map("allowed_sub_agents")
   allowedTools     String?  @default("[]") @map("allowed_tools")
+  defaultProviderCode String? @map("default_provider_code")
+  defaultModel        String? @map("default_model")
 
   // Scoping tenant : null = global, set = workspace-scoped
   workspaceId String?    @map("workspace_id")
@@ -509,6 +514,7 @@ model Agent {
   tokenUsage           TokenUsage[]
   providerErrors       ProviderError[]
   reminders            Reminder[]
+  assignedWhatsappAccounts WhatsappAccount[] @relation("WhatsappAssignedAgent")
 
   allowedInPlans Plan[] @relation("PlanToAgent")
 
@@ -528,6 +534,8 @@ model SubAgentDefinition {
   subAgentType String   @default("tool") @map("sub_agent_type") // "tool" | "sub_agent"
   systemPrompt String?  @map("system_prompt")
   capabilities String   @default("[]") // JSON array of capability keys
+  defaultProviderCode String? @map("default_provider_code")
+  defaultModel        String? @map("default_model")
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -923,11 +931,14 @@ model WhatsappAccount {
   appSecretEncrypted    String                @map("app_secret_encrypted")
   webhookVerifyToken    String                @map("webhook_verify_token")
   provider              String                @default("meta")
+  routingMode           String                @default("orchestrator") @map("routing_mode") // orchestrator | agent
+  assignedAgentId       String?               @map("assigned_agent_id")
   status                WhatsappAccountStatus @default(active)
   createdAt             DateTime              @default(now()) @map("created_at")
   updatedAt             DateTime              @default(now()) @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignedAgent Agent? @relation("WhatsappAssignedAgent", fields: [assignedAgentId], references: [id], onDelete: SetNull)
 
   @@map("whatsapp_accounts")
 }
@@ -1348,6 +1359,9 @@ model WorkspaceIntegration {
   workspaceId         String   @map("workspace_id")
   integrationTypeId   String   @map("integration_type_id")
   isEnabled           Boolean  @default(true) @map("is_enabled")
+  accessMode          String   @default("workspace") @map("access_mode") // workspace | restricted
+  allowedRoleIds      String   @default("[]") @map("allowed_role_ids")
+  allowedUserIds      String   @default("[]") @map("allowed_user_ids")
   encryptedConfig     String   @map("encrypted_config") // AES-256 encrypted JSON
   configuredAt        DateTime @default(now()) @map("configured_at")
   configuredByUserId  Int?     @map("configured_by_user_id")

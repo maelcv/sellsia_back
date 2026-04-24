@@ -7,6 +7,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { sendEmail } from "../services/email/email-service.js";
 import { encryptSecret } from "../security/secrets.js";
 import { randomBytes } from "crypto";
+import { seedSubAgentsForWorkspace } from "./sub-agents.js";
 
 const router = Router();
 
@@ -244,7 +245,14 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
       };
     });
 
-    // 5. Send invitation emails
+    // 5. Seed default sub-agent presets (non-blocking)
+    try {
+      await seedSubAgentsForWorkspace(prisma, result.workspace.id, result.client.id);
+    } catch (err) {
+      console.error("[CLIENT_ONBOARDING] sub-agent seed failed:", err.message);
+    }
+
+    // 6. Send invitation emails
     const appUrl = process.env.APP_URL || "http://localhost:5173";
 
     // Send client welcome email with temp password
@@ -501,6 +509,13 @@ router.post(
       } catch (err) {
         console.warn(`[onboarding] Failed to save client data file ${file.originalname}:`, err.message);
       }
+    }
+
+    // Seed default sub-agent presets (non-blocking)
+    try {
+      await seedSubAgentsForWorkspace(prisma, result.workspace.id, result.client.id);
+    } catch (err) {
+      console.error("[CLIENT_ONBOARDING_2] sub-agent seed failed:", err.message);
     }
 
     // Send invitation emails

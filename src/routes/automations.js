@@ -26,6 +26,10 @@ import { reloadAutomations } from "../workers/automation-worker.js";
 import { getAllBricksForClient } from "../bricks/registry.js";
 import { listAutomationMetadataOptions } from "../services/automations/integration-resolvers.js";
 import {
+  getIntegrationAutomationBlocks,
+  RUDIMENTARY_AUTOMATION_BLOCK_IDS,
+} from "../services/integrations/catalog.js";
+import {
   listTree,
   ensureWorkspaceBaseStructure,
   createWorkspacePathPolicy,
@@ -88,11 +92,48 @@ function collectVaultHints(tree, maxResults = 200) {
 
 // ── Catalogue des briques ─────────────────────────────────────────
 
-router.get("/bricks", requireAuth, requireWorkspaceContext, (req, res) => {
+router.get("/bricks", requireAuth, requireWorkspaceContext, async (req, res) => {
   try {
-    res.json({ bricks: getAllBricksForClient() });
+    const allBricks = getAllBricksForClient();
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+
+    // Admin without explicit workspace keeps full catalog visibility.
+    if (!workspaceId) {
+      return res.json({ bricks: allBricks });
+    }
+
+    const enabledIntegrations = await prisma.workspaceIntegration.findMany({
+      where: {
+        workspaceId,
+        isEnabled: true,
+        integrationType: {
+          isActive: true,
+        },
+      },
+      include: {
+        integrationType: {
+          select: {
+            id: true,
+            name: true,
+            category: true,
+            configSchema: true,
+          },
+        },
+      },
+    });
+
+    const allowedBrickIds = new Set(RUDIMENTARY_AUTOMATION_BLOCK_IDS);
+    for (const integration of enabledIntegrations) {
+      const boundBlocks = getIntegrationAutomationBlocks(integration.integrationType);
+      for (const blockId of boundBlocks) {
+        allowedBrickIds.add(blockId);
+      }
+    }
+
+    const bricks = allBricks.filter((brick) => allowedBrickIds.has(brick.id));
+    return res.json({ bricks });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 

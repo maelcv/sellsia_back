@@ -200,7 +200,7 @@ router.post("/request-email-code", async (req, res) => {
     return res.json({ success: true, message: "Code envoyé par email" });
   } catch (err) {
     console.error("[2FA] Email failed:", err);
-    return res.status(500).json({ error: "Échec de l'envoi de l'email" });
+    return res.status(500).json({ error: `Échec de l'envoi de l'email: ${err.message}` });
   }
 });
 

@@ -12,6 +12,7 @@ import { prisma, logAudit } from "../prisma.js";
 import { requireAuth, requireRole, requireFeature } from "../middleware/auth.js";
 import { requireWorkspaceContext } from "../middleware/tenant.js";
 import { seedMarketForWorkspace } from "../seed-market.js";
+import { seedSubAgentsForWorkspace } from "./sub-agents.js";
 import { deleteWorkspaceVaultStorage } from "../services/vault/vault-service.js";
 
 const router = express.Router();
@@ -411,6 +412,13 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
     console.error("[WORKSPACE_CREATE] market seed failed:", err.message);
   }
 
+  // Seed default sub-agent presets (non-blocking on error)
+  try {
+    await seedSubAgentsForWorkspace(prisma, workspace.id, ownerId);
+  } catch (err) {
+    console.error("[WORKSPACE_CREATE] sub-agent seed failed:", err.message);
+  }
+
   await logAudit(req.user.sub, "WORKSPACE_CREATED", { workspaceId: workspace.id, slug, ownerId });
 
   return res.status(201).json({
@@ -616,6 +624,13 @@ router.post(
       return [newWorkspace, newOwner];
     });
 
+    // Seed default sub-agent presets (non-blocking on error)
+    try {
+      await seedSubAgentsForWorkspace(prisma, workspace.id, owner.id);
+    } catch (err) {
+      console.error("[SUB_CLIENT_CREATE] sub-agent seed failed:", err.message);
+    }
+
     await logAudit(req.user.sub, "SUB_CLIENT_CREATED", {
       parentWorkspaceId,
       childWorkspaceId: workspace.id,
@@ -641,8 +656,14 @@ router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => 
       where: { workspaceId: req.params.id },
       orderBy: { createdAt: "desc" },
       take: 100,
-      include: { user: { select: { id: true, email: true } } },
     });
+
+    const userIds = [...new Set(tasks.map((t) => t.userId).filter(Boolean))];
+    const users = userIds.length > 0
+      ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true } })
+      : [];
+    const usersById = new Map(users.map((u) => [u.id, u]));
+    tasks.forEach((t) => { t.user = usersById.get(t.userId) || null; });
 
     const reminderIds = tasks
       .filter((task) => task.entityType === "reminder" && task.entityId && /^\d+$/.test(String(task.entityId)))

@@ -522,6 +522,65 @@ router.post("/admin/users/:id/reset-password", requireAuth, requireRole("admin")
   return res.json({ message: "Password reset successfully" });
 });
 
+// ── POST /api/users-services/admin/users/:id/send-temporary-password ──
+router.post("/admin/users/:id/send-temporary-password", requireAuth, requireRole("admin"), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, email: true }
+  });
+
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  // Generate readable temporary password (12 chars, mix of uppercase, lowercase, numbers)
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let tempPass = "";
+  for (let i = 0; i < 12; i++) {
+    tempPass += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+
+  try {
+    // Update password
+    await prisma.user.update({
+      where: { id },
+      data: { passwordHash: bcrypt.hashSync(tempPass, 12) }
+    });
+
+    // Send email
+    const { renderEmailTemplate, sendEmail } = await import("../services/email/email-service.js");
+    const html = renderEmailTemplate({
+      title: "Votre mot de passe temporaire",
+      content: `
+        <p>Votre compte a été créé ou réinitialisé par un administrateur.</p>
+        <p>Veuillez utiliser le mot de passe temporaire ci-dessous pour vous connecter :</p>
+        <div class="verification-code">${tempPass}</div>
+        <p>Après votre première connexion, nous vous recommandons de changer ce mot de passe dans les paramètres de votre profil.</p>
+      `,
+      buttonLabel: "Aller à la connexion",
+      buttonUrl: `${process.env.APP_URL || 'http://localhost:5173'}/login`
+    });
+
+    await sendEmail({
+      userId: user.id,
+      to: user.email,
+      subject: "[Boatswain] Votre mot de passe temporaire",
+      html
+    });
+
+    await logAudit(req.user.sub, "ADMIN_TEMP_PASSWORD_SENT", { targetUserId: id });
+    return res.json({ message: "Temporary password sent to user email" });
+  } catch (err) {
+    console.error("[admin-users] send temp password failed:", err);
+    return res.status(500).json({ error: `Failed to send temporary password: ${err.message}` });
+  }
+});
+
 // ── Fetch available models from a local provider (proxy to bypass CSP) ──
 router.get("/provider-models", requireAuth, requireRole("admin"), async (req, res) => {
   const { code, host, apiKey } = req.query;
@@ -592,7 +651,27 @@ router.post("/test-provider", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Invalid request payload" });
   }
 
-  const { providerCode, apiKey, apiSecret, config: cfg } = parse.data;
+  let { providerCode, apiKey, apiSecret, config: cfg } = parse.data;
+
+  // When key is missing or masked, fall back to the stored encrypted key
+  if (!apiKey || apiKey === "***") {
+    try {
+      const svc = await prisma.externalService.findFirst({
+        where: { code: providerCode, isActive: true },
+        select: { defaultConfig: true },
+      });
+      if (svc?.defaultConfig) {
+        const stored = JSON.parse(svc.defaultConfig);
+        if (stored.apiKey && stored._apiKeyEncrypted) {
+          apiKey = decryptSecret(stored.apiKey);
+        } else if (stored.apiKey) {
+          apiKey = stored.apiKey;
+        }
+      }
+    } catch {
+      // proceed without key — testProviderConnection will fail with a clear error
+    }
+  }
 
   try {
     const result = await testProviderConnection(providerCode, apiKey, apiSecret, cfg);
@@ -744,36 +823,42 @@ router.delete("/admin/users/:id", requireAuth, requireRole("admin"), async (req,
 });
 
 router.get("/admin/external-services", requireAuth, requireRole("admin"), async (_req, res) => {
-  const serviceRows = await prisma.externalService.findMany({
-    orderBy: [{ category: "asc" }, { name: "asc" }],
-    select: {
-      id: true,
-      code: true,
-      name: true,
-      category: true,
-      isActive: true,
-      defaultConfig: true,
-      createdAt: true
-    }
-  });
+  try {
+    const serviceRows = await prisma.externalService.findMany({
+      orderBy: [{ category: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        category: true,
+        isActive: true,
+        defaultConfig: true,
+        createdAt: true
+      }
+    });
 
-  const services = serviceRows.map((s) => {
-    const defaultConfig = JSON.parse(s.defaultConfig || "{}");
+    const services = serviceRows.map((s) => {
+      let defaultConfig = {};
+      try { defaultConfig = JSON.parse(s.defaultConfig || "{}"); } catch { /* ignore */ }
 
-    // ── MASK sensitive data before sending to admin browser ──
-    if (defaultConfig.apiKey) {
-      defaultConfig.apiKey = maskSecret(decryptSecret(defaultConfig.apiKey));
-      delete defaultConfig._apiKeyEncrypted;
-    }
-    if (defaultConfig.apiSecret) {
-      defaultConfig.apiSecret = maskSecret(decryptSecret(defaultConfig.apiSecret));
-      delete defaultConfig._apiSecretEncrypted;
-    }
+      // Mask sensitive data — wrap decrypt in try/catch so a bad key doesn't crash the list
+      if (defaultConfig.apiKey) {
+        try { defaultConfig.apiKey = maskSecret(decryptSecret(defaultConfig.apiKey)); } catch { defaultConfig.apiKey = "***"; }
+        delete defaultConfig._apiKeyEncrypted;
+      }
+      if (defaultConfig.apiSecret) {
+        try { defaultConfig.apiSecret = maskSecret(decryptSecret(defaultConfig.apiSecret)); } catch { defaultConfig.apiSecret = "***"; }
+        delete defaultConfig._apiSecretEncrypted;
+      }
 
-    return { ...s, category: toApiCategory(s.category), defaultConfig };
-  });
+      return { ...s, category: toApiCategory(s.category), defaultConfig };
+    });
 
-  return res.json({ services });
+    return res.json({ services });
+  } catch (err) {
+    console.error("[GET /admin/external-services]", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 router.post("/admin/external-services", requireAuth, requireRole("admin"), async (req, res) => {
@@ -833,12 +918,32 @@ router.patch("/admin/external-services/:id", requireAuth, requireRole("admin"), 
   const payload = parse.data;
 
   // ── Encrypt sensitive data in defaultConfig before storing ──
+  const MASKED_SENTINEL = "***";
   const defaultConfig = { ...payload.defaultConfig };
-  if (defaultConfig.apiKey) {
+
+  const needsKeyMerge = !defaultConfig.apiKey || defaultConfig.apiKey === MASKED_SENTINEL;
+  const needsSecretMerge = !defaultConfig.apiSecret || defaultConfig.apiSecret === MASKED_SENTINEL;
+
+  if (needsKeyMerge || needsSecretMerge) {
+    const existing = await prisma.externalService.findUnique({ where: { id }, select: { defaultConfig: true } });
+    const existingCfg = JSON.parse(existing?.defaultConfig || "{}");
+    if (needsKeyMerge) {
+      if (existingCfg.apiKey) defaultConfig.apiKey = existingCfg.apiKey;
+      if (existingCfg._apiKeyEncrypted) defaultConfig._apiKeyEncrypted = existingCfg._apiKeyEncrypted;
+      else delete defaultConfig.apiKey;
+    }
+    if (needsSecretMerge) {
+      if (existingCfg.apiSecret) defaultConfig.apiSecret = existingCfg.apiSecret;
+      if (existingCfg._apiSecretEncrypted) defaultConfig._apiSecretEncrypted = existingCfg._apiSecretEncrypted;
+      else delete defaultConfig.apiSecret;
+    }
+  }
+
+  if (defaultConfig.apiKey && !defaultConfig._apiKeyEncrypted) {
     defaultConfig.apiKey = encryptSecret(defaultConfig.apiKey);
     defaultConfig._apiKeyEncrypted = true;
   }
-  if (defaultConfig.apiSecret) {
+  if (defaultConfig.apiSecret && !defaultConfig._apiSecretEncrypted) {
     defaultConfig.apiSecret = encryptSecret(defaultConfig.apiSecret);
     defaultConfig._apiSecretEncrypted = true;
   }
@@ -861,7 +966,30 @@ router.patch("/admin/external-services/:id", requireAuth, requireRole("admin"), 
     throw err;
   }
 
-  // REMOVED: global disableOtherAiProviders call
+  // If this service is the current system default provider, sync its config
+  try {
+    const setting = await prisma.systemSetting.findUnique({ where: { key: "default_ai_provider" } });
+    if (setting?.value) {
+      const current = JSON.parse(setting.value);
+      if (current.code === payload.code) {
+        const updated = {
+          ...current,
+          name: payload.name,
+          model: defaultConfig.model || current.model || null,
+          baseUrl: defaultConfig.baseUrl || current.baseUrl || null,
+          host: defaultConfig.host || current.host || null,
+          apiKeyEncrypted: defaultConfig._apiKeyEncrypted ? defaultConfig.apiKey : current.apiKeyEncrypted,
+          setAt: new Date().toISOString(),
+        };
+        await prisma.systemSetting.update({
+          where: { key: "default_ai_provider" },
+          data: { value: JSON.stringify(updated) },
+        });
+      }
+    }
+  } catch (syncErr) {
+    console.warn("[external-services] default provider sync failed:", syncErr.message);
+  }
 
   await logAudit(req.user.sub, "EXTERNAL_SERVICE_UPDATED", { serviceId: id });
   return res.json({ message: "External service updated" });

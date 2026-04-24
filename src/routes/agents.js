@@ -18,7 +18,9 @@ const adminAgentSchema = z.object({
   description: z.string().min(8).max(500),
   isActive: z.boolean().optional().default(true),
   agentType: z.enum(["local", "mistral-remote"]).optional().default("local"),
-  mistralAgentId: z.string().max(128).optional().default("")
+  mistralAgentId: z.string().max(128).optional().default(""),
+  defaultProviderCode: z.string().max(64).optional(),
+  defaultModel: z.string().max(128).optional(),
 });
 
 const workspaceAgentSchema = z.object({
@@ -29,6 +31,8 @@ const workspaceAgentSchema = z.object({
   systemPrompt: z.string().max(20000).optional(),
   allowedSubAgents: z.array(z.string()).optional().default([]),
   allowedTools: z.array(z.string()).optional().default([]),
+  defaultProviderCode: z.string().max(64).optional(),
+  defaultModel: z.string().max(128).optional(),
 });
 
 const importAgentSchema = z.object({
@@ -46,6 +50,8 @@ const updateWorkspaceAgentSchema = z.object({
   systemPrompt: z.string().max(20000).optional(),
   allowedSubAgents: z.array(z.string()).optional(),
   allowedTools: z.array(z.string()).optional(),
+  defaultProviderCode: z.string().max(64).optional(),
+  defaultModel: z.string().max(128).optional(),
 });
 
 // Map API agent type values to Prisma enum values
@@ -70,6 +76,8 @@ function formatAgent(a) {
     is_active: a.isActive,
     agent_type: toApiAgentType(a.agentType),
     mistral_agent_id: a.mistralAgentId,
+    default_provider_code: a.defaultProviderCode || null,
+    default_model: a.defaultModel || null,
     workspace_id: a.workspaceId || null,
     owner_id: a.ownerId || null,
     is_global: !a.workspaceId
@@ -119,7 +127,9 @@ router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
       description: payload.description,
       isActive: payload.isActive,
       agentType: toPrismaAgentType(payload.agentType),
-      mistralAgentId: payload.agentType === "mistral-remote" ? (payload.mistralAgentId || null) : null
+      mistralAgentId: payload.agentType === "mistral-remote" ? (payload.mistralAgentId || null) : null,
+      defaultProviderCode: payload.defaultProviderCode || null,
+      defaultModel: payload.defaultModel || null,
     }
   });
 
@@ -140,7 +150,9 @@ router.patch("/admin/:id", requireAuth, requireRole("admin"), async (req, res) =
         description: payload.description,
         isActive: payload.isActive,
         agentType: toPrismaAgentType(payload.agentType),
-        mistralAgentId: payload.agentType === "mistral-remote" ? (payload.mistralAgentId || null) : null
+        mistralAgentId: payload.agentType === "mistral-remote" ? (payload.mistralAgentId || null) : null,
+        defaultProviderCode: payload.defaultProviderCode || null,
+        defaultModel: payload.defaultModel || null,
       }
     });
   } catch (err) {
@@ -235,7 +247,17 @@ router.post(
       }
     }
 
-    const { name, description, isActive, imageUrl, systemPrompt, allowedSubAgents, allowedTools } = parse.data;
+    const {
+      name,
+      description,
+      isActive,
+      imageUrl,
+      systemPrompt,
+      allowedSubAgents,
+      allowedTools,
+      defaultProviderCode,
+      defaultModel,
+    } = parse.data;
     const agentId = `workspace-${req.workspaceId?.slice(0, 8)}-${randomUUID().slice(0, 8)}`;
 
     const agent = await prisma.agent.create({
@@ -250,6 +272,8 @@ router.post(
         imageUrl: imageUrl || null,
         allowedSubAgents: JSON.stringify(allowedSubAgents),
         allowedTools: JSON.stringify(allowedTools),
+        defaultProviderCode: defaultProviderCode || null,
+        defaultModel: defaultModel || null,
       }
     });
 
@@ -340,7 +364,17 @@ router.patch(
       return res.status(403).json({ error: "Vous ne pouvez modifier que les agents de votre workspace" });
     }
 
-    const { name, description, isActive, imageUrl, systemPrompt, allowedSubAgents, allowedTools } = parse.data;
+    const {
+      name,
+      description,
+      isActive,
+      imageUrl,
+      systemPrompt,
+      allowedSubAgents,
+      allowedTools,
+      defaultProviderCode,
+      defaultModel,
+    } = parse.data;
     const updateData = {};
     if (name !== undefined) updateData.name = name;
     if (description !== undefined) updateData.description = description;
@@ -348,6 +382,8 @@ router.patch(
     if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
     if (allowedSubAgents !== undefined) updateData.allowedSubAgents = JSON.stringify(allowedSubAgents);
     if (allowedTools !== undefined) updateData.allowedTools = JSON.stringify(allowedTools);
+    if (defaultProviderCode !== undefined) updateData.defaultProviderCode = defaultProviderCode || null;
+    if (defaultModel !== undefined) updateData.defaultModel = defaultModel || null;
 
     const agent = await prisma.agent.update({ where: { id: req.params.id }, data: updateData });
 

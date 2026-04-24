@@ -717,7 +717,7 @@ router.post("/forgot-password", authRateLimit, async (req, res) => {
       });
     } catch (err) {
       console.error("[Auth] Failed to send password reset email:", err.message);
-      return res.status(500).json({ error: "Failed to send reset email" });
+      return res.status(500).json({ error: `Failed to send reset email: ${err.message}` });
     }
 
     await logAudit(null, "PASSWORD_RESET_REQUESTED", { email: user.email });

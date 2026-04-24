@@ -22,7 +22,7 @@ import usageRoutes from "./routes/usage.js";
 import whatsappRoutes from "./routes/whatsapp.js";
 import remindersRoutes from "./routes/reminders.js";
 import invitationsRoutes from "./routes/invitations.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, toCanonicalRole, toLegacyRole } from "./middleware/auth.js";
 import { requireWorkspaceContext } from "./middleware/tenant.js";
 import workspacesRoutes from "./routes/workspaces.js";
 import setupRoutes from "./routes/setup.js";
@@ -41,6 +41,7 @@ import clientOnboardingRoutes from "./routes/client-onboarding.js";
 import agentsManagementRoutes from "./routes/agents-management.js";
 import subAgentsRoutes from "./routes/sub-agents.js";
 import aiProvidersRoutes from "./routes/ai-providers.js";
+import workspaceRolesRoutes from "./routes/workspace-roles.js";
 import orgchartRoutes from "./routes/orgchart.js";
 import profileSecurityRoutes from "./routes/profile-security.js";
 import { startReminderWorker, stopReminderWorker } from "./services/reminders/reminder-service.js";
@@ -190,6 +191,7 @@ app.use("/api/onboarding", clientOnboardingRoutes);
 app.use("/api/agents-management", agentsManagementRoutes);
 app.use("/api/sub-agents", subAgentsRoutes);
 app.use("/api/ai-providers", aiProvidersRoutes);
+app.use("/api/workspace-roles", workspaceRolesRoutes);
 app.use("/api/onboarding/orgchart", orgchartRoutes);
 app.use("/api/profile", profileSecurityRoutes);
 app.use("/api/market-reports", marketReportsRoutes);
@@ -200,11 +202,17 @@ app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
   // Enrich with fields not in JWT (like twoFactorEnabled)
   const dbUser = await prisma.user.findUnique({
     where: { id: req.user.sub },
-    select: { twoFactorEnabled: true, workspaceId: true },
+    select: { twoFactorEnabled: true, workspaceId: true, role: true },
   });
+
+  const canonicalRole = toCanonicalRole(dbUser?.role || req.user?.roleCanonical || req.user?.role);
+  const legacyRole = toLegacyRole(canonicalRole);
+
   res.json({
     user: { 
-      ...req.user, 
+      ...req.user,
+      role: canonicalRole,
+      roleLegacy: legacyRole,
       twoFactorEnabled: dbUser?.twoFactorEnabled ?? false,
       workspaceId: dbUser?.workspaceId || null
     },
