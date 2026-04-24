@@ -546,15 +546,14 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     }
 
     // 4. Gérer la conversation (historique)
-    // Validate that reqConvId actually exists in DB to avoid FK constraint errors
+    // Validate that reqConvId exists AND belongs to the current workspace
     let validatedConvId = reqConvId;
     if (reqConvId) {
       const exists = await prisma.conversation.findUnique({
         where: { id: reqConvId },
-        select: { id: true }
+        select: { id: true, workspaceId: true }
       });
-      if (!exists) {
-        console.warn(`[Chat/ask] conversationId ${reqConvId} not found in DB, creating new conversation`);
+      if (!exists || exists.workspaceId !== req.workspaceId) {
         validatedConvId = null;
       }
     }
@@ -1348,7 +1347,7 @@ router.post("/feedback", requireAuth, requireWorkspaceContext, async (req, res) 
 // GET /api/chat/download/:fileId — Télécharger un rapport PDF
 // ══════════════════════════════════════════════════════
 
-router.get("/download/:fileId", requireAuth, (req, res) => {
+router.get("/download/:fileId", requireAuth, requireWorkspaceContext, (req, res) => {
   const fileId = req.params.fileId;
 
   // Validate UUID format to prevent path traversal

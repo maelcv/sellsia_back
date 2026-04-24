@@ -27,30 +27,26 @@ router.get("/summary", requireAuth, requireRole("admin"), async (req, res) => {
     default: dateFormat = "YYYY-MM-DD";
   }
 
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT
-      to_char(created_at, $1) AS period,
+  const rows = await prisma.$queryRaw`
+    SELECT
+      to_char(created_at, ${dateFormat}) AS period,
       SUM(tokens_input)::int AS "totalInput",
       SUM(tokens_output)::int AS "totalOutput",
       SUM(tokens_input + tokens_output)::int AS "totalTokens",
       COUNT(*)::int AS "callCount"
     FROM token_usage
-    WHERE created_at >= NOW() - make_interval(days => $2)
+    WHERE created_at >= NOW() - make_interval(days => ${daysNum})
     GROUP BY period
-    ORDER BY period DESC`,
-    dateFormat, daysNum
-  );
+    ORDER BY period DESC`;
 
-  const totalsResult = await prisma.$queryRawUnsafe(
-    `SELECT
+  const totalsResult = await prisma.$queryRaw`
+    SELECT
       COALESCE(SUM(tokens_input), 0)::int AS "totalInput",
       COALESCE(SUM(tokens_output), 0)::int AS "totalOutput",
       COALESCE(SUM(tokens_input + tokens_output), 0)::int AS "totalTokens",
       COUNT(*)::int AS "callCount"
     FROM token_usage
-    WHERE created_at >= NOW() - make_interval(days => $1)`,
-    daysNum
-  );
+    WHERE created_at >= NOW() - make_interval(days => ${daysNum})`;
   const totals = totalsResult[0] || { totalInput: 0, totalOutput: 0, totalTokens: 0, callCount: 0 };
 
   return res.json({ periods: rows, totals });
@@ -61,19 +57,17 @@ router.get("/summary", requireAuth, requireRole("admin"), async (req, res) => {
 router.get("/by-provider", requireAuth, requireRole("admin"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT
+  const rows = await prisma.$queryRaw`
+    SELECT
       COALESCE(provider_code, 'unknown') AS provider,
       SUM(tokens_input)::int AS "totalInput",
       SUM(tokens_output)::int AS "totalOutput",
       SUM(tokens_input + tokens_output)::int AS "totalTokens",
       COUNT(*)::int AS "callCount"
     FROM token_usage
-    WHERE created_at >= NOW() - make_interval(days => $1)
+    WHERE created_at >= NOW() - make_interval(days => ${days})
     GROUP BY provider_code
-    ORDER BY "totalTokens" DESC`,
-    days
-  );
+    ORDER BY "totalTokens" DESC`;
 
   return res.json({ providers: rows });
 });
@@ -83,8 +77,8 @@ router.get("/by-provider", requireAuth, requireRole("admin"), async (req, res) =
 router.get("/by-agent", requireAuth, requireRole("admin"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT
+  const rows = await prisma.$queryRaw`
+    SELECT
       COALESCE(tu.agent_id, 'unknown') AS "agentId",
       COALESCE(a.name, tu.agent_id) AS "agentName",
       tu.sub_agent_type AS "subAgentType",
@@ -94,11 +88,9 @@ router.get("/by-agent", requireAuth, requireRole("admin"), async (req, res) => {
       COUNT(*)::int AS "callCount"
     FROM token_usage tu
     LEFT JOIN agents a ON a.id = tu.agent_id
-    WHERE tu.created_at >= NOW() - make_interval(days => $1)
+    WHERE tu.created_at >= NOW() - make_interval(days => ${days})
     GROUP BY tu.agent_id, tu.sub_agent_type, a.name
-    ORDER BY "totalTokens" DESC`,
-    days
-  );
+    ORDER BY "totalTokens" DESC`;
 
   return res.json({ agents: rows });
 });
@@ -108,8 +100,8 @@ router.get("/by-agent", requireAuth, requireRole("admin"), async (req, res) => {
 router.get("/by-user", requireAuth, requireRole("admin"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT
+  const rows = await prisma.$queryRaw`
+    SELECT
       tu.user_id AS "userId",
       u.email,
       u.company_name AS company,
@@ -119,11 +111,9 @@ router.get("/by-user", requireAuth, requireRole("admin"), async (req, res) => {
       COUNT(*)::int AS "callCount"
     FROM token_usage tu
     LEFT JOIN users u ON u.id = tu.user_id
-    WHERE tu.created_at >= NOW() - make_interval(days => $1)
+    WHERE tu.created_at >= NOW() - make_interval(days => ${days})
     GROUP BY tu.user_id, u.email, u.company_name
-    ORDER BY "totalTokens" DESC`,
-    days
-  );
+    ORDER BY "totalTokens" DESC`;
 
   return res.json({ users: rows });
 });
@@ -133,8 +123,8 @@ router.get("/by-user", requireAuth, requireRole("admin"), async (req, res) => {
 router.get("/export", requireAuth, requireRole("admin"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
-  const rows = await prisma.$queryRawUnsafe(
-    `SELECT
+  const rows = await prisma.$queryRaw`
+    SELECT
       tu.created_at AS date,
       u.email AS "user",
       tu.agent_id AS agent,
@@ -146,10 +136,8 @@ router.get("/export", requireAuth, requireRole("admin"), async (req, res) => {
       tu.conversation_id AS "conversationId"
     FROM token_usage tu
     LEFT JOIN users u ON u.id = tu.user_id
-    WHERE tu.created_at >= NOW() - make_interval(days => $1)
-    ORDER BY tu.created_at DESC`,
-    days
-  );
+    WHERE tu.created_at >= NOW() - make_interval(days => ${days})
+    ORDER BY tu.created_at DESC`;
 
   const header = "date,user,agent,sub_agent,provider,tokens_input,tokens_output,tokens_total,conversation_id\n";
   const csvRows = rows.map(r =>

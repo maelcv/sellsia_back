@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import { config } from "../config.js";
+import { getRedis } from "../cache/redis-client.js";
 
 const ROLE_TO_CANONICAL = {
   admin: "admin_platform",
@@ -37,7 +38,7 @@ export function isWorkspaceUserRole(role) {
   return toCanonicalRole(role) === "workspace_user";
 }
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const authorization = req.headers.authorization || "";
   const [, token] = authorization.split(" ");
 
@@ -45,21 +46,36 @@ export function requireAuth(req, res, next) {
     return res.status(401).json({ error: "Missing bearer token" });
   }
 
+  let payload;
   try {
-    const payload = jwt.verify(token, config.jwtSecret);
-    const roleCanonical = toCanonicalRole(payload?.role);
-    const roleLegacy = toLegacyRole(roleCanonical);
-    req.user = {
-      ...payload,
-      role: roleLegacy,
-      roleCanonical,
-      roleLegacy,
-      roleOriginal: payload?.role,
-    };
-    return next();
+    payload = jwt.verify(token, config.jwtSecret);
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
+
+  // Check JWT blacklist for revoked impersonation tokens
+  if (payload.jti && payload.impersonated) {
+    try {
+      const redis = await getRedis();
+      if (redis) {
+        const revoked = await redis.get(`jwt:blacklist:${payload.jti}`);
+        if (revoked) return res.status(401).json({ error: "Token has been revoked" });
+      }
+    } catch {
+      // Redis unavailable — allow through (graceful degradation)
+    }
+  }
+
+  const roleCanonical = toCanonicalRole(payload?.role);
+  const roleLegacy = toLegacyRole(roleCanonical);
+  req.user = {
+    ...payload,
+    role: roleLegacy,
+    roleCanonical,
+    roleLegacy,
+    roleOriginal: payload?.role,
+  };
+  return next();
 }
 
 export function requireRole(...allowedRoles) {

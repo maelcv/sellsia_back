@@ -35,3 +35,12 @@ export const chatRateLimit = rateLimit({
   skip: (req) => req.user?.role === "admin", // Admins bypass
   message: { error: "Trop de demandes. Veuillez attendre avant de relancer une conversation." }
 });
+
+// Password reset — strict per-IP: max 5 per hour to prevent email flooding
+export const passwordResetRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many password reset requests. Please try again in an hour." }
+});

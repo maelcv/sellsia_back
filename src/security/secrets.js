@@ -13,7 +13,7 @@ function getKey() {
   _cachedKey = crypto.pbkdf2Sync(
     config.encryptionKey,
     "boatswain-aes256gcm-v1",
-    100_000,
+    600_000, // NIST SP 800-132 (2023) recommended minimum
     32,
     "sha256"
   );

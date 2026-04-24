@@ -7,8 +7,11 @@
  */
 
 import express from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+
+const VALID_REVIEW_STATUSES = new Set(["pending", "reviewed"]);
 
 const router = express.Router();
 
@@ -20,25 +23,18 @@ router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
   const { status, agent_id, limit = 100 } = req.query;
   const limitNum = Math.min(Number(limit) || 100, 500);
 
-  // Build dynamic query with conditions
-  const conditions = ["mf.rating = 'negative'"];
-  const params = [];
-  let paramIdx = 1;
-
-  if (status) {
-    conditions.push(`mf.review_status = $${paramIdx++}::text::"ReviewStatus"`);
-    params.push(status);
+  if (status && !VALID_REVIEW_STATUSES.has(status)) {
+    return res.status(400).json({ error: "Invalid status value" });
   }
 
-  if (agent_id) {
-    conditions.push(`m.agent_id = $${paramIdx++}`);
-    params.push(agent_id);
-  }
+  const conditions = [Prisma.sql`mf.rating = 'negative'`];
+  if (status) conditions.push(Prisma.sql`mf.review_status = ${status}::text::"ReviewStatus"`);
+  if (agent_id) conditions.push(Prisma.sql`m.agent_id = ${agent_id}`);
 
-  const whereClause = conditions.join(" AND ");
+  const whereClause = Prisma.join(conditions, " AND ");
 
-  const feedback = await prisma.$queryRawUnsafe(
-    `SELECT
+  const feedback = await prisma.$queryRaw`
+    SELECT
       mf.id,
       mf.message_id AS "message_id",
       mf.rating::text,
@@ -64,9 +60,7 @@ router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
     LEFT JOIN agents a ON a.id = m.agent_id
     WHERE ${whereClause}
     ORDER BY mf.created_at DESC
-    LIMIT $${paramIdx}`,
-    ...params, limitNum
-  );
+    LIMIT ${limitNum}`;
 
   // Global stats
   const statsResult = await prisma.$queryRaw`
