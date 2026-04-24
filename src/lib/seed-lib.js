@@ -96,12 +96,24 @@ export const INTEGRATION_TYPES = [
     logoUrl: "https://www.gstatic.com/images/branding/product/1x/gmail_2020q4_32dp.png",
     configSchema: { clientId: { type: "string" }, clientSecret: { type: "string" }, refreshToken: { type: "string" } },
   },
+  {
+    name: "Outlook Mail",
+    category: "mail",
+    logoUrl: "https://outlook.live.com/favicon.ico",
+    configSchema: { oauthProvider: "office" },
+  },
   // Calendrier
   {
     name: "Google Calendar",
     category: "calendar",
     logoUrl: "https://www.google.com/favicon.ico",
     configSchema: { clientId: { type: "string" }, clientSecret: { type: "string" }, refreshToken: { type: "string" } },
+  },
+  {
+    name: "Outlook Calendar",
+    category: "calendar",
+    logoUrl: "https://outlook.live.com/favicon.ico",
+    configSchema: { oauthProvider: "office" },
   },
   // Storage
   {
