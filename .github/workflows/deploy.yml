@@ -20,7 +20,6 @@ jobs:
         run: |
           npm ci
           # npm run build # Décommente cette ligne si tu utilises TypeScript
-
       - name: 🧹 Nettoyer l'ancienne version sur le serveur
         uses: appleboy/ssh-action@master
         with:
@@ -30,7 +29,6 @@ jobs:
           script: |
             cd /var/www/ceremia/api
             rm -rf src ia_models package*.json server.js prisma node_modules 2>/dev/null || true
-
       - name: 🚀 Déploiement des fichiers sur le serveur
         uses: appleboy/scp-action@master
         with:
@@ -47,4 +45,4 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            bash -ic 'cd /var/www/ceremia/api && npm install --production && npm install -g pm2 && npx prisma migrate deploy && pm2 delete api-express 2>/dev/null; pm2 start server.js --name "api-express" && pm2 save'
+            bash -ic 'cd /var/www/ceremia/api && npm install --omit=dev && npx prisma generate && npx prisma db push --accept-data-loss && (pm2 delete api-express 2>/dev/null || true) && pm2 start src/server.js --name "api-express" && pm2 save'
