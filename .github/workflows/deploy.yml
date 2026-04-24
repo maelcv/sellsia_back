@@ -28,7 +28,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /var/www/boatswain/api
+            cd /var/www/ceremia/api
             rm -rf src ia_models package*.json server.js prisma node_modules 2>/dev/null || true
 
       - name: 🚀 Déploiement des fichiers sur le serveur
@@ -38,7 +38,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "src,ia_models,package.json,package-lock.json,server.js,prisma"
-          target: "/var/www/boatswain/api"
+          target: "/var/www/ceremia/api"
 
       - name: 🔄 Redémarrage de l'API avec PM2
         uses: appleboy/ssh-action@master
@@ -47,5 +47,5 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            bash -ic 'cd /var/www/boatswain/api && npm install --production && npm install -g pm2 && npx prisma migrate deploy && pm2 delete api-express 2>/dev/null; pm2 start server.js --name "api-express" && pm2 save'
+            bash -ic 'cd /var/www/ceremia/api && npm install --production && npm install -g pm2 && npx prisma migrate deploy && pm2 delete api-express 2>/dev/null; pm2 start server.js --name "api-express" && pm2 save'
             
