@@ -2776,6 +2776,130 @@ const vault_list = {
   }
 };
 
+// ── Generaliste Utility Tools ─────────────────────────
+
+const get_user_gps = {
+  name: "get_user_gps",
+  description:
+    "Obtient la localisation de l'utilisateur (ville, pays, coordonnées GPS) pour les demandes météo ou géographiques. " +
+    "Si la localisation n'est pas stockée, demande à l'utilisateur.",
+  parameters: {
+    type: "object",
+    properties: {
+      hint: {
+        type: "string",
+        description: "Contexte optionnel expliquant pourquoi la localisation est demandée"
+      }
+    },
+    required: []
+  },
+  async execute(params, _context) {
+    return {
+      type: "ask_user_pending",
+      question: "Quelle est votre ville ou localisation actuelle ?",
+      suggestions: ["Paris, France", "Lyon, France", "Marseille, France", "Bordeaux, France", "Autre"],
+      context: params.hint || "Localisation nécessaire pour répondre à votre demande.",
+      message: "Localisation requise — question transmise à l'utilisateur. Attendez la réponse avant d'appeler get_meteo."
+    };
+  }
+};
+
+const get_meteo = {
+  name: "get_meteo",
+  description:
+    "Récupère les prévisions météo sur 7 jours pour une ville ou des coordonnées GPS via Open-Meteo (API gratuite, sans clé). " +
+    "Si seul le nom de la ville est fourni, utilise Nominatim (OpenStreetMap) pour le géocodage.",
+  parameters: {
+    type: "object",
+    properties: {
+      city: {
+        type: "string",
+        description: "Nom de la ville avec pays optionnel (ex: 'Paris', 'Bordeaux, France', 'New York, USA')"
+      },
+      latitude: {
+        type: "number",
+        description: "Latitude GPS (optionnel si city est fourni)"
+      },
+      longitude: {
+        type: "number",
+        description: "Longitude GPS (optionnel si city est fourni)"
+      }
+    },
+    required: []
+  },
+  async execute(params, _context) {
+    let lat = params.latitude;
+    let lon = params.longitude;
+    let cityName = params.city;
+
+    // Step 1: Géocodage par ville (Nominatim OSM) si lat/lon pas fournis
+    if ((!lat || !lon) && cityName) {
+      try {
+        const encoded = encodeURIComponent(cityName);
+        const geoUrl = `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=1`;
+        const geoResp = await fetch(geoUrl, {
+          headers: { "User-Agent": "Boatswain-Dashboard/1.0" }
+        });
+
+        if (!geoResp.ok) {
+          return { error: `Géocodage échoué pour "${cityName}" (code ${geoResp.status})` };
+        }
+
+        const geoData = await geoResp.json();
+        if (!geoData || geoData.length === 0) {
+          return { error: `Ville introuvable: "${cityName}". Essayez avec un format comme "Paris, France".` };
+        }
+
+        lat = parseFloat(geoData[0].lat);
+        lon = parseFloat(geoData[0].lon);
+        cityName = geoData[0].display_name?.split(",")[0] || cityName;
+      } catch (err) {
+        return { error: `Erreur géocodage Nominatim: ${err.message}` };
+      }
+    }
+
+    if (!lat || !lon) {
+      return { error: "Coordonnées GPS manquantes. Fournissez city ou latitude + longitude." };
+    }
+
+    // Step 2: Récupérer prévisions météo Open-Meteo
+    try {
+      const weatherUrl =
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+        `&daily=temperature_2m_max,temperature_2m_min,weathercode&timezone=auto&forecast_days=7`;
+
+      const weatherResp = await fetch(weatherUrl);
+      if (!weatherResp.ok) {
+        return { error: `Erreur API Open-Meteo (code ${weatherResp.status})` };
+      }
+
+      const wd = await weatherResp.json();
+
+      if (!wd.daily || !wd.daily.time) {
+        return { error: "Réponse météo invalide de Open-Meteo" };
+      }
+
+      const forecast = (wd.daily.time || []).map((date, i) => ({
+        date,
+        temp_max: wd.daily.temperature_2m_max[i],
+        temp_min: wd.daily.temperature_2m_min[i],
+        weathercode: wd.daily.weathercode[i]
+      }));
+
+      return {
+        city: cityName,
+        latitude: lat,
+        longitude: lon,
+        timezone: wd.timezone || "UTC",
+        forecast,
+        source: "open-meteo.com"
+      };
+    } catch (err) {
+      return { error: `Erreur fetch météo: ${err.message}` };
+    }
+  }
+};
+
 // ── Tool Registry ─────────────────────────────────────
 
 /**
@@ -2827,6 +2951,9 @@ export const ALL_TOOLS = [
   vault_delete,
   vault_search,
   vault_list,
+  // Generaliste utility tools
+  get_user_gps,
+  get_meteo,
 ];
 
 /**
@@ -2880,6 +3007,9 @@ export function getAvailableTools(context = {}, options = {}) {
   // Report generation — always available
   tools.push(generate_report);
 
+  // Generaliste utility tools — always available (free APIs, no key required)
+  tools.push(get_user_gps, get_meteo);
+
   // Reminder tool — disponible si un userId est dans le contexte
   if (context.userId) {
     const isAdmin = context.isAdmin === true;
@@ -2929,6 +3059,8 @@ export function getAvailableTools(context = {}, options = {}) {
       if (tool.name === "enrich_company_data") return true;
       if (tool.name === "create_task") return true;
       if (tool.name.startsWith("vault_")) return true;
+      if (tool.name === "get_user_gps") return true;
+      if (tool.name === "get_meteo") return true;
       return false;
     });
   }

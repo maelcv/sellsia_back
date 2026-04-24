@@ -79,6 +79,22 @@ function workspaceRoot(workspaceId) {
   return modernRoot;
 }
 
+/**
+ * Returns the absolute filesystem path for a file inside a workspace vault.
+ * Used by services that need to write raw (non-markdown) binary files.
+ */
+export function getWorkspacePhysicalPath(workspaceId, ...segments) {
+  return path.join(workspaceRoot(workspaceId), ...segments.map(s => String(s)));
+}
+
+/**
+ * Returns the absolute filesystem path inside the Global vault root.
+ * Used for admin-owned files (e.g. Global/Admins/<id>/Uploads/<file>).
+ */
+export function getGlobalPhysicalPath(...segments) {
+  return path.join(globalRoot(), ...segments.map(s => String(s)));
+}
+
 export async function deleteWorkspaceVaultStorage(workspaceId) {
   const normalizedWorkspaceId = String(workspaceId || "").trim();
   if (!normalizedWorkspaceId || normalizedWorkspaceId.includes("/")) {
@@ -576,8 +592,17 @@ export async function setFolderOwner(workspaceId, folderPath, ownerUserId) {
   await writeFolderOwnersMap(workspaceId, map);
 }
 
+// Names that must never be treated as workspace IDs (they are structural vault directories).
+const RESERVED_WORKSPACE_IDS = new Set(["System", "Global", "Workspaces", "_system", "_global", "_platform"]);
+
 export async function ensureWorkspaceBaseStructure(workspaceId, userId = null) {
-  const root = workspaceRoot(workspaceId);
+  const normalizedId = String(workspaceId || "").trim();
+  if (!normalizedId || RESERVED_WORKSPACE_IDS.has(normalizedId)) {
+    console.warn(`[VaultService] ensureWorkspaceBaseStructure: skipping reserved id "${normalizedId}"`);
+    return;
+  }
+
+  const root = workspaceRoot(normalizedId);
   await fs.mkdir(root, { recursive: true });
 
   const systemPath = path.join(root, WORKSPACE_SYSTEM_DIR);
@@ -587,11 +612,13 @@ export async function ensureWorkspaceBaseStructure(workspaceId, userId = null) {
     const stats = await fs.stat(legacyGlobalPath).catch(() => null);
     if (stats?.isDirectory()) {
       await fs.rename(legacyGlobalPath, systemPath);
-      await moveFolderOwnerEntries(workspaceId, GLOBAL_DIR, WORKSPACE_SYSTEM_DIR);
+      await moveFolderOwnerEntries(normalizedId, GLOBAL_DIR, WORKSPACE_SYSTEM_DIR);
     }
   }
 
   await fs.mkdir(systemPath, { recursive: true });
+  await fs.mkdir(path.join(root, "Projects"), { recursive: true });
+
   if (userId !== null && userId !== undefined) {
     await fs.mkdir(path.join(root, String(userId)), { recursive: true });
   }
@@ -1346,7 +1373,15 @@ export async function deleteRootFolderRecursive(rootPath, options = {}) {
   }
 
   if (!target.notePath) {
-    throw Object.assign(new Error("Impossible de supprimer la racine d'un workspace"), { statusCode: 403 });
+    if (!allowProtected) {
+      throw Object.assign(new Error("Impossible de supprimer la racine d'un workspace"), { statusCode: 403 });
+    }
+    // Admin force-delete: remove the workspace root directory entirely (e.g. orphaned/spurious folder)
+    const absRoot = workspaceRoot(target.workspaceId);
+    if (await pathExists(absRoot)) {
+      await fs.rm(absRoot, { recursive: true, force: true });
+    }
+    return { deleted: true, type: "dir", path: normalizeVaultPath(rootPath) };
   }
 
   return deleteFolderRecursive(target.workspaceId, target.notePath, { allowProtected });
@@ -1377,6 +1412,7 @@ async function listWorkspaceIdsFromFilesystem() {
     for (const entry of modernEntries) {
       if (!entry.isDirectory()) continue;
       if (entry.name.startsWith(".")) continue;
+      if (RESERVED_WORKSPACE_IDS.has(entry.name)) continue;
       ids.add(entry.name);
     }
   } catch {

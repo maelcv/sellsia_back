@@ -229,7 +229,7 @@ function buildConversationTitleFromUserMessage(content = "") {
 export async function addMessage(conversationId, { role, content, agentId, tokensInput = 0, tokensOutput = 0, provider, model, sourcesUsed = null }) {
   const serializedSources = sourcesUsed ? JSON.stringify(sourcesUsed) : null;
   // Sub-agent IDs (e.g. "sellsy-0", "web-1") don't exist in the agents table — use NULL for them
-  const validAgentIds = new Set(["commercial", "directeur", "technicien"]);
+  const validAgentIds = new Set(["commercial", "directeur", "technicien", "generaliste"]);
   const safeAgentId = agentId && validAgentIds.has(agentId) ? agentId : null;
 
   const result = await prisma.message.create({

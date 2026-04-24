@@ -146,12 +146,11 @@ async function getAllowedAgents(userId) {
   console.log("[chat] getAllowedAgents — userId:", userId, "role:", role, "workspaceId:", user.workspaceId);
 
   // ── ADMIN ──────────────────────────────────────────────────────
-  // Admins get the admin agent directly (no orchestrator).
+  // Admins get agent-admin + generaliste. The orchestrator routes platform queries
+  // to agent-admin and everything else (météo, culture générale…) to generaliste.
   if (role === "admin") {
-    // Prefer agent-admin specifically; fallback to all global agents
+    // Ensure agent-admin exists (auto-create if missing)
     let adminAgent = await prisma.agent.findUnique({ where: { id: "agent-admin" } });
-
-    // Auto-create agent-admin if it doesn't exist yet (no seed required)
     if (!adminAgent) {
       console.log("[chat] agent-admin not found, auto-creating...");
       try {
@@ -178,13 +177,14 @@ async function getAllowedAgents(userId) {
       }
     }
 
-    const agents = adminAgent ? [adminAgent] : await prisma.agent.findMany({ where: { workspaceId: null } });
+    // Also fetch generaliste so the orchestrator can route non-platform queries
+    const generalisteAgent = await prisma.agent.findUnique({ where: { id: "generaliste" } });
+    const agents = [adminAgent, generalisteAgent].filter(Boolean);
     console.log("[chat] Admin → granting", agents.length, "agents:", agents.map(a => a.id));
     return {
       agentRows: agents,
       allowedIds: new Set(agents.map(a => a.id)),
-      providerCode: "admin-direct",
-      isAdmin: true
+      providerCode: "admin-direct"
     };
   }
 
@@ -593,7 +593,7 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
       clientId: userId,
       conversationId,
       allowedAgents: allowedIds,
-      requestedAgentId: isAdmin ? "agent-admin" : requestedAgentId,
+      requestedAgentId,
       tools,
       toolContext,
       knowledgeContext,
@@ -641,6 +641,22 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     updateTokenUsage(userId, result.tokensInput || 0, result.tokensOutput || 0).catch(err =>
       console.error("[chat/ask] Token usage update failed:", err.message)
     );
+
+    // 10. Fire-and-forget: classify uploads + update user profile memory
+    if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "admin")) {
+      const userForClassifier = { id: userId, email: req.user?.email, name: req.user?.name };
+      for (const file of uploadedFiles) {
+        classifyUploadedFile({
+          file, userId, workspaceId: req.workspaceId || null,
+          conversationId, agentId: result.agentId, user: userForClassifier
+        }).catch(err => console.warn("[chat/ask] file-classify failed:", err.message));
+      }
+    }
+    processConversationMemory({
+      userId,
+      conversationId,
+      user: { id: userId, email: req.user?.email, name: req.user?.name }
+    }).catch(err => console.warn("[chat/ask] memory-update failed:", err.message));
 
     // 10. Réponse
     const toolCategories = {
@@ -771,8 +787,7 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     // Bug fix: persist agent assignment across messages.
     // On follow-up messages the client may not re-send requestedAgentId, so we
     // read it back from the conversation row to avoid re-classifying every time.
-    // Admin always talks directly to agent-admin (bypasses orchestrator classification)
-    let effectiveRequestedAgentId = isAdmin ? "agent-admin" : requestedAgentId;
+    let effectiveRequestedAgentId = requestedAgentId;
     if (validatedConversationId && !effectiveRequestedAgentId) {
       const existingConv = await prisma.conversation.findUnique({
         where: { id: validatedConversationId },
@@ -853,6 +868,8 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     const collectedAgentIds = [];
     let pendingAskUserQuestion = "";
     let pendingAskUserSuggestions = [];
+    let streamRealTokensInput = 0;
+    let streamRealTokensOutput = 0;
 
     // ── Setup heartbeat to keep SSE connection alive (every 30s) ──
     heartbeatInterval = setInterval(() => {
@@ -1122,6 +1139,9 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
         streamToolsUsed = event.toolsUsed || streamToolsUsed;
         streamSourcesUsed = event.sourcesUsed || streamSourcesUsed;
         if (event.content && !fullContent) fullContent = event.content;
+        // Capture real token counts from provider if available (e.g. Mistral usage)
+        if (event.tokensInput) streamRealTokensInput = event.tokensInput;
+        if (event.tokensOutput) streamRealTokensOutput = event.tokensOutput;
         break;
       }
     }
@@ -1148,22 +1168,29 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     }
 
     // 8. Save the complete message
-    const tokensInput = estimateTokens(message) + estimateTokens(JSON.stringify(historyForLLM));
-    const tokensOutput = estimateTokens(fullContent);
-    // Use the first valid agent ID (commercial, directeur, technicien) — never a joined/composite or sub-agent ID
-    const validAgentIds = new Set(["commercial", "directeur", "technicien"]);
+    // Use real token counts from provider (Mistral/Anthropic usage event) if available, else estimate
+    const tokensInput = streamRealTokensInput || (estimateTokens(message) + estimateTokens(JSON.stringify(historyForLLM)));
+    const tokensOutput = streamRealTokensOutput || estimateTokens(fullContent);
+    // Use the first valid agent ID (commercial, directeur, technicien, generaliste) — never a joined/composite or sub-agent ID
+    const validAgentIds = new Set(["commercial", "directeur", "technicien", "generaliste"]);
     const agentId = collectedAgentIds.find((id) => validAgentIds.has(id)) || activeAgentId || null;
 
-    const messageId = await addMessage(conversationId, {
-      role: "assistant",
-      content: fullContent,
-      agentId,
-      tokensInput,
-      tokensOutput,
-      provider: provider.providerName,
-      model: provider.defaultModel,
-      sourcesUsed: normalizedSources
-    });
+    let messageId;
+    try {
+      messageId = await addMessage(conversationId, {
+        role: "assistant",
+        content: fullContent,
+        agentId,
+        tokensInput,
+        tokensOutput,
+        provider: provider.providerName,
+        model: provider.defaultModel,
+        sourcesUsed: normalizedSources
+      });
+    } catch (err) {
+      console.error("[chat/stream] addMessage failed:", err.message);
+      throw err;
+    }
 
     // Log final response reasoning step (with messageId now available)
     logReasoningStep({
@@ -1241,13 +1268,14 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     // These run asynchronously and NEVER block the SSE response.
 
     // 1. Classify uploaded files → vault note + KnowledgeDocument
-    if (uploadedFiles.length > 0 && req.workspaceId) {
+    // workspaceId is null for admins — classifyUploadedFile handles both modes
+    if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "admin")) {
       const userForClassifier = { id: userId, email: req.user?.email, name: req.user?.name };
       for (const file of uploadedFiles) {
         classifyUploadedFile({
           file,
           userId,
-          workspaceId: req.workspaceId,
+          workspaceId: req.workspaceId || null,
           conversationId,
           agentId: activeAgentId || agentId,
           user: userForClassifier

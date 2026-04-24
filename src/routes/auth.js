@@ -11,6 +11,7 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 import { encryptSecret, maskSecret } from "../security/secrets.js";
 import { sendEmail } from "../services/email/email-service.js";
 import { getRedis } from "../cache/redis-client.js";
+import { initUserProfile } from "../services/memory/user-profile.js";
 
 const router = express.Router();
 const totp = new TOTP();
@@ -125,6 +126,11 @@ router.post("/onboard", authRateLimit, async (req, res) => {
     }
   });
 
+  // Initialiser le profil vault de l'utilisateur (fire-and-forget)
+  initUserProfile(user.id, { email: user.email, name: user.companyName || user.email }).catch(err =>
+    console.error("[Auth] initUserProfile failed:", err.message)
+  );
+
   // ─── Post-onboarding: Save services if provided ───
   if (services && services.length > 0) {
     for (const s of services) {
@@ -216,6 +222,11 @@ router.post("/signup", authRateLimit, async (req, res) => {
     });
 
     await logAudit(user.id, "SIGNUP_SUCCESS", { email: emailLower, companyName });
+
+    // Initialiser le profil vault (fire-and-forget)
+    initUserProfile(user.id, { email: user.email, name: user.companyName || user.email }).catch(err =>
+      console.error("[Auth] initUserProfile failed:", err.message)
+    );
 
     // Issue JWT with workspaceId
     const token = jwt.sign(
@@ -465,6 +476,11 @@ router.post("/accept-invitation", authRateLimit, async (req, res) => {
       email: newUser.email,
       workspaceId: invitation.workspaceId
     });
+
+    // Initialiser le profil vault (fire-and-forget)
+    initUserProfile(newUser.id, { email: newUser.email, name: newUser.companyName || newUser.email }).catch(err =>
+      console.error("[Auth] initUserProfile failed:", err.message)
+    );
 
     // Issue JWT token
     const jwtToken = jwt.sign(

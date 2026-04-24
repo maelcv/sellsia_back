@@ -11,7 +11,12 @@
  *   5. Persister l'enregistrement UploadedFileRef en base
  */
 
-import { writeNote } from "../vault/vault-service.js";
+import fs from "fs/promises";
+import path from "path";
+import {
+  writeNote, readNote, getWorkspacePhysicalPath,
+  writeRootNote, readRootNote, getGlobalPhysicalPath,
+} from "../vault/vault-service.js";
 import { prisma } from "../../prisma.js";
 import { getProviderForUser } from "../../ai-providers/index.js";
 
@@ -190,98 +195,203 @@ ${conversationId ? `- Source : conversation \`${conversationId}\`` : ""}
   return fm + "\n" + body;
 }
 
+// ── Raw File Persistence ──────────────────────────────────────────
+
+async function saveRawFile(workspaceId, userId, file) {
+  const destPath = getWorkspacePhysicalPath(workspaceId, String(userId), "Uploads", file.originalname);
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  await fs.writeFile(destPath, file.buffer);
+}
+
+async function saveAdminRawFile(userId, file) {
+  const destPath = getGlobalPhysicalPath("Admins", String(userId), "Uploads", file.originalname);
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  await fs.writeFile(destPath, file.buffer);
+}
+
+// ── Manifest helpers ──────────────────────────────────────────────
+
+function buildManifestLine(notePath, originalName, category, sizeBytes, uploadedAt) {
+  const dateLabel = (uploadedAt || new Date().toISOString()).split("T")[0];
+  const sizeKo = Math.round(sizeBytes / 1024);
+  const noteLink = `[[${notePath.replace(/\.md$/, "")}|${originalName}]]`;
+  return `- ${noteLink} — ${category || "autre"} — ${sizeKo} Ko — ${dateLabel}`;
+}
+
+// Workspace manifest — uses writeNote/readNote (scoped to workspaceId)
+async function updateUploadsManifest(workspaceId, userId, { originalName, sizeBytes, category, notePath, uploadedAt }) {
+  const manifestPath = `${userId}/Uploads/manifest.md`;
+  const now = uploadedAt || new Date().toISOString();
+
+  let existing = null;
+  try {
+    existing = (await readNote(workspaceId, manifestPath))?.content || null;
+  } catch { existing = null; }
+
+  if (!existing) existing = `---\nlastUpdated: ${now}\n---\n\n# Manifest des Fichiers Uploadés\n\n`;
+
+  const updated = existing
+    .replace(/lastUpdated: .*/, `lastUpdated: ${now}`)
+    .trimEnd() + "\n" + buildManifestLine(notePath, originalName, category, sizeBytes, uploadedAt) + "\n";
+
+  await writeNote(workspaceId, manifestPath, updated);
+}
+
+// Admin manifest — uses writeRootNote/readRootNote (Global scope)
+async function updateAdminUploadsManifest(userId, { originalName, sizeBytes, category, notePath, uploadedAt }) {
+  const manifestPath = `Global/Admins/${userId}/Uploads/manifest.md`;
+  const now = uploadedAt || new Date().toISOString();
+
+  let existing = null;
+  try {
+    existing = (await readRootNote(manifestPath))?.content || null;
+  } catch { existing = null; }
+
+  if (!existing) existing = `---\nlastUpdated: ${now}\n---\n\n# Manifest des Fichiers Admin Uploadés\n\n`;
+
+  const updated = existing
+    .replace(/lastUpdated: .*/, `lastUpdated: ${now}`)
+    .trimEnd() + "\n" + buildManifestLine(notePath, originalName, category, sizeBytes, uploadedAt) + "\n";
+
+  await writeRootNote(manifestPath, updated);
+}
+
+// ── Shared classification core ────────────────────────────────────
+
+async function runClassification(file, userId, conversationId, agentId, uploadedByName, scope = "workspace") {
+  const uploadedAt = new Date().toISOString();
+  const text = await extractText(file);
+  const provider = await getProviderForUser(userId);
+
+  let classification = null;
+  if (provider && text && !text.startsWith("[File:")) {
+    classification = await classifyWithAI(provider, file.originalname, text);
+  }
+
+  let knowledgeDocId = null;
+  if (text && text.length > 50) {
+    const docTitle = classification?.summary
+      ? `${file.originalname} — ${classification.summary.slice(0, 100)}`
+      : file.originalname;
+
+    const knowledgeDoc = await prisma.knowledgeDocument.create({
+      data: {
+        clientId: userId,
+        agentId: agentId || null,
+        title: docTitle,
+        content: text.slice(0, 10000),
+        docType: "text",
+        scope,
+        metadataJson: JSON.stringify({
+          source: "chat_upload",
+          originalName: file.originalname,
+          mimeType: file.mimetype,
+          conversationId,
+          classification
+        }),
+        isActive: true
+      }
+    });
+    knowledgeDocId = knowledgeDoc.id;
+  }
+
+  const noteContent = buildMarkdownNote({ file, classification, uploadedByName, conversationId, knowledgeDocId });
+  return { classification, knowledgeDocId, noteContent, uploadedAt };
+}
+
 // ── Main Entry Point ──────────────────────────────────────────────
 
 /**
  * Classifie et indexe un fichier uploadé en chat.
  * Appeler en fire-and-forget après le stream SSE.
  *
- * @param {object} options
  * @param {object} options.file          — multer file object
  * @param {number} options.userId        — ID utilisateur
- * @param {string} options.workspaceId   — ID workspace
+ * @param {string|null} options.workspaceId — null pour les admins
  * @param {string} options.conversationId
- * @param {string} options.agentId       — agent actif dans la conversation
- * @param {object} options.user          — { id, email, name, companyName }
+ * @param {string} options.agentId
+ * @param {object} options.user          — { id, email, name }
  */
 export async function classifyUploadedFile({
   file, userId, workspaceId, conversationId, agentId, user
 }) {
   try {
-    if (!file || !workspaceId) return;
+    if (!file) return;
 
     const uploadedByName = user?.name || user?.email || `User ${userId}`;
-    const vaultPath = getUploadVaultPath(userId, file.originalname);
+    const sizeBytes = file.size || file.buffer?.length || 0;
+    const isAdmin = !workspaceId;
 
-    // 1. Extract text
-    const text = await extractText(file);
+    if (isAdmin) {
+      // ── Admin mode: Global/Admins/<userId>/Uploads/ ──
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const slug = toSlug(file.originalname);
+      const vaultPath = `Global/Admins/${userId}/Uploads/${month}/${slug}.md`;
 
-    // 2. Get provider for classification
-    const provider = await getProviderForUser(userId);
+      // 0. Persist raw file
+      await saveAdminRawFile(userId, file);
 
-    // 3. Classify with AI (optional — skip if no provider)
-    let classification = null;
-    if (provider && text && !text.startsWith("[File:")) {
-      classification = await classifyWithAI(provider, file.originalname, text);
-    }
+      // 1–5. Extract + classify + build note
+      const { classification, knowledgeDocId, noteContent, uploadedAt } = await runClassification(
+        file, userId, conversationId, agentId, uploadedByName, "admin"
+      );
 
-    // 4. Create KnowledgeDocument for RAG
-    let knowledgeDocId = null;
-    if (text && text.length > 50) {
-      const docTitle = classification?.summary
-        ? `${file.originalname} — ${classification.summary.slice(0, 100)}`
-        : file.originalname;
+      // 6. Write metadata note
+      await writeRootNote(vaultPath, noteContent);
 
-      const knowledgeDoc = await prisma.knowledgeDocument.create({
+      // 7. Update manifest
+      await updateAdminUploadsManifest(userId, {
+        originalName: file.originalname,
+        sizeBytes,
+        category: classification?.category || null,
+        notePath: vaultPath,
+        uploadedAt
+      });
+
+      console.log(`[FileClassifier:admin] "${file.originalname}" → vault:${vaultPath} knowledgeDoc:${knowledgeDocId}`);
+    } else {
+      // ── Workspace mode: Workspaces/<wsId>/<userId>/Uploads/ ──
+      const vaultPath = getUploadVaultPath(userId, file.originalname);
+
+      // 0. Persist raw file
+      await saveRawFile(workspaceId, userId, file);
+
+      // 1–5. Extract + classify + build note
+      const { classification, knowledgeDocId, noteContent, uploadedAt } = await runClassification(
+        file, userId, conversationId, agentId, uploadedByName
+      );
+
+      // 6. Write metadata note
+      await writeNote(workspaceId, vaultPath, noteContent);
+
+      // 7. Update manifest
+      await updateUploadsManifest(workspaceId, userId, {
+        originalName: file.originalname,
+        sizeBytes,
+        category: classification?.category || null,
+        notePath: vaultPath,
+        uploadedAt
+      });
+
+      // 8. Persist UploadedFileRef (workspace only — no nullable workspaceId in schema)
+      await prisma.uploadedFileRef.create({
         data: {
-          clientId: userId,
-          agentId: agentId || null,
-          title: docTitle,
-          content: text.slice(0, 10000),
-          docType: "text",
-          scope: "workspace",
-          metadataJson: JSON.stringify({
-            source: "chat_upload",
-            originalName: file.originalname,
-            mimeType: file.mimetype,
-            conversationId,
-            classification
-          }),
-          isActive: true
+          workspaceId,
+          uploadedById: userId,
+          originalName: file.originalname,
+          mimeType: file.mimetype,
+          sizeBytes,
+          classificationJson: classification ? JSON.stringify(classification) : null,
+          vaultPath,
+          knowledgeDocId,
+          conversationId: conversationId || null
         }
       });
-      knowledgeDocId = knowledgeDoc.id;
+
+      console.log(`[FileClassifier:ws] "${file.originalname}" → vault:${vaultPath} knowledgeDoc:${knowledgeDocId}`);
     }
-
-    // 5. Write vault note
-    const noteContent = buildMarkdownNote({
-      file,
-      classification,
-      uploadedByName,
-      conversationId,
-      knowledgeDocId
-    });
-
-    await writeNote(workspaceId, vaultPath, noteContent);
-
-    // 6. Persist UploadedFileRef
-    await prisma.uploadedFileRef.create({
-      data: {
-        workspaceId,
-        uploadedById: userId,
-        originalName: file.originalname,
-        mimeType: file.mimetype,
-        sizeBytes: file.size || file.buffer?.length || 0,
-        classificationJson: classification ? JSON.stringify(classification) : null,
-        vaultPath,
-        knowledgeDocId,
-        conversationId: conversationId || null
-      }
-    });
-
-    console.log(`[FileClassifier] Classified "${file.originalname}" → vault:${vaultPath} knowledgeDoc:${knowledgeDocId}`);
   } catch (err) {
-    // Never throw — this is fire-and-forget
     console.warn("[FileClassifier] Non-critical error:", err.message);
   }
 }

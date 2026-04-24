@@ -23,7 +23,7 @@ import { formatSkillForInjection } from "../skills/catalog.js";
 
 const GENERALIST_AGENT_ID = "generaliste";
 const SPECIALIST_AGENT_IDS = new Set(["directeur", "commercial", "technicien"]);
-const ROUTABLE_AGENT_IDS = new Set([...SPECIALIST_AGENT_IDS, GENERALIST_AGENT_ID]);
+const ROUTABLE_AGENT_IDS = new Set([...SPECIALIST_AGENT_IDS, GENERALIST_AGENT_ID, "agent-admin"]);
 
 const GENERALIST_TOOL_ALLOWLIST = new Set([
   "ask_user",
@@ -33,6 +33,8 @@ const GENERALIST_TOOL_ALLOWLIST = new Set([
   "parse_csv",
   "parse_excel",
   "parse_word",
+  "get_user_gps",
+  "get_meteo",
 ]);
 
 const AGENT_CLASSES = {

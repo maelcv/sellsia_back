@@ -136,6 +136,8 @@ export class MistralProvider extends BaseLLMProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let tokensInput = 0;
+    let tokensOutput = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -150,12 +152,17 @@ export class MistralProvider extends BaseLLMProvider {
         if (!trimmed.startsWith("data: ")) continue;
         const payload = trimmed.slice(6);
         if (payload === "[DONE]") {
-          yield { chunk: "", done: true };
+          yield { chunk: "", done: true, tokensInput, tokensOutput };
           return;
         }
 
         try {
           const parsed = JSON.parse(payload);
+          // Capture usage from final event (Mistral sends it in the last non-[DONE] chunk)
+          if (parsed.usage) {
+            tokensInput = parsed.usage.prompt_tokens || 0;
+            tokensOutput = parsed.usage.completion_tokens || 0;
+          }
           const delta = parsed.choices?.[0]?.delta?.content;
           if (delta) {
             yield { chunk: delta, done: false };
@@ -166,7 +173,7 @@ export class MistralProvider extends BaseLLMProvider {
       }
     }
 
-    yield { chunk: "", done: true };
+    yield { chunk: "", done: true, tokensInput, tokensOutput };
   }
 
   /**
@@ -250,6 +257,8 @@ export class MistralProvider extends BaseLLMProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let tokensInput = 0;
+    let tokensOutput = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -264,12 +273,16 @@ export class MistralProvider extends BaseLLMProvider {
         if (!trimmed.startsWith("data: ")) continue;
         const payload = trimmed.slice(6);
         if (payload === "[DONE]") {
-          yield { chunk: "", done: true };
+          yield { chunk: "", done: true, tokensInput, tokensOutput };
           return;
         }
 
         try {
           const parsed = JSON.parse(payload);
+          if (parsed.usage) {
+            tokensInput = parsed.usage.prompt_tokens || 0;
+            tokensOutput = parsed.usage.completion_tokens || 0;
+          }
           const delta = parsed.choices?.[0]?.delta?.content;
           if (delta) {
             yield { chunk: delta, done: false };
@@ -280,6 +293,6 @@ export class MistralProvider extends BaseLLMProvider {
       }
     }
 
-    yield { chunk: "", done: true };
+    yield { chunk: "", done: true, tokensInput, tokensOutput };
   }
 }

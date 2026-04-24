@@ -58,6 +58,7 @@ import projectsRoutes from "./routes/projects.js";
 import { startAutomationWorker, stopAutomationWorker } from "./workers/automation-worker.js";
 
 import { startWorkflowQueue, stopWorkflowQueue } from "./workers/workflow-queue.js";
+import { startVaultSyncWorker } from "./workers/vault-sync.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -284,5 +285,8 @@ app.listen(config.port, () => {
   );
   startAutomationWorker().catch((err) =>
     console.error("[Server] automation worker failed to start:", err)
+  );
+  startVaultSyncWorker().catch((err) =>
+    console.error("[Server] vault sync worker failed to start:", err)
   );
 });

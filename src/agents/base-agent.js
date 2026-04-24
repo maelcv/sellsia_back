@@ -734,16 +734,23 @@ OBLIGATOIRE :
 
     // If no tools, stream directly
     if (!formattedTools?.length) {
+      let streamTokensInput = 0;
+      let streamTokensOutput = 0;
       for await (const event of this.provider.stream({
         systemPrompt: fullSystemPrompt,
         messages,
         temperature: 0.7,
         maxTokens: DEFAULT_MAX_TOKENS
       })) {
-        if (event.done) break;
+        if (event.done) {
+          // Capture real token counts from provider (e.g. Mistral usage event)
+          if (event.tokensInput) streamTokensInput = event.tokensInput;
+          if (event.tokensOutput) streamTokensOutput = event.tokensOutput;
+          break;
+        }
         yield event;
       }
-      yield { chunk: "", done: true, toolsUsed, sourcesUsed };
+      yield { chunk: "", done: true, toolsUsed, sourcesUsed, tokensInput: streamTokensInput, tokensOutput: streamTokensOutput };
       return;
     }
 
