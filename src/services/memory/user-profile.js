@@ -14,7 +14,7 @@
 import { writeRootNote, readRootNote, appendRootNote } from "../vault/vault-service.js";
 import { prisma } from "../../prisma.js";
 
-const USERS_BASE_PATH = "Global/Users";
+const USERS_BASE_PATH = "Users";
 
 /**
  * Retourne le chemin vault du profil d'un utilisateur.

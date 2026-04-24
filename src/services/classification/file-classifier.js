@@ -90,11 +90,11 @@ function toSlug(filename) {
 /**
  * Retourne le chemin vault du mois courant pour les uploads.
  */
-function getUploadVaultPath(workspaceId, filename) {
+function getUploadVaultPath(userId, filename) {
   const now = new Date();
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const slug = toSlug(filename);
-  return `Uploads/${month}/${slug}.md`;
+  return `${userId}/Uploads/${month}/${slug}.md`;
 }
 
 // ── AI Classification ─────────────────────────────────────────────
@@ -211,7 +211,7 @@ export async function classifyUploadedFile({
     if (!file || !workspaceId) return;
 
     const uploadedByName = user?.name || user?.email || `User ${userId}`;
-    const vaultPath = getUploadVaultPath(workspaceId, file.originalname);
+    const vaultPath = getUploadVaultPath(userId, file.originalname);
 
     // 1. Extract text
     const text = await extractText(file);
