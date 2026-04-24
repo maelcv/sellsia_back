@@ -421,6 +421,10 @@ model User {
   twoFactorCode    String? @map("two_factor_code")
   twoFactorCodeExpires DateTime? @map("two_factor_code_expires")
 
+  // Password reset (DB-persisted, hashed)
+  passwordResetToken   String?   @map("password_reset_token")
+  passwordResetExpires DateTime? @map("password_reset_expires")
+
   // Multi-tenant : null pour les super-admins plateforme (role=admin)
   workspaceId String?    @map("workspace_id")
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)

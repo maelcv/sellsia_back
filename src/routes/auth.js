@@ -6,51 +6,35 @@ import { randomBytes } from "crypto";
 import { TOTP } from "otplib";
 import { prisma, hasAnyUsers, logAudit } from "../prisma.js";
 import { config } from "../config.js";
-import { authRateLimit } from "../middleware/security.js";
+import { authRateLimit, passwordResetRateLimit } from "../middleware/security.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { encryptSecret, maskSecret } from "../security/secrets.js";
 import { sendEmail } from "../services/email/email-service.js";
+import { getRedis } from "../cache/redis-client.js";
 
 const router = express.Router();
 const totp = new TOTP();
 
-// ── 2FA Email Codes (In-Memory Storage) ────────────────────────
-// Map: userId -> { code, expiresAt, email }
-const twoFactorCodes = new Map();
-
-// Cleanup expired codes every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [userId, data] of twoFactorCodes.entries()) {
-    if (data.expiresAt < now) {
-      twoFactorCodes.delete(userId);
-    }
-  }
-}, 5 * 60 * 1000);
+// 2FA email codes are stored in the users table (twoFactorCode + twoFactorCodeExpires)
 
 /**
- * Generate a unique workspace slug, retrying with numeric suffix if collision detected.
+ * Generate a unique workspace slug using random suffix to avoid race conditions.
+ * Uses random suffix instead of sequential to eliminate check-then-act gap.
  */
 async function generateUniqueSlug(baseName) {
   const baseSlug = baseName
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "-")
     .replace(/-+/g, "-")
-    .substring(0, 50);
+    .substring(0, 45);
 
-  // Try the base slug first
-  let slug = baseSlug;
-  for (let i = 1; i <= 10; i++) {
-    const existing = await prisma.workspace.findUnique({
-      where: { slug },
-      select: { id: true }
-    });
-    if (!existing) return slug;
-    // Add numeric suffix and retry
-    slug = `${baseSlug.substring(0, 45)}-${i}`;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const suffix = attempt === 0 ? "" : `-${randomBytes(3).toString("hex")}`;
+    const slug = `${baseSlug}${suffix}`.substring(0, 50);
+    const exists = await prisma.workspace.findUnique({ where: { slug }, select: { id: true } });
+    if (!exists) return slug;
   }
 
-  // Fallback: use uuid suffix (should never reach here in practice)
   throw new Error("Unable to generate unique workspace slug after 10 retries");
 }
 
@@ -336,7 +320,7 @@ router.post("/verify-2fa", authRateLimit, async (req, res) => {
 
   const user = await prisma.user.findUnique({
     where: { id: payload.sub },
-    select: { id: true, email: true, role: true, companyName: true, whatsappPhone: true, workspaceId: true, twoFactorSecret: true, twoFactorEnabled: true },
+    select: { id: true, email: true, role: true, companyName: true, whatsappPhone: true, workspaceId: true, twoFactorSecret: true, twoFactorEnabled: true, twoFactorCode: true, twoFactorCodeExpires: true },
   });
 
   if (!user) {
@@ -358,24 +342,22 @@ router.post("/verify-2fa", authRateLimit, async (req, res) => {
   }
   // EMAIL 2FA (type === "email")
   else if (payload.type === "email") {
-    const stored = twoFactorCodes.get(user.id);
-
-    if (!stored || stored.type !== "email") {
+    if (!user.twoFactorCode || !user.twoFactorCodeExpires) {
       return res.status(401).json({ error: "Pas de code 2FA email en attente" });
     }
 
-    if (stored.expiresAt < Date.now()) {
-      twoFactorCodes.delete(user.id);
+    if (new Date(user.twoFactorCodeExpires) < new Date()) {
+      await prisma.user.update({ where: { id: user.id }, data: { twoFactorCode: null, twoFactorCodeExpires: null } });
       return res.status(401).json({ error: "Code expiré, veuillez vous reconnecter" });
     }
 
-    if (stored.code !== code) {
+    if (user.twoFactorCode !== code) {
       await logAudit(user.id, "2FA_FAILED", { email: user.email, type: "email" });
       return res.status(401).json({ error: "Code incorrect" });
     }
 
-    // Code correct, supprimer le code utilisé
-    twoFactorCodes.delete(user.id);
+    // Code correct — single-use: effacer immédiatement
+    await prisma.user.update({ where: { id: user.id }, data: { twoFactorCode: null, twoFactorCodeExpires: null } });
   }
   else {
     return res.status(401).json({ error: "Type 2FA invalide" });
@@ -600,6 +582,18 @@ router.delete("/impersonate", requireAuth, async (req, res) => {
     data: { endedAt: new Date() }
   });
 
+  // Blacklist the JTI so the old impersonation token is immediately invalid
+  if (req.user.jti) {
+    try {
+      const redis = await getRedis();
+      if (redis) {
+        await redis.set(`jwt:blacklist:${req.user.jti}`, "1", "EX", 3600);
+      }
+    } catch {
+      // Redis unavailable — token will expire naturally in 1h
+    }
+  }
+
   // Fetch the admin user to generate a fresh token
   const adminUser = await prisma.user.findUnique({
     where: { id: req.user.adminId },
@@ -635,19 +629,7 @@ router.delete("/impersonate", requireAuth, async (req, res) => {
   });
 });
 
-// ─── Password Reset Tokens (In-Memory Storage) ────────────────────
-// Map: token -> { userId, email, expiresAt }
-const passwordResetTokens = new Map();
-
-// Cleanup expired tokens every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, data] of passwordResetTokens.entries()) {
-    if (data.expiresAt < now) {
-      passwordResetTokens.delete(token);
-    }
-  }
-}, 5 * 60 * 1000);
+// Password reset tokens are stored in the users table (passwordResetToken + passwordResetExpires)
 
 // ═══════════════════════════════════════════════════════════════════
 // POST /api/auth/forgot-password
@@ -658,7 +640,7 @@ const forgotPasswordSchema = z.object({
   email: z.string().email().max(254)
 });
 
-router.post("/forgot-password", authRateLimit, async (req, res) => {
+router.post("/forgot-password", passwordResetRateLimit, async (req, res) => {
   try {
     const parse = forgotPasswordSchema.safeParse(req.body);
     if (!parse.success) {
@@ -682,14 +664,14 @@ router.post("/forgot-password", authRateLimit, async (req, res) => {
       });
     }
 
-    // Generate reset token
+    // Generate reset token and persist hashed in DB
     const resetToken = randomBytes(32).toString("hex");
-    const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
+    const tokenHash = bcrypt.hashSync(resetToken, 10);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    passwordResetTokens.set(resetToken, {
-      userId: user.id,
-      email: user.email,
-      expiresAt
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetToken: tokenHash, passwordResetExpires: expiresAt }
     });
 
     // Send reset email
@@ -758,30 +740,25 @@ router.post("/reset-password", authRateLimit, async (req, res) => {
 
     const { token, newPassword } = parse.data;
 
-    // Validate token
-    const resetData = passwordResetTokens.get(token);
-    if (!resetData) {
+    // Find user by comparing provided token against stored hashes
+    const candidates = await prisma.user.findMany({
+      where: { passwordResetToken: { not: null }, passwordResetExpires: { gt: new Date() } },
+      select: { id: true, email: true, workspaceId: true, passwordResetToken: true }
+    });
+
+    const resetUser = candidates.find(u => bcrypt.compareSync(token, u.passwordResetToken));
+    if (!resetUser) {
       return res.status(401).json({ error: "Invalid or expired reset token" });
     }
 
-    if (resetData.expiresAt < Date.now()) {
-      passwordResetTokens.delete(token);
-      return res.status(401).json({ error: "Reset token expired" });
-    }
-
-    // Hash new password
+    // Hash new password and clear reset token (single-use)
     const passwordHash = bcrypt.hashSync(newPassword, 12);
-
-    // Update user
     await prisma.user.update({
-      where: { id: resetData.userId },
-      data: { passwordHash }
+      where: { id: resetUser.id },
+      data: { passwordHash, passwordResetToken: null, passwordResetExpires: null }
     });
 
-    // Delete token
-    passwordResetTokens.delete(token);
-
-    await logAudit(resetData.userId, "PASSWORD_RESET", { email: resetData.email });
+    await logAudit(resetUser.id, "PASSWORD_RESET", { email: resetUser.email });
 
     // Send confirmation email
     try {
@@ -797,16 +774,10 @@ router.post("/reset-password", authRateLimit, async (req, res) => {
         buttonUrl: `${process.env.APP_URL || 'http://localhost:5173'}/login`
       });
 
-      // Fetch workspaceId for the user whose password was reset
-      const user = await prisma.user.findUnique({
-        where: { id: resetData.userId },
-        select: { workspaceId: true }
-      });
-
       await sendEmail({
-        userId: resetData.userId,
-        workspaceId: user?.workspaceId, // Use optional chaining in case user is null (though it shouldn't be here)
-        to: resetData.email,
+        userId: resetUser.id,
+        workspaceId: resetUser.workspaceId,
+        to: resetUser.email,
         subject: "Votre mot de passe a été réinitialisé",
         html
       });

@@ -119,24 +119,16 @@ router.get("/webhook", async (req, res) => {
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token) {
-    // 1. Check hardcoded verify token first (TODO: remplacer par un token dynamique en prod)
-    if (token === config.whatsappVerifyToken) {
-      console.log("[WhatsApp] Webhook verified via static verify token");
-      return res.status(200).send(challenge);
-    }
-
-    // 2. Fallback: check token against active WhatsApp Business accounts in DB
+    // Check token against active WhatsApp Business accounts in DB only
     const account = await prisma.whatsappAccount.findFirst({
       where: { webhookVerifyToken: token, status: "active" },
       select: { id: true }
     });
 
     if (account) {
-      console.log(`[WhatsApp] Webhook verified for account ${account.id}`);
       return res.status(200).send(challenge);
     }
 
-    console.warn("[WhatsApp] Webhook verification failed — no matching token");
     return res.sendStatus(403);
   }
 
