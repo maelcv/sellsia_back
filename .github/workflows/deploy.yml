@@ -47,9 +47,6 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-<<<<<<< HEAD
-            bash -ic 'cd /var/www/ceremia/api && npm install --production && npm install -g pm2 && npx prisma migrate deploy && pm2 delete api-express 2>/dev/null; pm2 start server.js --name "api-express" && pm2 save'
-=======
             set -e
             cd /var/www/ceremia/api
 
@@ -111,5 +108,4 @@ jobs:
             fi
 
             pm2 save
->>>>>>> dev
             
