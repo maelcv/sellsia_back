@@ -54,7 +54,9 @@ import {
 import marketReportsRoutes from "./routes/market-reports.js";
 import vaultRoutes from "./routes/vault.js";
 import automationsRoutes from "./routes/automations.js";
+import projectsRoutes from "./routes/projects.js";
 import { startAutomationWorker, stopAutomationWorker } from "./workers/automation-worker.js";
+
 import { startWorkflowQueue, stopWorkflowQueue } from "./workers/workflow-queue.js";
 
 const app = express();
@@ -197,6 +199,8 @@ app.use("/api/profile", profileSecurityRoutes);
 app.use("/api/market-reports", marketReportsRoutes);
 app.use("/api/vault", vaultRoutes);
 app.use("/api/automations", automationsRoutes);
+app.use("/api/projects", projectsRoutes);
+
 
 app.get("/api/me", requireAuth, requireWorkspaceContext, async (req, res) => {
   // Enrich with fields not in JWT (like twoFactorEnabled)

@@ -36,6 +36,10 @@ import { platformEmitter } from "../services/automation-events.js";
 import { resolve as resolvePath, join as joinPath } from "path";
 import { existsSync } from "fs";
 import { fileURLToPath } from "url";
+// V1 — Memory & Classification
+import { classifyUploadedFile } from "../services/classification/file-classifier.js";
+import { processConversationMemory } from "../services/memory/conversation-memory.js";
+
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const router = express.Router();
@@ -1232,6 +1236,33 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
         agentId: activeAgentId || agentId,
       });
     }
+
+    // ── V1: Fire-and-forget post-stream hooks ─────────────────────
+    // These run asynchronously and NEVER block the SSE response.
+
+    // 1. Classify uploaded files → vault note + KnowledgeDocument
+    if (uploadedFiles.length > 0 && req.workspaceId) {
+      const userForClassifier = { id: userId, email: req.user?.email, name: req.user?.name };
+      for (const file of uploadedFiles) {
+        classifyUploadedFile({
+          file,
+          userId,
+          workspaceId: req.workspaceId,
+          conversationId,
+          agentId: activeAgentId || agentId,
+          user: userForClassifier
+        }).catch(err => console.warn("[chat/stream] file-classify failed:", err.message));
+      }
+    }
+
+    // 2. Update user profile from conversation insights
+    processConversationMemory({
+      userId,
+      conversationId,
+      user: { id: userId, email: req.user?.email, name: req.user?.name }
+    }).catch(err => console.warn("[chat/stream] memory-update failed:", err.message));
+    // ─────────────────────────────────────────────────────────────
+
   } catch (error) {
     console.error("[Chat Stream] Error:", error);
     if (!clientDisconnected && res.writable) {

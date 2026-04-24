@@ -12,6 +12,9 @@ import { authRateLimit } from "../middleware/security.js";
 import { requireAuth } from "../middleware/auth.js";
 import { sendEmail } from "../services/email/email-service.js";
 
+import { getUserProfile, initUserProfile } from "../services/memory/user-profile.js";
+import { writeRootNote, deleteRootNote } from "../services/vault/vault-service.js";
+
 const router = express.Router();
 
 // ═══════════════════════════════════════════════════════════════════
@@ -127,6 +130,81 @@ router.post("/toggle-2fa-email", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("[Profile] Toggle 2FA email error:", err);
     return res.status(500).json({ error: "An error occurred" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// GET /api/profile/memory
+// Get the user's AI memory markdown profile
+// ═══════════════════════════════════════════════════════════════════
+
+router.get("/memory", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    let content = await getUserProfile(userId);
+    
+    if (!content) {
+      // If it doesn't exist, create the initial profile
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      content = await initUserProfile(userId, user || {});
+    }
+    
+    return res.json({ content });
+  } catch (err) {
+    console.error("[Profile] Get memory error:", err);
+    return res.status(500).json({ error: "Failed to load memory profile" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PUT /api/profile/memory
+// Update the user's AI memory markdown profile
+// ═══════════════════════════════════════════════════════════════════
+
+router.put("/memory", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    const { content } = req.body;
+    
+    if (typeof content !== "string") {
+      return res.status(400).json({ error: "Content must be a string" });
+    }
+
+    const path = `Global/Users/${userId}/profile.md`;
+    await writeRootNote(path, content);
+    
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[Profile] Update memory error:", err);
+    return res.status(500).json({ error: "Failed to update memory profile" });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// POST /api/profile/memory/reset
+// Reset the user's AI memory markdown profile
+// ═══════════════════════════════════════════════════════════════════
+
+router.post("/memory/reset", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    const path = `Global/Users/${userId}/profile.md`;
+    
+    // Delete existing note
+    try {
+      await deleteRootNote(path);
+    } catch (e) {
+      // Ignore if not exists
+    }
+    
+    // Re-init
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const content = await initUserProfile(userId, user || {});
+    
+    return res.json({ success: true, content });
+  } catch (err) {
+    console.error("[Profile] Reset memory error:", err);
+    return res.status(500).json({ error: "Failed to reset memory profile" });
   }
 });
 

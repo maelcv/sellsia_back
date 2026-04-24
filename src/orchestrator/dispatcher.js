@@ -616,8 +616,8 @@ export async function orchestrate({
   const effectiveToolContext = buildToolContextForAgent(agentId, toolContext);
 
   const enrichedToolContext = effectiveToolContext
-    ? { ...effectiveToolContext, agentId, tenantId }
-    : { agentId, tenantId };
+    ? { ...effectiveToolContext, agentId, tenantId, userId: clientId }
+    : { agentId, tenantId, userId: clientId };
 
   const result = await agent.execute({
     userMessage,
@@ -814,8 +814,8 @@ export async function* orchestrateStream({
   const effectiveToolContext = buildToolContextForAgent(agentId, toolContext);
 
   const enrichedToolContext = effectiveToolContext
-    ? { ...effectiveToolContext, agentId, tenantId }
-    : { agentId, tenantId };
+    ? { ...effectiveToolContext, agentId, tenantId, userId: clientId }
+    : { agentId, tenantId, userId: clientId };
 
   // Step 6: Stream from the agent (which internally manages sub-agents)
   try {

@@ -35,9 +35,14 @@ export const vaultWriteAction = {
   }),
 
   async execute(inputs, context) {
-    const { path: notePath, content, contentPath, mode } = inputs;
+    let { path: notePath, content, contentPath, mode } = inputs;
     if (!notePath) throw new Error("path est requis");
     if (!context.workspaceId) throw new Error("workspaceId manquant dans le contexte");
+
+    // Prepend userId if not already present and not a system path
+    if (context.userId && !notePath.startsWith("Global/") && !notePath.startsWith(`${context.userId}/`)) {
+      notePath = `${context.userId}/${notePath}`;
+    }
 
     const resolvedContent = await resolveVaultContent({
       content,

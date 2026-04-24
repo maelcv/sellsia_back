@@ -239,6 +239,10 @@ model Workspace {
   vaultNotes   VaultNote[]
   automations  Automation[]
 
+  // V1 — Projects, Uploads
+  projects        Project[]
+  uploadedFileRefs UploadedFileRef[]
+
   @@index([parentWorkspaceId])
   @@map("workspaces")
 }
@@ -468,6 +472,12 @@ model User {
 
   // Automations
   automations Automation[]
+
+  // V1 — Projects, Profile, Uploads
+  ownedProjects    Project[]         @relation("ProjectCreator")
+  projectMemberships ProjectMember[]
+  userProfile      UserProfile?
+  uploadedFileRefs UploadedFileRef[]
 
   @@index([workspaceId])
   @@map("users")
@@ -819,6 +829,10 @@ model KnowledgeDocument {
 
   client User?  @relation(fields: [clientId], references: [id], onDelete: Cascade)
   agent  Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  // V1 — File classification references
+  uploadedFileRefs UploadedFileRef[]
+  projectDocuments ProjectDocument[]
 
   @@map("knowledge_documents")
 }
@@ -1569,4 +1583,102 @@ model AutomationRun {
 
   @@index([automationId])
   @@map("automation_runs")
+}
+
+// ─── V1: Projects ─────────────────────────────────────────────────
+
+/// Projet — regroupe des documents, des membres et un dossier vault.
+model Project {
+  id          String   @id @default(cuid())
+  workspaceId String   @map("workspace_id")
+  name        String
+  slug        String   // URL-safe, unique par workspace
+  description String?
+  status      String   @default("active") // active | archived | completed
+  vaultPath   String?  @map("vault_path")  // chemin relatif dans le vault workspace (ex: "Projects/mon-projet")
+  createdById Int      @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("ProjectCreator", fields: [createdById], references: [id])
+
+  members   ProjectMember[]
+  documents ProjectDocument[]
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@map("projects")
+}
+
+/// Membre d'un projet (owner | member | viewer).
+model ProjectMember {
+  id        String @id @default(cuid())
+  projectId String @map("project_id")
+  userId    Int    @map("user_id")
+  role      String @default("member") // owner | member | viewer
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@map("project_members")
+}
+
+/// Document associé à un projet — peut pointer vers le vault et/ou un KnowledgeDocument.
+model ProjectDocument {
+  id                  String  @id @default(cuid())
+  projectId           String  @map("project_id")
+  knowledgeDocumentId Int?    @map("knowledge_document_id")
+  vaultPath           String? @map("vault_path") // chemin dans le vault
+  title               String
+
+  project      Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  knowledgeDoc KnowledgeDocument? @relation(fields: [knowledgeDocumentId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@map("project_documents")
+}
+
+// ─── V1: User Profiles (AI Memory) ───────────────────────────────
+
+/// Profil IA utilisateur — préférences chat, style de réponse, personnalité détectée.
+/// Complément du vault (le markdown est dans Global/Users/<userId>/profile.md).
+model UserProfile {
+  userId        Int      @id @map("user_id")
+  chatLanguage  String   @default("fr") @map("chat_language")
+  responseStyle String   @default("balanced") @map("response_style") // concise | balanced | detailed
+  personalityJson String? @map("personality_json") // JSON: traits détectés par l'IA
+  interestsJson   String? @map("interests_json")   // JSON: topics fréquents
+  lastUpdatedAt DateTime @default(now()) @map("last_updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// ─── V1: Uploaded File References ────────────────────────────────
+
+/// Référence d'un fichier uploadé en chat — lien vers la note vault + KnowledgeDocument.
+model UploadedFileRef {
+  id               String   @id @default(cuid())
+  workspaceId      String   @map("workspace_id")
+  uploadedById     Int      @map("uploaded_by_id")
+  originalName     String   @map("original_name")
+  mimeType         String   @map("mime_type")
+  sizeBytes        Int      @map("size_bytes")
+  classificationJson String? @map("classification_json") // JSON: { category, keywords[], summary, keyPoints[] }
+  vaultPath        String?  @map("vault_path")           // chemin de la note markdown de référence
+  knowledgeDocId   Int?     @map("knowledge_doc_id")
+  conversationId   String?  @map("conversation_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  uploadedBy   User               @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  knowledgeDoc KnowledgeDocument? @relation(fields: [knowledgeDocId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([uploadedById])
+  @@map("uploaded_file_refs")
 }
