@@ -75,7 +75,7 @@ export async function startVaultSyncWorker() {
 
     // 3. Aussi les admins (workspaceId null)
     const admins = await prisma.user.findMany({
-      where: { role: "admin" },
+      where: { role: "ADMIN" },
       select: { id: true, email: true, companyName: true }
     });
 

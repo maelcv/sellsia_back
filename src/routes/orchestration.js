@@ -18,7 +18,7 @@ const router = express.Router();
 
 // ── GET /api/orchestration/logs — List logs with pagination ──
 
-router.get("/logs", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/logs", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
   const offset = (page - 1) * limit;
@@ -72,7 +72,7 @@ router.get("/logs", requireAuth, requireRole("admin"), async (req, res) => {
 
 // ── GET /api/orchestration/stats — Aggregate stats ──
 
-router.get("/stats", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/stats", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const statsResult = await prisma.$queryRaw`
     SELECT
       COUNT(*)::int AS "totalRequests",
@@ -106,7 +106,7 @@ router.get("/stats", requireAuth, requireRole("admin"), async (_req, res) => {
 
 // ── GET /api/orchestration/conversations — List conversations (admin) ──
 
-router.get("/conversations", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/conversations", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
   const offset = (page - 1) * limit;
@@ -144,7 +144,7 @@ router.get("/conversations", requireAuth, requireRole("admin"), async (req, res)
 
 // ── GET /api/orchestration/conversations/:id — Conversation detail with messages ──
 
-router.get("/conversations/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/conversations/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { id } = req.params;
 
   const convResult = await prisma.$queryRaw`
@@ -206,7 +206,7 @@ router.get("/conversations/:id", requireAuth, requireRole("admin"), async (req, 
 
 // ── GET /api/orchestration/reasoning/:messageId — Reasoning steps for a single message ──
 
-router.get("/reasoning/:messageId", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/reasoning/:messageId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { messageId } = req.params;
 
   const steps = await getReasoningSteps(Number(messageId));
@@ -215,7 +215,7 @@ router.get("/reasoning/:messageId", requireAuth, requireRole("admin"), async (re
 
 // ── GET /api/orchestration/activity — Paginated activity logs from reasoning_steps ──
 
-router.get("/activity", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/activity", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
   const stepType = req.query.stepType || null;
@@ -228,7 +228,7 @@ router.get("/activity", requireAuth, requireRole("admin"), async (req, res) => {
 
 // ── GET /api/orchestration/activity/stats — Aggregate activity stats ──
 
-router.get("/activity/stats", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/activity/stats", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const result = await getActivityStats();
   return res.json(result);
 });
@@ -236,7 +236,7 @@ router.get("/activity/stats", requireAuth, requireRole("admin"), async (_req, re
 // ── GET /api/orchestration/tool-usage — Paired tool_call + tool_result logs ──
 // Returns: Agent, Tool, User, Input, Output, Success Status, timestamps
 
-router.get("/tool-usage", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/tool-usage", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
   const agentId = req.query.agentId || null;

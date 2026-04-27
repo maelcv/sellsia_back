@@ -3,9 +3,10 @@
  * et le chargement des documents de la knowledge base.
  */
 
-import { getSellsyCredentials } from "../ai-providers/index.js";
+import { getSellsyCredentials, getProviderForUser } from "../ai-providers/index.js";
 import { SellsyClient, fetchContextData } from "../sellsy/client.js";
 import { prisma } from "../prisma.js";
+import { generateEmbedding, searchSimilarDocs } from "../services/memory/vector-service.js";
 
 /**
  * Retourne une instance SellsyClient pour un utilisateur (ou null si pas de credentials).
@@ -143,21 +144,75 @@ export async function enrichWithPipelineData(userId) {
  * @param {number} limit
  * @param {string|null} workspaceId - If set, restricts search to workspace scope
  */
-export async function loadKnowledgeContext(query, agentId, clientId = null, limit = 3, workspaceId = null) {
+export async function loadKnowledgeContext(query, agentId, clientId = null, limit = 3, workspaceId = null, requesterId = null) {
   const normalizedQuery = (query || "").toLowerCase();
+  const effectiveRequesterId = requesterId ?? clientId;
 
-  // Build allowed clientId list for workspace isolation
+  // Build allowed clientId list for workspace isolation + rank hierarchy
   let wsUserIds = clientId ? [clientId] : [];
   if (workspaceId) {
     try {
+      const requester = await prisma.user.findUnique({
+        where: { id: effectiveRequesterId },
+        select: { role: true }
+      });
+
       const wsUsers = await prisma.user.findMany({
         where: { workspaceId },
         select: { id: true }
       });
       wsUserIds = wsUsers.map(u => u.id);
-    } catch { /* non-blocking */ }
+
+      // Platform ADMINs bypass rank check within a workspace
+      if (requester?.role === "ADMIN") {
+        // wsUserIds already contains all users of the workspace
+      } else if (effectiveRequesterId) {
+        // Rank-based access for GESTIONNAIRE / USER
+        const assignments = await prisma.userRoleAssignment.findMany({
+          where: { role: { workspaceId } },
+          select: { userId: true, role: { select: { rank: true } } },
+        });
+
+        const rankByUser = {};
+        for (const { userId, role } of assignments) {
+          rankByUser[userId] = Math.max(rankByUser[userId] ?? 0, role.rank ?? 0);
+        }
+        const requesterRank = rankByUser[effectiveRequesterId] ?? 0;
+
+        if (requesterRank > 0) {
+          // Include documents of users with strictly lower rank
+          wsUserIds = wsUsers
+            .map(u => u.id)
+            .filter(uid => (rankByUser[uid] ?? 0) < requesterRank || uid === effectiveRequesterId);
+        } else {
+          // No rank elevation — only own docs + global
+          wsUserIds = [effectiveRequesterId];
+        }
+      }
+    } catch (err) {
+      console.warn("[loadKnowledgeContext] Access check error:", err.message);
+    }
   }
 
+  // Vector search: try semantic similarity first (requires pgvector + OpenAI-compatible provider)
+  if (workspaceId && effectiveRequesterId) {
+    try {
+      const provider = await getProviderForUser(effectiveRequesterId);
+      const embedding = await generateEmbedding(query, provider);
+      if (embedding) {
+        const vectorDocs = await searchSimilarDocs(workspaceId, embedding, limit, wsUserIds);
+        if (vectorDocs.length > 0) {
+          return vectorDocs
+            .map((d) => d.summary ? `### Summary\n${d.summary}\n\n${d.content}` : d.content)
+            .join("\n\n---\n\n");
+        }
+      }
+    } catch {
+      // Fall through to SQL LIKE
+    }
+  }
+
+  // SQL LIKE fallback
   const docs = await prisma.knowledgeDocument.findMany({
     where: {
       isActive: true,

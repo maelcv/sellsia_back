@@ -17,7 +17,7 @@ const router = Router();
 
 function requireAdmin(req, res, next) {
   const role = req.user?.roleCanonical || req.user?.role;
-  if (role !== "admin" && role !== "admin_platform") return res.status(403).json({ error: "Admin only" });
+  if (role !== "ADMIN" && role !== "admin_platform") return res.status(403).json({ error: "Admin only" });
   next();
 }
 

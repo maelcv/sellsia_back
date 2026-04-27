@@ -12,8 +12,7 @@ const router = Router();
 
 const RESERVED_ROLE_NAMES = new Set([
   "admin",
-  "client",
-  "sub_client",
+  'GESTIONNAIRE', 'USER',
   "admin_platform",
   "workspace_manager",
   "workspace_user",
@@ -28,6 +27,7 @@ const permissionDescriptorSchema = z.object({
 const createRoleSchema = z.object({
   name: z.string().min(2).max(64),
   label: z.string().min(2).max(120),
+  rank: z.number().int().min(0).max(1000).default(0),
   permissionIds: z.array(z.string()).default([]),
   permissions: z.array(permissionDescriptorSchema).default([]),
 });
@@ -35,6 +35,7 @@ const createRoleSchema = z.object({
 const updateRoleSchema = z.object({
   name: z.string().min(2).max(64).optional(),
   label: z.string().min(2).max(120).optional(),
+  rank: z.number().int().min(0).max(1000).optional(),
   permissionIds: z.array(z.string()).optional(),
   permissions: z.array(permissionDescriptorSchema).optional(),
 });
@@ -245,7 +246,7 @@ router.get("/", async (req, res) => {
           },
         },
       },
-      orderBy: { name: "asc" },
+      orderBy: [{ rank: "desc" }, { name: "asc" }],
     });
 
     return res.json({
@@ -254,6 +255,7 @@ router.get("/", async (req, res) => {
         workspaceId: role.workspaceId,
         name: role.name,
         label: role.label,
+        rank: role.rank,
         permissions: role.permissions.map((entry) => entry.permission),
         users: role.assignments.map((entry) => entry.user),
         usersCount: role.assignments.length,
@@ -295,6 +297,7 @@ router.post("/", async (req, res) => {
           workspaceId,
           name: normalizedName,
           label: parsed.label.trim(),
+          rank: parsed.rank ?? 0,
         },
       });
 
@@ -319,6 +322,7 @@ router.post("/", async (req, res) => {
         workspaceId: role.workspaceId,
         name: role.name,
         label: role.label,
+        rank: role.rank,
         permissions: role.permissions.map((entry) => entry.permission),
       },
     });
@@ -366,6 +370,10 @@ router.patch("/:roleId", async (req, res) => {
 
     if (parsed.label !== undefined) {
       updates.label = parsed.label.trim();
+    }
+
+    if (parsed.rank !== undefined) {
+      updates.rank = parsed.rank;
     }
 
     const roleWithPermissions = await prisma.$transaction(async (tx) => {
@@ -600,6 +608,34 @@ router.delete("/:roleId/users/:userId", async (req, res) => {
   } catch (err) {
     console.error("[workspace-roles] remove role assignment error:", err);
     return res.status(500).json({ error: "Failed to remove role assignment" });
+  }
+});
+
+router.put("/hierarchy", async (req, res) => {
+  try {
+    const workspaceId = resolveWorkspaceId(req);
+    if (!workspaceId) {
+      return res.status(400).json({ error: "workspaceId is required" });
+    }
+
+    const { updates } = req.body || {};
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ error: "updates must be an array" });
+    }
+
+    await prisma.$transaction(
+      updates.map((upd) =>
+        prisma.role.update({
+          where: { id: upd.id, workspaceId },
+          data: { rank: upd.rank },
+        })
+      )
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[workspace-roles] update hierarchy error:", err);
+    return res.status(500).json({ error: "Failed to update hierarchy" });
   }
 });
 

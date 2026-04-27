@@ -120,7 +120,7 @@ router.post("/onboard", authRateLimit, async (req, res) => {
     data: {
       email: email.toLowerCase(),
       passwordHash,
-      role: "admin",
+      role: "ADMIN",
       companyName: companyName || null,
       workspaceId: workspace.id // Associate user with workspace immediately
     }
@@ -215,7 +215,7 @@ router.post("/signup", authRateLimit, async (req, res) => {
       data: {
         email: emailLower,
         passwordHash,
-        role: "client",
+        role: "GESTIONNAIRE",
         companyName,
         workspaceId: workspace.id
       }
@@ -457,7 +457,7 @@ router.post("/accept-invitation", authRateLimit, async (req, res) => {
       data: {
         email: invitation.invitedEmail,
         passwordHash,
-        role: "sub_client", // Invited users are sub-clients
+        role: "USER", // Invited users are sub-clients
         companyName: name || null,
         workspaceId: invitation.workspaceId
       }
@@ -510,7 +510,7 @@ router.post("/accept-invitation", authRateLimit, async (req, res) => {
 });
 
 // ─── POST /impersonate — Admin simulates a user ───
-router.post("/impersonate", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/impersonate", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { targetUserId } = req.body;
 
   if (!targetUserId || typeof targetUserId !== "number") {

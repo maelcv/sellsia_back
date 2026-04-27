@@ -15,9 +15,9 @@ generator client {
 // ── Enums ────────────────────────────────────────────────────
 
 enum UserRole {
-  admin
-  client
-  sub_client
+  ADMIN
+  GESTIONNAIRE
+  USER
   admin_platform
   workspace_manager
   workspace_user
@@ -243,6 +243,9 @@ model Workspace {
   projects        Project[]
   uploadedFileRefs UploadedFileRef[]
 
+  // V1.6 — Vault sharing
+  vaultShares     VaultShare[]
+
   @@index([parentWorkspaceId])
   @@map("workspaces")
 }
@@ -358,6 +361,7 @@ model Role {
   workspaceId String @map("workspace_id")
   name        String // "admin", "seller", "manager"
   label       String // "Administrateur", "Commercial", "Manager"
+  rank        Int    @default(0) @map("rank") // Hierarchical rank — higher = more access via agents
 
   workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   permissions RolePermission[]
@@ -414,6 +418,8 @@ model User {
   id            Int      @id @default(autoincrement())
   email         String   @unique
   passwordHash  String   @map("password_hash")
+  firstName     String?  @map("first_name")
+  lastName      String?  @map("last_name")
   role          UserRole
   companyName   String?  @map("company_name")
   whatsappPhone String?  @unique @map("whatsapp_phone")
@@ -479,6 +485,9 @@ model User {
   userProfile      UserProfile?
   uploadedFileRefs UploadedFileRef[]
 
+  // V1.6 — Vault sharing
+  vaultShares      VaultShare[]
+
   @@index([workspaceId])
   @@map("users")
 }
@@ -503,6 +512,7 @@ model Agent {
   allowedTools     String?  @default("[]") @map("allowed_tools")
   defaultProviderCode String? @map("default_provider_code")
   defaultModel        String? @map("default_model")
+  capabilities        String  @default("[]") @map("capabilities") // JSON array of capability keys (e.g. ["pipeline_enrichment"])
 
   // Scoping tenant : null = global, set = workspace-scoped
   workspaceId String?    @map("workspace_id")
@@ -1681,4 +1691,23 @@ model UploadedFileRef {
   @@index([workspaceId])
   @@index([uploadedById])
   @@map("uploaded_file_refs")
+}
+
+// ─── V1.6: Vault Public Shares ────────────────────────────────────
+
+/// A document shared publicly within a workspace — a copy lives in the Public/ folder.
+model VaultShare {
+  id          String   @id @default(cuid())
+  workspaceId String?  @map("workspace_id")
+  sourcePath  String   @map("source_path")  // original path, e.g. "42/Uploads/2026-04/contract.md"
+  publicPath  String   @map("public_path")  // public copy path, e.g. "Public/Contracts/contract.md"
+  sharedById  Int      @map("shared_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sharedBy  User       @relation(fields: [sharedById], references: [id])
+
+  @@unique([workspaceId, sourcePath])
+  @@index([workspaceId])
+  @@map("vault_shares")
 }

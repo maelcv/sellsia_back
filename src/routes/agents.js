@@ -91,12 +91,12 @@ function formatAgent(a) {
  */
 router.get("/catalog", requireAuth, requireWorkspaceContext, async (req, res) => {
   const perms = req.workspacePlan?.permissions || {};
-  const canSeeOwnAgents = req.user.role === "admin" || perms.agents_local || perms.agents_cloud;
+  const canSeeOwnAgents = req.user.role === "ADMIN" || perms.agents_local || perms.agents_cloud;
 
   // Filter:
   // 1. Admin see ALL agents
   // 2. Others see Global Agents in Plan OR Agents belonging to their Workspace
-  const whereClause = req.user.role === "admin"
+  const whereClause = req.user.role === "ADMIN"
     ? {}
     : {
         isActive: true,
@@ -114,7 +114,7 @@ router.get("/catalog", requireAuth, requireWorkspaceContext, async (req, res) =>
   return res.json({ agents: agents.map(formatAgent) });
 });
 
-router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/admin", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = adminAgentSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: "Invalid request payload" });
 
@@ -136,7 +136,7 @@ router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
   return res.status(201).json({ message: "Agent created" });
 });
 
-router.patch("/admin/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/admin/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = adminAgentSchema.omit({ id: true }).safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: "Invalid request payload" });
 
@@ -165,7 +165,7 @@ router.patch("/admin/:id", requireAuth, requireRole("admin"), async (req, res) =
   return res.json({ message: "Agent updated" });
 });
 
-router.delete("/admin/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/admin/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     await prisma.agent.delete({
       where: { id: req.params.id }
@@ -182,7 +182,7 @@ router.delete("/admin/:id", requireAuth, requireRole("admin"), async (req, res) 
 
 router.get("/my-access", requireAuth, requireWorkspaceContext, async (req, res) => {
   const userId = req.user.sub;
-  const whereClause = req.user.role === "admin"
+  const whereClause = req.user.role === "ADMIN"
     ? {}
     : {
         isActive: true,
@@ -225,7 +225,7 @@ router.get("/my-access", requireAuth, requireWorkspaceContext, async (req, res) 
 router.post(
   "/workspace",
   requireAuth,
-  requireRole("client", "sub_client", "admin"),
+  requireRole('GESTIONNAIRE', 'USER', "admin"),
   requireWorkspaceContext,
   requireFeature("agents_local"),
   async (req, res) => {
@@ -300,7 +300,7 @@ router.post(
 router.post(
   "/import",
   requireAuth,
-  requireRole("client", "sub_client", "admin"),
+  requireRole('GESTIONNAIRE', 'USER', "admin"),
   requireWorkspaceContext,
   requireFeature("agents_cloud"),
   async (req, res) => {
@@ -349,7 +349,7 @@ router.post(
 router.patch(
   "/workspace/:id",
   requireAuth,
-  requireRole("client", "sub_client", "admin"),
+  requireRole('GESTIONNAIRE', 'USER', "admin"),
   requireWorkspaceContext,
   async (req, res) => {
     const parse = updateWorkspaceAgentSchema.safeParse(req.body);
@@ -360,7 +360,7 @@ router.patch(
     // Vérifier ownership workspace (sauf admin)
     const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Agent introuvable" });
-    if (req.user.role !== "admin" && existing.workspaceId !== req.workspaceId) {
+    if (req.user.role !== "ADMIN" && existing.workspaceId !== req.workspaceId) {
       return res.status(403).json({ error: "Vous ne pouvez modifier que les agents de votre workspace" });
     }
 
@@ -411,12 +411,12 @@ router.patch(
 router.delete(
   "/workspace/:id",
   requireAuth,
-  requireRole("client", "sub_client", "admin"),
+  requireRole('GESTIONNAIRE', 'USER', "admin"),
   requireWorkspaceContext,
   async (req, res) => {
     const existing = await prisma.agent.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: "Agent introuvable" });
-    if (req.user.role !== "admin" && existing.workspaceId !== req.workspaceId) {
+    if (req.user.role !== "ADMIN" && existing.workspaceId !== req.workspaceId) {
       return res.status(403).json({ error: "Vous ne pouvez supprimer que les agents de votre workspace" });
     }
 

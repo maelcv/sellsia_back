@@ -3,18 +3,21 @@ import { config } from "../config.js";
 import { getRedis } from "../cache/redis-client.js";
 
 const ROLE_TO_CANONICAL = {
+  ADMIN: "admin_platform",
   admin: "admin_platform",
   admin_platform: "admin_platform",
+  GESTIONNAIRE: "workspace_manager",
   client: "workspace_manager",
   workspace_manager: "workspace_manager",
+  USER: "workspace_user",
   sub_client: "workspace_user",
   workspace_user: "workspace_user",
 };
 
 const CANONICAL_TO_LEGACY = {
-  admin_platform: "admin",
-  workspace_manager: "client",
-  workspace_user: "sub_client",
+  admin_platform: "ADMIN",
+  workspace_manager: "GESTIONNAIRE",
+  workspace_user: "USER",
 };
 
 export function toCanonicalRole(role) {
@@ -94,7 +97,7 @@ export function requireRole(...allowedRoles) {
  * Vérifie qu'un feature est activé dans le plan du workspace courant.
  *
  * Doit être utilisé APRÈS requireWorkspaceContext (qui charge req.workspacePlan).
- * Les super-admins (role="admin") bypasse toujours cette vérification.
+ * Les super-admins (role = 'ADMIN') bypasse toujours cette vérification.
  *
  * Comportement fail-closed: un workspace sans plan assigné se voit refuser l'accès.
  * Exception: /api/chat retourne un message user-friendly plutôt qu'un 403.

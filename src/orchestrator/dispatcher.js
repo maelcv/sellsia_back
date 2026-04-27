@@ -283,7 +283,7 @@ export async function classifyIntent(provider, userMessage, pageContext, userRol
 
   const orchestratorPrompt = interpolatePrompt(SYSTEM_PROMPTS["orchestrator"], {
     pageContext: JSON.stringify(pageContext || {}),
-    userRole: userRole || "client"
+    userRole: userRole || "GESTIONNAIRE"
   }) + availableAgentsInfo;
 
   try {
@@ -545,7 +545,7 @@ export async function orchestrate({
   pageContext,
   sellsyData,
   conversationHistory = [],
-  userRole = "client",
+  userRole = "GESTIONNAIRE",
   clientId,
   conversationId = null,
   allowedAgents,
@@ -722,7 +722,7 @@ export async function* orchestrateStream({
   pageContext,
   sellsyData,
   conversationHistory = [],
-  userRole = "client",
+  userRole = "GESTIONNAIRE",
   clientId,
   conversationId,
   allowedAgents,

@@ -9,7 +9,7 @@ import { prisma } from "../prisma.js";
  */
 export async function loadDataAccess(req, res, next) {
   // Super-admins : accès global complet
-  if (req.user?.role === "admin") {
+  if (req.user?.role === "ADMIN") {
     req.dataAccess = {
       accessScope: "global",
       crmAccess: true,
@@ -63,7 +63,7 @@ export async function loadDataAccess(req, res, next) {
  */
 export function requireDataAccess(accessType) {
   return (req, res, next) => {
-    if (req.user?.role === "admin") return next();
+    if (req.user?.role === "ADMIN") return next();
 
     const da = req.dataAccess;
     if (!da) {
@@ -95,7 +95,7 @@ export function requireDataAccess(accessType) {
  * @returns {{ userId?: number, workspaceId?: string }} filtre à merger dans le WHERE Prisma
  */
 export function getDataScopeFilter(req) {
-  if (req.user?.role === "admin") return {};
+  if (req.user?.role === "ADMIN") return {};
 
   const scope = req.dataAccess?.accessScope || "personal";
 

@@ -259,7 +259,7 @@ async function processIncomingMessage(event) {
     select: { tenantId: true, role: true }
   });
   const tenantId = userRecord?.tenantId || null;
-  const userRole = userRecord?.role || "client";
+  const userRole = userRecord?.role || "GESTIONNAIRE";
 
   const accessToken = decryptSecret(account.accessTokenEncrypted);
 
@@ -820,7 +820,7 @@ router.get("/accounts", requireAuth, async (req, res) => {
 // POST /api/whatsapp/accounts — Ajouter un compte (admin)
 // ══════════════════════════════════════════════════════
 
-router.post("/accounts", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/accounts", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = accountSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid account payload" });
@@ -916,7 +916,7 @@ const accountUpdateSchema = z.object({
   assignedAgentId: z.string().nullable().optional()
 });
 
-router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/accounts/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = accountUpdateSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid payload" });
@@ -1011,7 +1011,7 @@ router.put("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) 
 // DELETE /api/whatsapp/accounts/:id — Supprimer un compte
 // ══════════════════════════════════════════════════════
 
-router.delete("/accounts/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/accounts/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const userId = req.user.sub;
   const accountId = req.params.id;
 

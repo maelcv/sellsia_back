@@ -50,7 +50,7 @@ const upsertPlanSchema = z.object({
  * - Client/collaborator : permissions du plan du workspace
  */
 router.get("/feature-access", requireAuth, requireWorkspaceContext, async (req, res) => {
-  if (req.user.role === "admin") {
+  if (req.user.role === "ADMIN") {
     return res.json({
       permissions: ALL_TRUE_PERMISSIONS,
       isAdmin: true,
@@ -74,7 +74,7 @@ router.get("/feature-access", requireAuth, requireWorkspaceContext, async (req, 
   });
 });
 
-router.get("/my-plan", requireAuth, requireRole("client"), async (req, res) => {
+router.get("/my-plan", requireAuth, requireRole("GESTIONNAIRE"), async (req, res) => {
   const userId = req.user.sub;
 
   const clientPlan = await prisma.clientPlan.findUnique({
@@ -130,14 +130,14 @@ router.get("/catalog", requireAuth, async (req, res) => {
     allowedAgents: row.allowedAgents
   }));
 
-  if (req.user.role === "admin") {
+  if (req.user.role === "ADMIN") {
     return res.json({ plans: mapped });
   }
 
   return res.json({ plans: mapped.filter((p) => p.isActive) });
 });
 
-router.post("/change-plan", requireAuth, requireRole("client"), async (req, res) => {
+router.post("/change-plan", requireAuth, requireRole("GESTIONNAIRE"), async (req, res) => {
   const parse = changePlanSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
@@ -167,7 +167,7 @@ router.post("/change-plan", requireAuth, requireRole("client"), async (req, res)
   return res.json({ message: "Plan updated" });
 });
 
-router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/admin", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = upsertPlanSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
@@ -197,7 +197,7 @@ router.post("/admin", requireAuth, requireRole("admin"), async (req, res) => {
   return res.status(201).json({ message: "Plan created" });
 });
 
-router.patch("/admin/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/admin/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const planId = Number(req.params.id);
   if (!Number.isInteger(planId) || planId <= 0) {
     return res.status(400).json({ error: "Invalid plan id" });

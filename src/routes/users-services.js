@@ -495,7 +495,7 @@ router.post("/client/change-password", requireAuth, requireRole("client", "admin
 });
 
 // ── Réinitialisation de mot de passe (admin uniquement) ──
-router.post("/admin/users/:id/reset-password", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/admin/users/:id/reset-password", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid user id" });
@@ -523,7 +523,7 @@ router.post("/admin/users/:id/reset-password", requireAuth, requireRole("admin")
 });
 
 // ── POST /api/users-services/admin/users/:id/send-temporary-password ──
-router.post("/admin/users/:id/send-temporary-password", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/admin/users/:id/send-temporary-password", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid user id" });
@@ -582,7 +582,7 @@ router.post("/admin/users/:id/send-temporary-password", requireAuth, requireRole
 });
 
 // ── Fetch available models from a local provider (proxy to bypass CSP) ──
-router.get("/provider-models", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/provider-models", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { code, host, apiKey } = req.query;
   if (!code) return res.status(400).json({ error: "code required" });
 
@@ -681,7 +681,7 @@ router.post("/test-provider", requireAuth, async (req, res) => {
   }
 });
 
-router.get("/admin/users", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/admin/users", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const users = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
     select: { id: true, email: true, role: true, companyName: true, createdAt: true, twoFactorEnabled: true, workspace: { select: { parentWorkspaceId: true } } }
@@ -689,7 +689,7 @@ router.get("/admin/users", requireAuth, requireRole("admin"), async (_req, res) 
   return res.json({ users });
 });
 
-router.post("/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/admin/users", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = adminUserSchema.extend({ password: z.string().min(8).max(128) }).safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
@@ -707,7 +707,7 @@ router.post("/admin/users", requireAuth, requireRole("admin"), async (req, res) 
     }
   });
 
-  if (payload.role === "client") {
+  if (payload.role === "GESTIONNAIRE") {
     const starter = await prisma.plan.findUnique({
       where: { name: "Starter" },
       select: { id: true }
@@ -759,7 +759,7 @@ router.post("/admin/users", requireAuth, requireRole("admin"), async (req, res) 
   return res.status(201).json({ message: "User created" });
 });
 
-router.patch("/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/admin/users/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid user id" });
@@ -797,7 +797,7 @@ router.patch("/admin/users/:id", requireAuth, requireRole("admin"), async (req, 
   return res.json({ message: "User updated" });
 });
 
-router.delete("/admin/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/admin/users/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid user id" });
@@ -822,7 +822,7 @@ router.delete("/admin/users/:id", requireAuth, requireRole("admin"), async (req,
   return res.json({ message: "User deleted" });
 });
 
-router.get("/admin/external-services", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/admin/external-services", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   try {
     const serviceRows = await prisma.externalService.findMany({
       orderBy: [{ category: "asc" }, { name: "asc" }],
@@ -861,7 +861,7 @@ router.get("/admin/external-services", requireAuth, requireRole("admin"), async 
   }
 });
 
-router.post("/admin/external-services", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/admin/external-services", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = externalServiceSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
@@ -904,7 +904,7 @@ router.post("/admin/external-services", requireAuth, requireRole("admin"), async
   return res.status(201).json({ message: "External service created" });
 });
 
-router.patch("/admin/external-services/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/admin/external-services/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid service id" });
@@ -995,7 +995,7 @@ router.patch("/admin/external-services/:id", requireAuth, requireRole("admin"), 
   return res.json({ message: "External service updated" });
 });
 
-router.delete("/admin/external-services/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/admin/external-services/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid service id" });

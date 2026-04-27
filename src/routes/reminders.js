@@ -41,7 +41,7 @@ const createReminderRateLimit = rateLimit({
   },
   skip: (req) => {
     // Don't rate limit admin users
-    return req.user?.role === "admin";
+    return req.user?.role === "ADMIN";
   }
 });
 
@@ -57,7 +57,7 @@ const cancelReminderRateLimit = rateLimit({
       retryAfter: "15 minutes"
     });
   },
-  skip: (req) => req.user?.role === "admin"
+  skip: (req) => req.user?.role === "ADMIN"
 });
 
 // --- Schéma de validation (Zod) ---------------------------------------

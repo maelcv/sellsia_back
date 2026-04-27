@@ -99,7 +99,7 @@ router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
     };
 
     // Non-admins only see projects they are members of
-    if (req.user.role !== "admin") {
+    if (req.user.role !== "ADMIN") {
       where.members = { some: { userId } };
     }
 
@@ -254,7 +254,7 @@ router.get("/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
     }
 
     // Non-admins must be members
-    if (req.user.role !== "admin") {
+    if (req.user.role !== "ADMIN") {
       const isMember = project.members.some(m => m.userId === userId);
       if (!isMember) return res.status(403).json({ error: "Access denied" });
     }
@@ -288,7 +288,7 @@ router.put("/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
     }
 
     const myRole = project.members[0]?.role;
-    if (req.user.role !== "admin" && myRole !== "owner") {
+    if (req.user.role !== "ADMIN" && myRole !== "owner") {
       return res.status(403).json({ error: "Only owners can edit projects" });
     }
 
@@ -323,7 +323,7 @@ router.delete("/:id", requireAuth, requireWorkspaceContext, async (req, res) => 
     }
 
     const myRole = project.members[0]?.role;
-    if (req.user.role !== "admin" && myRole !== "owner") {
+    if (req.user.role !== "ADMIN" && myRole !== "owner") {
       return res.status(403).json({ error: "Only owners can delete projects" });
     }
 
@@ -365,7 +365,7 @@ router.post("/:id/members", requireAuth, requireWorkspaceContext, async (req, re
     }
 
     const myRole = project.members[0]?.role;
-    if (req.user.role !== "admin" && myRole !== "owner") {
+    if (req.user.role !== "ADMIN" && myRole !== "owner") {
       return res.status(403).json({ error: "Only owners can add members" });
     }
 
@@ -402,7 +402,7 @@ router.delete("/:id/members/:memberId", requireAuth, requireWorkspaceContext, as
     const myRole = project.members[0]?.role;
     const isSelf = requesterId === targetUserId;
 
-    if (req.user.role !== "admin" && myRole !== "owner" && !isSelf) {
+    if (req.user.role !== "ADMIN" && myRole !== "owner" && !isSelf) {
       return res.status(403).json({ error: "Cannot remove this member" });
     }
 
@@ -439,7 +439,7 @@ router.post("/:id/documents", requireAuth, requireWorkspaceContext, async (req, 
     }
 
     const myRole = project.members[0]?.role;
-    if (req.user.role !== "admin" && myRole === "viewer") {
+    if (req.user.role !== "ADMIN" && myRole === "viewer") {
       return res.status(403).json({ error: "Viewers cannot add documents" });
     }
 
@@ -476,7 +476,7 @@ router.delete("/:id/documents/:docId", requireAuth, requireWorkspaceContext, asy
     }
 
     const myRole = project.members[0]?.role;
-    if (req.user.role !== "admin" && myRole === "viewer") {
+    if (req.user.role !== "ADMIN" && myRole === "viewer") {
       return res.status(403).json({ error: "Viewers cannot remove documents" });
     }
 

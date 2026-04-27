@@ -27,7 +27,7 @@ const docSchema = z.object({
 // -- GET /api/knowledge -- Lister les documents --
 
 router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
-  const isAdmin = req.user.role === "admin";
+  const isAdmin = req.user.role === "ADMIN";
   const userId = req.user.sub;
 
   try {
@@ -82,7 +82,7 @@ router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
 
 // -- POST /api/knowledge -- Ajouter un document --
 
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = docSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid document payload" });
@@ -111,7 +111,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
 
 // -- PUT /api/knowledge/:id -- Modifier un document --
 
-router.put("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid document id" });
@@ -150,7 +150,7 @@ router.put("/:id", requireAuth, requireRole("admin"), async (req, res) => {
 
 // -- DELETE /api/knowledge/:id -- Supprimer un document --
 
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid document id" });

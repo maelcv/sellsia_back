@@ -19,6 +19,7 @@ import {
 } from "../vault/vault-service.js";
 import { prisma } from "../../prisma.js";
 import { getProviderForUser } from "../../ai-providers/index.js";
+import { indexDocument } from "../memory/vector-service.js";
 
 // ── Text extraction helpers ────────────────────────────────────────
 
@@ -344,6 +345,20 @@ async function runClassification(file, userId, conversationId, agentId, uploaded
       }
     });
     knowledgeDocId = knowledgeDoc.id;
+
+    // Index in MemorySemantic for vector search (best-effort, fire-and-forget)
+    getProviderForUser(userId).then((provider) => {
+      if (provider) {
+        indexDocument({
+          content: text.slice(0, 10000),
+          summary: classification?.summary ?? null,
+          workspaceId: workspaceId ?? null,
+          userId,
+          agentId: agentId ?? null,
+          conversationId: conversationId ?? null,
+        }, provider).catch(() => {});
+      }
+    }).catch(() => {});
   }
 
   const noteContent = buildMarkdownNote({ file, classification, uploadedByName, conversationId, knowledgeDocId });

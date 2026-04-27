@@ -45,9 +45,9 @@ const PROVIDER_CODE_BY_NAME = {
 
 function normalizeRole(role) {
   const value = String(role || "").trim();
-  if (value === "admin" || value === "admin_platform") return "admin_platform";
-  if (value === "client" || value === "workspace_manager") return "workspace_manager";
-  if (value === "sub_client" || value === "workspace_user") return "workspace_user";
+  if (value === "ADMIN" || value === "admin_platform") return "admin_platform";
+  if (value === "GESTIONNAIRE" || value === "workspace_manager") return "workspace_manager";
+  if (value === "USER" || value === "workspace_user") return "workspace_user";
   return value;
 }
 
@@ -341,7 +341,7 @@ export async function getProviderForTenant(tenantId) {
     JOIN external_services es ON es.id = csl.service_id
     JOIN users u ON u.id = csl.owner_user_id
     WHERE u.workspace_id = $1
-      AND u.role IN ('client', 'workspace_manager')
+      AND u.role IN ('GESTIONNAIRE', 'workspace_manager')
       AND csl.status = 'active'
       AND es.category IN ('ia_cloud', 'ia_local')
       AND es.is_active = true
@@ -494,7 +494,7 @@ export async function getProviderForUser(userId) {
      FROM client_service_links csl
      JOIN external_services es ON es.id = csl.service_id
      JOIN users u ON u.id = csl.owner_user_id
-     WHERE u.role IN ('admin', 'admin_platform')
+     WHERE u.role IN ('ADMIN', 'admin_platform')
        AND csl.status = 'active'
        AND es.category IN ('ia_cloud', 'ia_local')
        AND es.is_active = true
@@ -665,7 +665,7 @@ export async function getSellsyCredentials(userId) {
       WHERE u.workspace_id = ${user.workspaceId}
         AND LOWER(it.name) LIKE '%sellsy%'
         AND it.category = 'crm'
-        AND u.role IN ('client', 'sub_client', 'workspace_manager', 'workspace_user')
+        AND u.role IN ('GESTIONNAIRE', 'USER', 'workspace_manager', 'workspace_user')
       ORDER BY u.role ASC, ui.linked_at DESC
       LIMIT 1
     `;
@@ -691,7 +691,7 @@ export async function getSellsyCredentials(userId) {
       JOIN external_services es ON es.id = csl.service_id
       JOIN users u ON u.id = csl.owner_user_id
       WHERE u.workspace_id = ${user.workspaceId}
-        AND u.role IN ('client', 'sub_client', 'workspace_manager', 'workspace_user')
+        AND u.role IN ('GESTIONNAIRE', 'USER', 'workspace_manager', 'workspace_user')
         AND csl.status = 'active'
         AND es.code IN ('sellsy-token', 'sellsy-oauth')
         AND es.is_active = true
@@ -812,7 +812,7 @@ export async function getActiveProviderCode(userId = null) {
       FROM client_service_links csl
       JOIN external_services es ON es.id = csl.service_id
       JOIN users u ON u.id = csl.owner_user_id
-      WHERE u.role IN ('admin', 'admin_platform')
+      WHERE u.role IN ('ADMIN', 'admin_platform')
         AND csl.status = 'active'
         AND es.category IN ('ia_cloud', 'ia_local')
         AND es.is_active = true

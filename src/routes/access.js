@@ -21,7 +21,7 @@ const grantSchema = z.object({
   status: z.enum(["granted", "revoked"])
 });
 
-router.post("/requests", requireAuth, requireRole("client"), async (req, res) => {
+router.post("/requests", requireAuth, requireRole("GESTIONNAIRE"), async (req, res) => {
   const parse = requestSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
@@ -66,7 +66,7 @@ router.post("/requests", requireAuth, requireRole("client"), async (req, res) =>
   return res.status(201).json({ message: "Access request created" });
 });
 
-router.get("/requests/mine", requireAuth, requireRole("client"), async (req, res) => {
+router.get("/requests/mine", requireAuth, requireRole("GESTIONNAIRE"), async (req, res) => {
   const requests = await prisma.$queryRaw`
     SELECT ar.id, ar.agent_id AS "agentId", a.name AS "agentName", ar.reason, ar.status::text,
            ar.reviewer_note AS "reviewerNote", ar.created_at AS "createdAt", ar.updated_at AS "updatedAt"
@@ -79,7 +79,7 @@ router.get("/requests/mine", requireAuth, requireRole("client"), async (req, res
   return res.json({ requests });
 });
 
-router.get("/requests", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/requests", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   try {
     const requests = await prisma.$queryRaw`
       SELECT ar.id, ar.user_id AS "userId", u.email AS "userEmail", u.company_name AS "companyName",
@@ -98,7 +98,7 @@ router.get("/requests", requireAuth, requireRole("admin"), async (_req, res) => 
   }
 });
 
-router.patch("/requests/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/requests/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const requestId = Number(req.params.id);
   if (!Number.isInteger(requestId) || requestId <= 0) {
     return res.status(400).json({ error: "Invalid request id" });
@@ -156,9 +156,9 @@ router.patch("/requests/:id", requireAuth, requireRole("admin"), async (req, res
   return res.json({ message: `Request ${status}` });
 });
 
-router.get("/users-with-access", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/users-with-access", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const users = await prisma.user.findMany({
-    where: { role: "client" },
+    where: { role: "GESTIONNAIRE" },
     select: { id: true, email: true, role: true, companyName: true },
     orderBy: { email: "asc" }
   });
@@ -183,14 +183,14 @@ router.get("/users-with-access", requireAuth, requireRole("admin"), async (_req,
   });
 });
 
-router.put("/grant", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/grant", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = grantSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid request payload" });
   }
 
   const { userId, agentId, status } = parse.data;
-  const client = await prisma.user.findFirst({ where: { id: userId, role: "client" } });
+  const client = await prisma.user.findFirst({ where: { id: userId, role: "GESTIONNAIRE" } });
   if (!client) {
     return res.status(404).json({ error: "Client user not found" });
   }

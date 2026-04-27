@@ -117,7 +117,7 @@ router.post("/create-admin", async (req, res) => {
 
     // Check if admin already exists
     const existingAdmin = await prisma.user.findFirst({
-      where: { role: "admin" }
+      where: { role: "ADMIN" }
     });
 
     if (existingAdmin) {
@@ -132,7 +132,7 @@ router.post("/create-admin", async (req, res) => {
       data: {
         email: email.toLowerCase(),
         passwordHash,
-        role: "admin",
+        role: "ADMIN",
         companyName: "Admin"
       }
     });

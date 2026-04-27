@@ -3042,6 +3042,49 @@ const get_user_gps = {
     required: []
   },
   async execute(params, _context) {
+    // 1. Check if GPS coordinates are provided in context (shared by frontend)
+    if (_context?.location) {
+      const { latitude, longitude } = _context.location;
+      try {
+        // Reverse geocoding fallback or simple coordinates return
+        return {
+          type: "success",
+          latitude,
+          longitude,
+          source: "browser_gps",
+          message: `Localisation précise via GPS : ${latitude}, ${longitude}`
+        };
+      } catch (err) {
+        console.warn("[get_user_gps] Reverse geocoding failed, returning raw coords");
+      }
+    }
+
+    // 2. Fallback to IP-based geolocation if context has userIp
+    if (_context?.userIp) {
+      try {
+        const ip = _context.userIp === "::1" || _context.userIp === "127.0.0.1" ? "" : _context.userIp;
+        const res = await fetch(`https://ipapi.co/${ip}/json/`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && !data.error) {
+            return {
+              type: "success",
+              city: data.city,
+              region: data.region,
+              country: data.country_name,
+              latitude: data.latitude,
+              longitude: data.longitude,
+              source: "ip_lookup",
+              message: `Localisation via IP : ${data.city}, ${data.country_name}`
+            };
+          }
+        }
+      } catch (err) {
+        console.error("[get_user_gps] IP lookup failed:", err.message);
+      }
+    }
+
+    // 3. Fallback to asking the user
     return {
       type: "ask_user_pending",
       question: "Quelle est votre ville ou localisation actuelle ?",

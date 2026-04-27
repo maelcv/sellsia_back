@@ -238,7 +238,7 @@ router.get("/events", async (req, res) => {
   const from = req.query.from ? new Date(req.query.from) : new Date(new Date().setDate(1));
   const to   = req.query.to   ? new Date(req.query.to)   : new Date(new Date().setMonth(new Date().getMonth() + 2));
 
-  const isSubClient = req.user.role === "sub_client";
+  const isSubClient = req.user.role === "USER";
   const scopeFilter = isSubClient
     ? { userId: req.user.sub }
     : req.workspaceId
@@ -253,7 +253,7 @@ router.get("/events", async (req, res) => {
     orderBy: { startAt: "asc" },
   });
 
-  if (req.user.role !== "admin" && req.user.role !== "client") {
+  if (req.user.role !== "ADMIN" && req.user.role !== "GESTIONNAIRE") {
     events = events.filter((event) => !isPrivateDescription(event.description) || event.userId === req.user.sub);
   }
 

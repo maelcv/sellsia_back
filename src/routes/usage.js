@@ -16,7 +16,7 @@ const router = express.Router();
 
 // ── GET /api/usage/summary — Aggregated usage ──
 
-router.get("/summary", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/summary", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { period = "day", days = 30 } = req.query;
   const daysNum = Math.min(Number(days) || 30, 365);
 
@@ -54,7 +54,7 @@ router.get("/summary", requireAuth, requireRole("admin"), async (req, res) => {
 
 // ── GET /api/usage/by-provider — Usage by provider ──
 
-router.get("/by-provider", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/by-provider", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
   const rows = await prisma.$queryRaw`
@@ -74,7 +74,7 @@ router.get("/by-provider", requireAuth, requireRole("admin"), async (req, res) =
 
 // ── GET /api/usage/by-agent — Usage by agent ──
 
-router.get("/by-agent", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/by-agent", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
   const rows = await prisma.$queryRaw`
@@ -97,7 +97,7 @@ router.get("/by-agent", requireAuth, requireRole("admin"), async (req, res) => {
 
 // ── GET /api/usage/by-user — Usage by user (admin only) ──
 
-router.get("/by-user", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/by-user", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
   const rows = await prisma.$queryRaw`
@@ -120,7 +120,7 @@ router.get("/by-user", requireAuth, requireRole("admin"), async (req, res) => {
 
 // ── GET /api/usage/export — Export as CSV ──
 
-router.get("/export", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/export", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const days = Math.min(Number(req.query.days) || 30, 365);
 
   const rows = await prisma.$queryRaw`

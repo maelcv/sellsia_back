@@ -66,7 +66,7 @@ const knowledgeSchema = z.object({
  * POST /api/onboarding/client/validate-step-1
  * Validate client info (email uniqueness)
  */
-router.post("/client/validate-step-1", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/client/validate-step-1", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { email } = clientInfoSchema.parse(req.body);
 
@@ -94,7 +94,7 @@ router.post("/client/validate-step-1", requireAuth, requireRole("admin"), async 
  * POST /api/onboarding/client/create
  * Create client + workspace + team + knowledge in one transaction
  */
-router.post("/client/create", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/client/create", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const {
       clientInfo,
@@ -158,7 +158,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
         data: {
           email: validatedClient.email.toLowerCase(),
           passwordHash,
-          role: "client",
+          role: "GESTIONNAIRE",
           companyName: validatedClient.companyName,
           workspaceId: newWorkspace.id
         }
@@ -174,7 +174,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
           data: {
             email: member.email.toLowerCase(),
             passwordHash: memberHash,
-            role: "sub_client",
+            role: "USER",
             companyName: validatedClient.companyName,
             workspaceId: newWorkspace.id
           }
@@ -351,7 +351,7 @@ router.post("/client/create", requireAuth, requireRole("admin"), async (req, res
 router.post(
   "/client/create-multipart",
   requireAuth,
-  requireRole("admin"),
+  requireRole("ADMIN"),
   upload.fields([
     { name: "processes", maxCount: 10 },
     { name: "clientData", maxCount: 10 }
@@ -415,7 +415,7 @@ router.post(
         data: {
           email: validatedClient.email.toLowerCase(),
           passwordHash,
-          role: "client",
+          role: "GESTIONNAIRE",
           companyName: validatedClient.companyName,
           workspaceId: newWorkspace.id
         }
@@ -429,7 +429,7 @@ router.post(
           data: {
             email: member.email.toLowerCase(),
             passwordHash: memberHash,
-            role: "sub_client",
+            role: "USER",
             companyName: validatedClient.companyName,
             workspaceId: newWorkspace.id
           }

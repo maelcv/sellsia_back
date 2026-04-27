@@ -68,7 +68,7 @@ const acceptInvitationSchema = z.object({
  * Response:
  *   { id, workspaceId, invitedEmail, status: "pending", expiresAt, createdAt }
  */
-router.post("/", requireAuth, requireWorkspaceContext, requireRole("client"), inviteRateLimit, async (req, res) => {
+router.post("/", requireAuth, requireWorkspaceContext, requireRole("GESTIONNAIRE"), inviteRateLimit, async (req, res) => {
   const parse = inviteSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({
@@ -193,7 +193,7 @@ router.post("/", requireAuth, requireWorkspaceContext, requireRole("client"), in
  * Response:
  *   { invitations: [...] }
  */
-router.get("/", requireAuth, requireWorkspaceContext, requireRole("client"), async (req, res) => {
+router.get("/", requireAuth, requireWorkspaceContext, requireRole("GESTIONNAIRE"), async (req, res) => {
   const workspaceId = req.workspaceId;
 
   try {
@@ -225,7 +225,7 @@ router.get("/", requireAuth, requireWorkspaceContext, requireRole("client"), asy
 /**
  * Révoque une invitation pending (seul le créateur peut le faire).
  */
-router.delete("/:id", requireAuth, requireWorkspaceContext, requireRole("client"), async (req, res) => {
+router.delete("/:id", requireAuth, requireWorkspaceContext, requireRole("GESTIONNAIRE"), async (req, res) => {
   const invitationId = req.params.id;
   const clientId = req.user.sub;
   const workspaceId = req.workspaceId;

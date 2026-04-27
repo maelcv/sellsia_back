@@ -18,7 +18,7 @@ import {
  * Note: Does NOT seed AI providers as requested by the user
  * Admin only
  */
-router.post("/seed-base-agents", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/seed-base-agents", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     console.log("[agents-management] Seeding plateforme entities (agents, sub-agents, integrations)...");
     
@@ -53,7 +53,7 @@ router.post("/seed-base-agents", requireAuth, requireRole("admin"), async (req, 
  * POST /api/agents-management
  * Create a brand-new global agent with full configuration (admin only)
  */
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const createSchema = z.object({
       name: z.string().min(2).max(120),
@@ -116,7 +116,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
  * PATCH /api/agents-management/:agentId
  * Update agent details + system prompt + image + sub-agents/tools (admin only)
  */
-router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/:agentId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { agentId } = req.params;
     const { name, description, isActive, systemPrompt, imageUrl, allowedSubAgents, allowedTools } = req.body;
@@ -171,7 +171,7 @@ router.patch("/:agentId", requireAuth, requireRole("admin"), async (req, res) =>
  * DELETE /api/agents-management/:agentId
  * Delete a global agent (admin only)
  */
-router.delete("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/:agentId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { agentId } = req.params;
     const agent = await prisma.agent.findUnique({ where: { id: agentId } });
@@ -189,7 +189,7 @@ router.delete("/:agentId", requireAuth, requireRole("admin"), async (req, res) =
  * GET /api/agents-management/:agentId
  * Get single agent with prompt (admin only)
  */
-router.get("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/:agentId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { agentId } = req.params;
     const agent = await prisma.agent.findUnique({
@@ -213,7 +213,7 @@ router.get("/workspace/:workspaceId/available", requireAuth, async (req, res) =>
     const { workspaceId } = req.params;
 
     // Security: non-admins can only query their own workspace
-    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+    if (req.user.role !== "ADMIN" && req.user.workspaceId !== workspaceId) {
       return res.status(403).json({ error: "Accès refusé à ce workspace" });
     }
 
@@ -269,7 +269,7 @@ router.post("/workspace/:workspaceId/agent/:agentId/toggle", requireAuth, async 
     const { isEnabled } = req.body;
 
     // Security: non-admins can only toggle agents in their own workspace
-    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+    if (req.user.role !== "ADMIN" && req.user.workspaceId !== workspaceId) {
       return res.status(403).json({ error: "Accès refusé à ce workspace" });
     }
 
@@ -311,7 +311,7 @@ router.get("/workspace/:workspaceId/knowledge", requireAuth, async (req, res) =>
     const { workspaceId } = req.params;
 
     // Security: ensure requestor belongs to this workspace (unless admin)
-    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+    if (req.user.role !== "ADMIN" && req.user.workspaceId !== workspaceId) {
       return res.status(403).json({ error: "Accès refusé" });
     }
 
@@ -365,7 +365,7 @@ router.post("/workspace/:workspaceId/knowledge", requireAuth, async (req, res) =
   try {
     const { workspaceId } = req.params;
 
-    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+    if (req.user.role !== "ADMIN" && req.user.workspaceId !== workspaceId) {
       return res.status(403).json({ error: "Accès refusé à ce workspace" });
     }
 
@@ -405,7 +405,7 @@ router.delete("/workspace/:workspaceId/knowledge/:docId", requireAuth, async (re
     const { workspaceId, docId } = req.params;
 
     // Security: non-admins can only modify knowledge in their own workspace
-    if (req.user.role !== "admin" && req.user.workspaceId !== workspaceId) {
+    if (req.user.role !== "ADMIN" && req.user.workspaceId !== workspaceId) {
       return res.status(403).json({ error: "Accès refusé à ce workspace" });
     }
 
@@ -440,7 +440,7 @@ router.delete("/workspace/:workspaceId/knowledge/:docId", requireAuth, async (re
 router.get("/templates", requireAuth, async (req, res) => {
   try {
     const { user } = req;
-    const isAdmin = user.role === "admin";
+    const isAdmin = user.role === "ADMIN";
 
     const where = {
       isActive: true,
@@ -486,7 +486,7 @@ router.post("/templates", requireAuth, async (req, res) => {
     });
 
     const data = schema.parse(req.body);
-    if (user.role !== "admin") data.workspaceId = user.workspaceId;
+    if (user.role !== "ADMIN") data.workspaceId = user.workspaceId;
 
     const template = await prisma.agentTemplate.create({
       data: { ...data, defaultTools: JSON.stringify(data.defaultTools), createdById: user.id },
@@ -509,7 +509,7 @@ router.put("/templates/:id", requireAuth, async (req, res) => {
     const { id } = req.params;
     const template = await prisma.agentTemplate.findUnique({ where: { id } });
     if (!template) return res.status(404).json({ error: "Template introuvable" });
-    if (user.role !== "admin" && template.createdById !== user.id) return res.status(403).json({ error: "Non autorisé" });
+    if (user.role !== "ADMIN" && template.createdById !== user.id) return res.status(403).json({ error: "Non autorisé" });
 
     const schema = z.object({
       name: z.string().min(1).max(100).optional(),
@@ -542,7 +542,7 @@ router.delete("/templates/:id", requireAuth, async (req, res) => {
     const { id } = req.params;
     const template = await prisma.agentTemplate.findUnique({ where: { id } });
     if (!template) return res.status(404).json({ error: "Template introuvable" });
-    if (user.role !== "admin" && template.createdById !== user.id) return res.status(403).json({ error: "Non autorisé" });
+    if (user.role !== "ADMIN" && template.createdById !== user.id) return res.status(403).json({ error: "Non autorisé" });
     await prisma.agentTemplate.update({ where: { id }, data: { isActive: false } });
     return res.json({ success: true });
   } catch (err) {
@@ -576,11 +576,11 @@ router.post("/from-template", requireAuth, async (req, res) => {
     const template = await prisma.agentTemplate.findUnique({ where: { id: templateId } });
     if (!template || !template.isActive) return res.status(404).json({ error: "Template introuvable ou inactif" });
 
-    if (template.workspaceId && template.workspaceId !== user.workspaceId && user.role !== "admin") {
+    if (template.workspaceId && template.workspaceId !== user.workspaceId && user.role !== "ADMIN") {
       return res.status(403).json({ error: "Accès à ce template non autorisé" });
     }
 
-    const targetWorkspaceId = user.role === "admin" ? (workspaceId || null) : user.workspaceId;
+    const targetWorkspaceId = user.role === "ADMIN" ? (workspaceId || null) : user.workspaceId;
     const allowedTools = overrides.allowedTools ? JSON.stringify(overrides.allowedTools) : template.defaultTools;
 
     const agent = await prisma.agent.create({

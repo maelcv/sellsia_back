@@ -26,7 +26,7 @@ const promptUpdateSchema = z.object({
 router.get("/:agentId", requireAuth, async (req, res) => {
   const { agentId } = req.params;
   const userId = req.user.sub;
-  const isAdmin = req.user.role === "admin";
+  const isAdmin = req.user.role === "ADMIN";
 
   // Chercher un prompt custom pour ce client
   const custom = await prisma.agentPrompt.findFirst({
@@ -66,7 +66,7 @@ router.get("/:agentId", requireAuth, async (req, res) => {
 
 // ── PUT /api/prompts/:agentId — Créer un prompt custom ──
 
-router.put("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/:agentId", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { agentId } = req.params;
   const parse = promptUpdateSchema.safeParse(req.body);
 
@@ -125,7 +125,7 @@ router.put("/:agentId", requireAuth, requireRole("admin"), async (req, res) => {
 
 // ── GET /api/prompts/admin/all — Tous les prompts (admin) ──
 
-router.get("/admin/all", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/admin/all", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   const prompts = await prisma.$queryRaw`
     SELECT ap.id, ap.agent_id as "agentId", ap.client_id as "clientId", ap.version,
            ap.system_prompt as "systemPrompt", ap.description, ap.is_active as "isActive",
@@ -148,7 +148,7 @@ router.get("/admin/all", requireAuth, requireRole("admin"), async (_req, res) =>
 
 // ── DELETE /api/prompts/admin/:id — Supprimer un prompt ──
 
-router.delete("/admin/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/admin/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "Invalid prompt id" });

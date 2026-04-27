@@ -55,6 +55,11 @@ import {
   isRootPathProtected,
   setRootPathProtection,
 } from "../services/vault/vault-service.js";
+import {
+  shareNotePublic,
+  unshareNote,
+  listShares,
+} from "../services/vault/vault-share.js";
 
 const router = Router();
 const GLOBAL_DIR = "Global";
@@ -66,8 +71,12 @@ const WORKSPACES_DIR = "Workspaces";
  * Vérifie qu'on a un workspaceId résolu, sinon répond 400.
  * Retourne false si la route doit s'arrêter.
  */
-function requireWorkspaceId(res, workspaceId) {
+function requireWorkspaceId(req, res, workspaceId) {
   if (!workspaceId) {
+    const role = req.user?.roleCanonical || req.user?.role;
+    if (role === "ADMIN" || role === "admin_platform") {
+      return true; // Admins can access global vault (workspaceId = null)
+    }
     res.status(400).json({
       error: "workspaceId requis. En tant qu'admin, passez ?workspaceId=... dans la query string."
     });
@@ -95,7 +104,7 @@ function requireVaultWriteAccess(req, res) {
 }
 
 function isAdminRootScope(req) {
-  return req.user?.role === "admin" && !req.query.workspaceId;
+  return req.user?.role === "ADMIN" && !req.query.workspaceId;
 }
 
 function normalizeVaultPath(pathValue = "") {
@@ -113,10 +122,10 @@ async function getWorkspacePathPolicy(req) {
 
   await ensureWorkspaceBaseStructure(
     workspaceId,
-    req.user?.role === "admin" ? null : req.user?.sub
+    req.user?.role === "ADMIN" ? null : req.user?.sub
   );
 
-  if (req.user?.role === "admin") {
+  if (req.user?.role === "ADMIN") {
     return {
       workspaceId,
       canReadPath: () => true,
@@ -280,14 +289,14 @@ router.get("/tree", requireAuth, requireWorkspaceContext, async (req, res) => {
       canManageFolderPath,
       getPathOwner,
     } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const tree = await listTree(workspaceId, folder);
-    const filteredTree = req.user?.role === "admin"
+    const filteredTree = req.user?.role === "ADMIN"
       ? tree
       : filterTreeByPathPolicy(tree, canReadPath);
 
-    if (req.user?.role !== "admin" && folder && !canReadPath(folder)) {
+    if (req.user?.role !== "ADMIN" && folder && !canReadPath(folder)) {
       return res.status(403).json({ error: "Accès interdit à ce dossier du vault" });
     }
 
@@ -297,8 +306,8 @@ router.get("/tree", requireAuth, requireWorkspaceContext, async (req, res) => {
 
     const decoratedTree = decorateTreeForUi(filteredTree, {
       rootScope: false,
-      allowSystemLockedActions: req.user?.role === "admin",
-      allowProtectionToggle: req.user?.role === "admin",
+      allowSystemLockedActions: req.user?.role === "ADMIN",
+      allowProtectionToggle: req.user?.role === "ADMIN",
       canWritePath,
       canManageFolderPath,
       getPathOwner,
@@ -325,10 +334,10 @@ router.get("/search", requireAuth, requireWorkspaceContext, async (req, res) => 
     }
 
     const { workspaceId, canReadPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const rawResults = await searchNotes(workspaceId, q || "", Number(limit) || 20);
-    const results = req.user?.role === "admin"
+    const results = req.user?.role === "ADMIN"
       ? rawResults
       : rawResults.filter((item) => canReadPath(item.path));
 
@@ -350,10 +359,10 @@ router.get("/graph", requireAuth, requireWorkspaceContext, async (req, res) => {
     }
 
     const { workspaceId, canReadPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const graph = await getGraph(workspaceId);
-    if (req.user?.role !== "admin") {
+    if (req.user?.role !== "ADMIN") {
       const allowedNodeIds = new Set(
         graph.nodes.filter((node) => canReadPath(node.id)).map((node) => node.id)
       );
@@ -381,7 +390,7 @@ router.post("/reindex", requireAuth, requireWorkspaceContext, async (req, res) =
     }
 
     const { workspaceId } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const result = await reindexVault(workspaceId);
     res.json(result);
@@ -404,7 +413,7 @@ router.get("/note/*", requireAuth, requireWorkspaceContext, async (req, res) => 
     }
 
     const { workspaceId, canReadPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathReadAccess(res, canReadPath, notePath)) return;
 
     const note = await readNote(workspaceId, notePath);
@@ -426,10 +435,10 @@ router.get("/backlinks/*", requireAuth, requireWorkspaceContext, async (req, res
     }
 
     const { workspaceId, canReadPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathReadAccess(res, canReadPath, notePath)) return;
 
-    if (req.user?.role === "admin") {
+    if (req.user?.role === "ADMIN") {
       const normalizedNotePath = normalizeVaultPath(notePath);
       const rootScopedPath = normalizedNotePath.startsWith(`${GLOBAL_DIR}/`) || normalizedNotePath.startsWith(`${WORKSPACES_DIR}/`)
         ? normalizedNotePath
@@ -462,7 +471,7 @@ router.post("/note", requireAuth, requireWorkspaceContext, async (req, res) => {
     }
 
     const { workspaceId, canWritePath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathWriteAccess(res, canWritePath, notePath)) return;
 
     const result = await writeNote(workspaceId, notePath, content || "");
@@ -488,7 +497,7 @@ router.put("/note/*", requireAuth, requireWorkspaceContext, async (req, res) => 
     }
 
     const { workspaceId, canWritePath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathWriteAccess(res, canWritePath, notePath)) return;
 
     const result = await writeNote(workspaceId, notePath, content);
@@ -514,7 +523,7 @@ router.patch("/note/*", requireAuth, requireWorkspaceContext, async (req, res) =
     }
 
     const { workspaceId, canWritePath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathWriteAccess(res, canWritePath, notePath)) return;
 
     const result = await appendNote(workspaceId, notePath, appendContent);
@@ -536,7 +545,7 @@ router.delete("/note/*", requireAuth, requireWorkspaceContext, async (req, res) 
     }
 
     const { workspaceId, canWritePath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathWriteAccess(res, canWritePath, notePath)) return;
 
     const result = await deleteNote(workspaceId, notePath);
@@ -563,12 +572,12 @@ router.post("/folder", requireAuth, requireWorkspaceContext, async (req, res) =>
     }
 
     const { workspaceId, canManageFolderPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensureFolderManageAccess(res, canManageFolderPath, folderPath)) return;
 
-    const ownerUserId = req.user?.role === "admin" ? null : req.user?.sub;
+    const ownerUserId = req.user?.role === "ADMIN" ? null : req.user?.sub;
     const result = await createFolder(workspaceId, folderPath, ownerUserId, {
-      allowProtected: req.user?.role === "admin",
+      allowProtected: req.user?.role === "ADMIN",
     });
     res.status(201).json(result);
   } catch (err) {
@@ -596,7 +605,7 @@ router.patch("/rename", requireAuth, requireWorkspaceContext, async (req, res) =
       canWritePath,
       canManageFolderPath,
     } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const canManageAsFolder = canManageFolderPath(fromPath) && canManageFolderPath(toPath);
     const canManageAsFile = canWritePath(fromPath) && canWritePath(toPath);
@@ -605,7 +614,7 @@ router.patch("/rename", requireAuth, requireWorkspaceContext, async (req, res) =
     }
 
     const result = await renameEntry(workspaceId, fromPath, toPath, {
-      allowProtected: req.user?.role === "admin",
+      allowProtected: req.user?.role === "ADMIN",
     });
     res.json(result);
   } catch (err) {
@@ -628,11 +637,11 @@ router.delete("/folder/*", requireAuth, requireWorkspaceContext, async (req, res
     }
 
     const { workspaceId, canManageFolderPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensureFolderManageAccess(res, canManageFolderPath, folderPath)) return;
 
     const result = await deleteFolderRecursive(workspaceId, folderPath, {
-      allowProtected: req.user?.role === "admin",
+      allowProtected: req.user?.role === "ADMIN",
     });
     res.json(result);
   } catch (err) {
@@ -643,7 +652,7 @@ router.delete("/folder/*", requireAuth, requireWorkspaceContext, async (req, res
 // PATCH /api/vault/protection { path, protected?: boolean }
 router.patch("/protection", requireAuth, requireWorkspaceContext, async (req, res) => {
   if (!requireVaultWriteAccess(req, res)) return;
-  if (req.user?.role !== "admin") {
+  if (req.user?.role !== "ADMIN") {
     return res.status(403).json({ error: "Seul un admin peut modifier la protection" });
   }
 
@@ -665,7 +674,7 @@ router.patch("/protection", requireAuth, requireWorkspaceContext, async (req, re
     }
 
     const { workspaceId } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const result = await setWorkspacePathProtection(
       workspaceId,
@@ -685,9 +694,9 @@ router.get("/user-folder-visibility", requireAuth, requireWorkspaceContext, asyn
   if (!requireVaultReadAccess(req, res)) return;
   try {
     const workspaceId = resolveWorkspaceIdFromRequest(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
-    const targetUserId = req.user.role === "admin"
+    const targetUserId = req.user.role === "ADMIN"
       ? String(req.query.userId || req.user.sub)
       : String(req.user.sub);
 
@@ -703,14 +712,14 @@ router.put("/user-folder-visibility", requireAuth, requireWorkspaceContext, asyn
   if (!requireVaultReadAccess(req, res)) return;
   try {
     const workspaceId = resolveWorkspaceIdFromRequest(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
 
     const requestedUserId = req.body?.userId;
-    const targetUserId = req.user.role === "admin"
+    const targetUserId = req.user.role === "ADMIN"
       ? String(requestedUserId || req.user.sub)
       : String(req.user.sub);
 
-    if (req.user.role !== "admin" && requestedUserId && String(requestedUserId) !== String(req.user.sub)) {
+    if (req.user.role !== "ADMIN" && requestedUserId && String(requestedUserId) !== String(req.user.sub)) {
       return res.status(403).json({ error: "Vous ne pouvez modifier que votre dossier personnel" });
     }
 
@@ -741,7 +750,7 @@ router.get("/obsidian/*", requireAuth, requireWorkspaceContext, async (req, res)
     }
 
     const { workspaceId, canReadPath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathReadAccess(res, canReadPath, notePath)) return;
 
     const note = await readNote(workspaceId, notePath);
@@ -764,7 +773,7 @@ router.put("/obsidian/*", requireAuth, requireWorkspaceContext, async (req, res)
     }
 
     const { workspaceId, canWritePath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathWriteAccess(res, canWritePath, notePath)) return;
 
     await writeNote(workspaceId, notePath, content);
@@ -785,13 +794,81 @@ router.delete("/obsidian/*", requireAuth, requireWorkspaceContext, async (req, r
     }
 
     const { workspaceId, canWritePath } = await getWorkspacePathPolicy(req);
-    if (!requireWorkspaceId(res, workspaceId)) return;
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
     if (!ensurePathWriteAccess(res, canWritePath, notePath)) return;
 
     await deleteNote(workspaceId, notePath);
     res.status(204).send();
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// ── V1.6: Public Sharing ─────────────────────────────────────────
+
+// POST /api/vault/share — Share a note publicly (copies to Public/<category>/)
+router.post("/share", requireAuth, requireWorkspaceContext, async (req, res) => {
+  if (!requireVaultWriteAccess(req, res)) return;
+  try {
+    const { sourcePath } = req.body;
+    if (!sourcePath) {
+      return res.status(400).json({ error: "sourcePath is required" });
+    }
+
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
+
+    const { publicPath } = await shareNotePublic({
+      workspaceId,
+      sourcePath,
+      userId: req.user.sub,
+    });
+
+    return res.json({ publicPath });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/vault/share — Remove a public share
+router.delete("/share", requireAuth, requireWorkspaceContext, async (req, res) => {
+  if (!requireVaultWriteAccess(req, res)) return;
+  try {
+    const { sourcePath } = req.body;
+    if (!sourcePath) {
+      return res.status(400).json({ error: "sourcePath is required" });
+    }
+
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
+
+    await unshareNote({
+      workspaceId,
+      sourcePath,
+      userId: req.user.sub,
+      userRole: req.user.role,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// GET /api/vault/shares — List shares (admin = all, user = own shares)
+router.get("/shares", requireAuth, requireWorkspaceContext, async (req, res) => {
+  if (!requireVaultReadAccess(req, res)) return;
+  try {
+    const workspaceId = resolveWorkspaceIdFromRequest(req);
+    if (!requireWorkspaceId(req, res, workspaceId)) return;
+
+    const isAdmin = req.user?.role === "ADMIN" || req.user?.role === "GESTIONNAIRE";
+    const userId = isAdmin ? null : req.user.sub;
+
+    const shares = await listShares({ workspaceId, userId });
+    return res.json({ shares });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 });
 

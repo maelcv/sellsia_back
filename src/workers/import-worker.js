@@ -43,21 +43,17 @@ export async function processPendingImports() {
           data: { status: "processing" },
         });
 
-        // TODO: Fetch file from storage + parse CSV/Excel
-        // Pour démo: simuler 5 lignes traitées
-        const rowsToProcess = Math.min(job.totalRows, 5);
-
+        // Bulk file import from storage is not yet implemented.
+        // Mark as skipped so the job doesn't stay stuck in "processing".
         await prisma.bulkImportJob.update({
           where: { id: job.id },
           data: {
-            processedRows: rowsToProcess,
-            successCount: Math.floor(rowsToProcess * 0.95), // 95% success rate
-            status: rowsToProcess >= job.totalRows ? "completed" : "processing",
-            completedAt: rowsToProcess >= job.totalRows ? new Date() : null,
+            status: "failed",
+            errorLog: JSON.stringify([{ line: 0, error: "Bulk import from storage is not yet implemented." }]),
           },
         });
 
-        console.log(`[Import] Job ${job.id} processed ${rowsToProcess}/${job.totalRows}`);
+        console.log(`[Import] Job ${job.id} skipped — bulk file import not implemented`);
       } catch (err) {
         console.error(`[Import] Error processing job ${job.id}:`, err.message);
         await prisma.bulkImportJob.update({

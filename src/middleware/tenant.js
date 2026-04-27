@@ -3,7 +3,7 @@
  *
  * Fonctionnement :
  *   1. Vérifie que l'utilisateur est authentifié (requireAuth doit passer en premier)
- *   2. Pour les super-admins (role="admin") : bypass — req.workspaceId = null
+ *   2. Pour les super-admins (role = 'ADMIN') : bypass — req.workspaceId = null
  *   3. Pour les clients/sub-clients (role="client" / "sub_client") : charge le workspaceId depuis
  *      la DB et le stocke dans req.workspaceId
  *   4. Bloque avec 400 si un client n'a pas de workspaceId (onboarding incomplet)

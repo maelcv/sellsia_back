@@ -116,6 +116,10 @@ const chatSchema = z.object({
     })
     .optional()
     .default({}),
+  location: z.object({
+    latitude: z.number(),
+    longitude: z.number(),
+  }).optional(),
   requestedAgentId: z.string().max(64).optional(),
   conversationId: z.string().max(128).optional(),
   // Set to true when the user message was already saved by a prior /stream call
@@ -175,7 +179,7 @@ async function getAllowedAgents(userId) {
   // ── ADMIN ──────────────────────────────────────────────────────
   // Admins get agent-admin + generaliste. The orchestrator routes platform queries
   // to agent-admin and everything else (météo, culture générale…) to generaliste.
-  if (role === "admin") {
+  if (role === "ADMIN") {
     // Ensure agent-admin exists (auto-create if missing)
     let adminAgent = await prisma.agent.findUnique({ where: { id: "agent-admin" } });
     if (!adminAgent) {
@@ -219,7 +223,7 @@ async function getAllowedAgents(userId) {
   // 1. Agents included in workspace plan (via Plan.allowedAgents)
   // 2. Agents scoped to their workspace (created by admin for them)
   // 3. Agents they own (created themselves if plan permits)
-  if (role === "client") {
+  if (role === "GESTIONNAIRE") {
     const workspaceId = user.workspaceId;
     if (!workspaceId) {
       console.warn("[chat] Client has no workspaceId");
@@ -230,7 +234,7 @@ async function getAllowedAgents(userId) {
     const workspace = await prisma.workspace.findUnique({
       where: { id: workspaceId },
       select: {
-        planRecord: {
+        workspacePlan: {
           select: {
             allowedAgents: { where: { isActive: true }, select: { id: true, name: true } }
           }
@@ -238,7 +242,7 @@ async function getAllowedAgents(userId) {
       }
     });
 
-    const planAgentIds = (workspace?.planRecord?.allowedAgents || []).map(a => a.id);
+    const planAgentIds = (workspace?.workspacePlan?.allowedAgents || []).map(a => a.id);
 
     // Agents scoped to this workspace + agents owned by user
     const workspaceAgents = await prisma.agent.findMany({
@@ -280,7 +284,7 @@ async function getAllowedAgents(userId) {
 
   // ── SUB-CLIENT ─────────────────────────────────────────────────
   // Only agents granted access via WorkspaceAgentAccess (status='granted')
-  if (role === "sub_client") {
+  if (role === "USER") {
     const workspaceId = user.workspaceId;
     if (!workspaceId) {
       console.warn("[chat] Sub-client has no workspaceId");
@@ -374,7 +378,7 @@ function estimateTokens(text = "") {
 
 // ── Helper : build tool context for agent tool-calling ──
 
-async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tenantId = null, features = {}, userRole = null, agentId = null) {
+async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tenantId = null, features = {}, userRole = null, agentId = null, userIp = null, location = null) {
   const sellsyClient = await getSellsyClient(userId);
 
   const resolveWebSearchApiKey = async () => {
@@ -445,7 +449,7 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tena
     ? toolPrefs.referenceSites
     : referenceSitesByTopic.generic;
 
-  const isAdmin = userRole === "admin";
+  const isAdmin = userRole === "ADMIN";
 
   const context = {
     userId,           // Nécessaire pour le tool schedule_reminder, send_email, create_calendar_event
@@ -459,7 +463,9 @@ async function buildToolContext(userId, uploadedFiles = [], toolPrefs = {}, tena
     uploadedFiles: uploadedFiles || [],
     thinkingMode: toolPrefs.thinking || "low",
     priorityDomains: selectedReferenceSites,
-    forceWebSearch: Boolean(toolPrefs.webSearch)
+    forceWebSearch: Boolean(toolPrefs.webSearch),
+    userIp,
+    location
   };
 
   const tools = getAvailableTools(context, {
@@ -516,6 +522,18 @@ async function checkTokenQuota(userId) {
   return true;
 }
 
+async function agentHasCapability(agentId, capability) {
+  if (!agentId) return false;
+  try {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { capabilities: true } });
+    if (!agent) return false;
+    const caps = JSON.parse(agent.capabilities || "[]");
+    return Array.isArray(caps) && caps.includes(capability);
+  } catch {
+    return false;
+  }
+}
+
 // ══════════════════════════════════════════════════════
 // POST /api/chat/ask — Demande synchrone
 // ══════════════════════════════════════════════════════
@@ -533,9 +551,9 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     return res.status(400).json({ error: getPayloadValidationError(parse.error) });
   }
 
-  const { message, pageContext, requestedAgentId, conversationId: reqConvId, tools: requestedTools, noSaveUserMessage } = parse.data;
+  const { message, pageContext, requestedAgentId, conversationId: reqConvId, tools: requestedTools, noSaveUserMessage, location } = parse.data;
   const userId = req.user.sub;
-  const userRole = req.user.role || "client";
+  const userRole = req.user.role || "GESTIONNAIRE";
   const uploadedFiles = req.files || [];
 
   // 1. Vérifier les permissions
@@ -565,11 +583,8 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     // 3. Enrichir le contexte Sellsy
     const sellsyData = await enrichContext(userId, pageContext);
 
-    // Si Directeur est demande/probable, enrichir avec le pipeline
-    if (
-      requestedAgentId === "directeur" ||
-      (!requestedAgentId && /(pipeline|reporting|direction|kpi|ca |bilan)/.test(message.toLowerCase()))
-    ) {
+    // Enrich pipeline data if agent has pipeline_enrichment capability
+    if (await agentHasCapability(requestedAgentId, "pipeline_enrichment")) {
       const pipelineData = await enrichWithPipelineData(userId);
       if (pipelineData && sellsyData.data) {
         sellsyData.data.pipelineAnalysis = pipelineData;
@@ -607,7 +622,7 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     const knowledgeContext = await loadKnowledgeContext(message, requestedAgentId || "commercial", userId, 3, req.workspaceId);
 
     // 6. Build tool context
-    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {}, userRole, requestedAgentId);
+    const { toolContext, tools } = await buildToolContext(userId, uploadedFiles, requestedTools || {}, req.workspaceId, req.workspacePlan?.permissions || {}, userRole, requestedAgentId, req.ip, location);
 
     // 7. Orchestrer (with tools)
     const result = await orchestrate({
@@ -670,7 +685,7 @@ router.post("/ask", requireAuth, requireWorkspaceContext, chatRateLimit, upload.
     );
 
     // 10. Fire-and-forget: classify uploads + update user profile memory
-    if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "admin")) {
+    if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "ADMIN")) {
       const userForClassifier = { id: userId, email: req.user?.email, name: req.user?.name };
       for (const file of uploadedFiles) {
         classifyUploadedFile({
@@ -755,9 +770,9 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     return res.status(400).json({ error: getPayloadValidationError(parse.error) });
   }
 
-  const { message, pageContext, requestedAgentId, conversationId: reqConversationId, tools: requestedTools } = parse.data;
+  const { message, pageContext, requestedAgentId, conversationId: reqConversationId, tools: requestedTools, location } = parse.data;
   const userId = req.user.sub;
-  const userRole = req.user.role || "client";
+  const userRole = req.user.role || "GESTIONNAIRE";
   const uploadedFiles = req.files || [];
 
   const { allowedIds, isAdmin } = await getAllowedAgents(userId);
@@ -835,9 +850,7 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
 
     // 2. Preload expensive context in parallel
     const knowledgeAgentId = effectiveRequestedAgentId || requestedAgentId || "commercial";
-    const shouldEnrichPipeline =
-      knowledgeAgentId === "directeur" ||
-      (!requestedAgentId && /(pipeline|reporting|direction|kpi|ca |bilan)/.test(message.toLowerCase()));
+    const shouldEnrichPipeline = await agentHasCapability(knowledgeAgentId, "pipeline_enrichment");
 
     const sellsyDataPromise = enrichContext(userId, pageContext);
     const knowledgeContextPromise = loadKnowledgeContext(message, knowledgeAgentId, userId, 3, req.workspaceId);
@@ -848,7 +861,9 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       req.workspaceId,
       req.workspacePlan?.permissions || {},
       userRole,
-      effectiveRequestedAgentId || requestedAgentId
+      effectiveRequestedAgentId || requestedAgentId,
+      req.ip,
+      location
     );
     const pipelineDataPromise = shouldEnrichPipeline
       ? enrichWithPipelineData(userId).catch((err) => {
@@ -899,7 +914,7 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
       }
     });
 
-    // 3. Enrich pipeline data if directeur might be involved
+    // 3. Enrich pipeline data if agent has pipeline_enrichment capability
     if (pipelineData && sellsyData?.data) {
       sellsyData.data.pipelineAnalysis = pipelineData;
     }
@@ -1225,9 +1240,8 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     // Use real token counts from provider (Mistral/Anthropic usage event) if available, else estimate
     const tokensInput = streamRealTokensInput || (estimateTokens(message) + estimateTokens(JSON.stringify(historyForLLM)));
     const tokensOutput = streamRealTokensOutput || estimateTokens(fullContent);
-    // Use the first valid agent ID (commercial, directeur, technicien, generaliste) — never a joined/composite or sub-agent ID
-    const validAgentIds = new Set(["commercial", "directeur", "technicien", "generaliste"]);
-    const agentId = collectedAgentIds.find((id) => validAgentIds.has(id)) || activeAgentId || null;
+    // Use the first collected agent ID — sub-agent IDs are already excluded when collectedAgentIds is built
+    const agentId = collectedAgentIds[0] || activeAgentId || null;
 
     let messageId;
     try {
@@ -1324,7 +1338,7 @@ router.post("/stream", requireAuth, requireWorkspaceContext, chatRateLimit, uplo
     // 1. Classify uploaded files → vault note + KnowledgeDocument
     // Media files (images/audio) were already pre-classified synchronously before the agent ran.
     // Skip those to avoid duplicate AI calls and double vault writes.
-    if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "admin")) {
+    if (uploadedFiles.length > 0 && (req.workspaceId || req.user?.role === "ADMIN")) {
       const userForClassifier2 = { id: userId, email: req.user?.email, name: req.user?.name };
       for (const file of uploadedFiles) {
         if (file._vaultPath) continue; // already classified pre-stream

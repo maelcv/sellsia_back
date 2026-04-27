@@ -260,7 +260,7 @@ router.post("/tasks", async (req, res) => {
 
 router.get("/tasks", async (req, res) => {
   const status = req.query.status || "pending";
-  const isSubClient = req.user.role === "sub_client";
+  const isSubClient = req.user.role === "USER";
 
   const scopeFilter = isSubClient
     ? { userId: req.user.sub }
@@ -277,7 +277,7 @@ router.get("/tasks", async (req, res) => {
     take: 100,
   });
 
-  if (req.user.role !== "admin" && req.user.role !== "client") {
+  if (req.user.role !== "ADMIN" && req.user.role !== "GESTIONNAIRE") {
     tasks = tasks.filter((task) => !isPrivateDescription(task.description) || task.userId === req.user.sub);
   }
 

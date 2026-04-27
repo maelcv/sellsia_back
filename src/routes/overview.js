@@ -75,7 +75,7 @@ async function buildRealSeries(userId, mode) {
   return { labels, seriesA, seriesB };
 }
 
-router.get("/client", requireAuth, requireRole("client", "sub_client", "collaborator"), async (req, res) => {
+router.get("/client", requireAuth, requireRole('GESTIONNAIRE', 'USER', "collaborator"), async (req, res) => {
   const userId = req.user.sub;
 
   const grantedAgents = await prisma.userAgentAccess.count({
@@ -141,7 +141,7 @@ router.get("/client", requireAuth, requireRole("client", "sub_client", "collabor
   });
 });
 
-router.get("/admin", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/admin", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   // Section 1: Token by provider IA
   const tokenByProviderRows = await prisma.$queryRaw`
     SELECT
@@ -265,13 +265,13 @@ router.get("/admin", requireAuth, requireRole("admin"), async (_req, res) => {
 
 // ── GET /api/overview/quotas — Per-user quota usage (admin) ──
 
-router.get("/quotas", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/quotas", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
   const offset = (page - 1) * limit;
 
   const total = await prisma.user.count({
-    where: { role: "client" }
+    where: { role: "GESTIONNAIRE" }
   });
 
   const rows = await prisma.$queryRaw`
@@ -323,7 +323,7 @@ router.get("/quotas", requireAuth, requireRole("admin"), async (req, res) => {
 });
 
 // ── GET /api/overview/subclient — Sub-client (member) dashboard ──
-router.get("/subclient", requireAuth, requireRole("sub_client"), async (req, res) => {
+router.get("/subclient", requireAuth, requireRole("USER"), async (req, res) => {
   const userId = req.user.sub;
 
   // Token usage (user-specific)

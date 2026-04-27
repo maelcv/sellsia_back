@@ -25,7 +25,7 @@ router.get("/:userId", async (req, res) => {
   if (isNaN(userId)) return res.status(400).json({ error: "userId invalide" });
 
   // Seuls les admins ou le client propriétaire du workspace peuvent voir les profils
-  if (req.user.role !== "admin") {
+  if (req.user.role !== "ADMIN") {
     const targetUser = await prisma.user.findUnique({
       where: { id: userId },
       select: { workspaceId: true },
@@ -71,7 +71,7 @@ router.put("/:userId", async (req, res) => {
   }
 
   // Seuls les admins ou le client owner du workspace peuvent modifier
-  if (req.user.role !== "admin") {
+  if (req.user.role !== "ADMIN") {
     if (targetUser.workspaceId !== req.workspaceId) {
       return res.status(403).json({ error: "Accès refusé" });
     }
@@ -117,11 +117,11 @@ router.put("/:userId", async (req, res) => {
 // ─── GET /api/user-access/workspace/all — Tous les profils du workspace ──
 
 router.get("/workspace/all", async (req, res) => {
-  if (req.user.role !== "admin" && !req.workspaceId) {
+  if (req.user.role !== "ADMIN" && !req.workspaceId) {
     return res.status(403).json({ error: "Accès refusé" });
   }
 
-  const workspaceFilter = req.user.role === "admin" ? {} : { workspaceId: req.workspaceId };
+  const workspaceFilter = req.user.role === "ADMIN" ? {} : { workspaceId: req.workspaceId };
 
   const profiles = await prisma.userDataAccessProfile.findMany({
     where: workspaceFilter,

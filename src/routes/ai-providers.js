@@ -233,7 +233,7 @@ const providerSchema = z.object({
   }).optional(),
 });
 
-router.post("/default", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/default", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const validated = providerSchema.parse(req.body);
 

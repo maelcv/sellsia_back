@@ -645,15 +645,46 @@ export async function setUserFolderVisibility(workspaceId, userId, visibility) {
   return { userId: key, visibility: normalizedVisibility };
 }
 
+/**
+ * Returns a map { userId -> maxRank } for all users in the workspace who have custom roles,
+ * plus the requester's own max rank. Only used when isAgentContext=true.
+ */
+async function loadWorkspaceRankMap(workspaceId, requesterId) {
+  const assignments = await prisma.userRoleAssignment.findMany({
+    where: { role: { workspaceId } },
+    select: {
+      userId: true,
+      role: { select: { rank: true } },
+    },
+  });
+
+  const rankMap = {};
+  for (const { userId, role } of assignments) {
+    const key = String(userId);
+    rankMap[key] = Math.max(rankMap[key] ?? 0, role.rank ?? 0);
+  }
+  const requesterRank = rankMap[String(requesterId)] ?? 0;
+  return { rankMap, requesterRank };
+}
+
 export async function createWorkspacePathPolicy(workspaceId, userId, userRole, options = {}) {
-  const isAdmin = userRole === "admin";
+  const isAdmin = userRole === "ADMIN";
   const isAgentContext = options?.isAgentContext === true;
   const hasSystemFolderAccess = isAdmin || isAgentContext;
   const normalizedUserId = String(userId || "").trim();
   const visibilityMap = await readUserFolderVisibilityMap(workspaceId);
   const folderOwnersMap = await readFolderOwnersMap(workspaceId);
   const protectionSet = await readFolderProtectionsMap(workspaceId);
-  const isWorkspaceOwner = userRole === "client";
+  const isWorkspaceOwner = userRole === "GESTIONNAIRE";
+
+  // Pre-fetch rank map for hierarchical agent access (only when needed)
+  let requesterRank = 0;
+  let rankMap = {};
+  if (isAgentContext && !isAdmin && !isWorkspaceOwner) {
+    const loaded = await loadWorkspaceRankMap(workspaceId, userId);
+    requesterRank = loaded.requesterRank;
+    rankMap = loaded.rankMap;
+  }
 
   const getPathOwner = (inputPath) =>
     getNearestFolderOwner(folderOwnersMap, normalizeWorkspaceScopedPath(inputPath));
@@ -688,6 +719,13 @@ export async function createWorkspacePathPolicy(workspaceId, userId, userRole, o
 
     const owner = getPathOwner(canonicalPath);
     if (owner && owner === normalizedUserId) return true;
+
+    // Hierarchical rank access: agent can read lower-ranked users' paths
+    if (isAgentContext && requesterRank > 0 && owner && owner !== normalizedUserId) {
+      const ownerRank = rankMap[owner] ?? 0;
+      if (requesterRank > ownerRank) return true;
+    }
+
     return visibilityMap[canonicalTopLevel] === USER_FOLDER_PUBLIC;
   };
 

@@ -11,32 +11,32 @@ function getPermissions(source) {
 }
 
 export function resolveWorkspaceIdFromRequest(req) {
-  if (req?.user?.role === "admin" && req?.query?.workspaceId) {
-    return req.query.workspaceId;
+  if (req?.user?.role === "ADMIN" || req?.user?.role === "admin_platform") {
+    return req?.query?.workspaceId || req?.workspaceId || null;
   }
   return req?.workspaceId || null;
 }
 
 export function canReadVaultRequest(req) {
-  if (req?.user?.role === "admin") return true;
+  if (req?.user?.role === "ADMIN") return true;
   const perms = getPermissions(req?.workspacePlan?.permissions);
   // Backward compatible: if knowledge_vault is undefined, vault is enabled by default.
   return perms.knowledge_vault !== false;
 }
 
 export function canWriteVaultRequest(req) {
-  if (req?.user?.role === "admin") return true;
+  if (req?.user?.role === "ADMIN") return true;
   if (!canReadVaultRequest(req)) return false;
 
   const perms = getPermissions(req?.workspacePlan?.permissions);
   const role = req?.user?.role;
 
-  if (role === "client") {
+  if (role === "GESTIONNAIRE") {
     // Backward compatible: if vault_write is undefined, keep client write enabled.
     return perms.vault_write !== false;
   }
 
-  if (role === "sub_client") {
+  if (role === "USER") {
     // Sub-clients require explicit write permission.
     return Boolean(perms.vault_write);
   }
@@ -45,24 +45,24 @@ export function canWriteVaultRequest(req) {
 }
 
 export function canReadAutomationsRequest(req) {
-  if (req?.user?.role === "admin") return true;
+  if (req?.user?.role === "ADMIN") return true;
   const perms = getPermissions(req?.workspacePlan?.permissions);
   return Boolean(perms.automations);
 }
 
 export function canWriteAutomationsRequest(req) {
-  if (req?.user?.role === "admin") return true;
+  if (req?.user?.role === "ADMIN") return true;
   if (!canReadAutomationsRequest(req)) return false;
 
   const perms = getPermissions(req?.workspacePlan?.permissions);
   const role = req?.user?.role;
 
-  if (role === "client") {
+  if (role === "GESTIONNAIRE") {
     // Backward compatible: if automations_write is undefined, client can still write.
     return perms.automations_write !== false;
   }
 
-  if (role === "sub_client") {
+  if (role === "USER") {
     // If the new key is missing, fallback to automations for compatibility.
     return Boolean(perms.automations_write ?? perms.automations);
   }
@@ -86,11 +86,11 @@ export function canWriteVaultToolContext(context = {}) {
   const perms = getPermissions(context.features);
   const role = context.userRole;
 
-  if (role === "client") {
+  if (role === "GESTIONNAIRE") {
     return perms.vault_write !== false;
   }
 
-  if (role === "sub_client") {
+  if (role === "USER") {
     return Boolean(perms.vault_write);
   }
 

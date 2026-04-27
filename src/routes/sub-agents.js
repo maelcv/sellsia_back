@@ -203,7 +203,7 @@ router.post("/seed-presets", requireAuth, requireWorkspaceContext, async (req, r
  */
 router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
   try {
-    const isAdmin = req.user.role === "admin";
+    const isAdmin = req.user.role === "ADMIN";
 
     const whereClause = isAdmin
       ? {} // Admin sees everything
@@ -261,7 +261,7 @@ router.get("/:id", requireAuth, requireWorkspaceContext, async (req, res) => {
     if (!sa) return res.status(404).json({ error: "Sous-agent introuvable" });
 
     // Non-admin: can only see global or own workspace
-    if (req.user.role !== "admin" && sa.workspaceId && sa.workspaceId !== req.workspaceId) {
+    if (req.user.role !== "ADMIN" && sa.workspaceId && sa.workspaceId !== req.workspaceId) {
       return res.status(404).json({ error: "Sous-agent introuvable" });
     }
 
@@ -289,7 +289,7 @@ router.post(
   requireAuth,
   requireWorkspaceContext,
   async (req, res) => {
-    const isAdmin = req.user.role === "admin";
+    const isAdmin = req.user.role === "ADMIN";
 
     // Non-admins need the custom_agent feature
     if (!isAdmin) {
@@ -364,7 +364,7 @@ router.patch(
       if (!sa) return res.status(404).json({ error: "Sous-agent introuvable" });
 
       // Permission check
-      if (req.user.role !== "admin") {
+      if (req.user.role !== "ADMIN") {
         if (!sa.workspaceId || sa.workspaceId !== req.workspaceId) {
           return res.status(403).json({ error: "Modification non autorisée" });
         }
@@ -429,7 +429,7 @@ router.delete(
       const sa = await prisma.subAgentDefinition.findUnique({ where: { id: req.params.id } });
       if (!sa) return res.status(404).json({ error: "Sous-agent introuvable" });
 
-      if (req.user.role !== "admin") {
+      if (req.user.role !== "ADMIN") {
         if (!sa.workspaceId || sa.workspaceId !== req.workspaceId) {
           return res.status(403).json({ error: "Suppression non autorisée" });
         }

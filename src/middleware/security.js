@@ -32,7 +32,7 @@ export const chatRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => req.user?.sub || req.ip, // Use userId if available
-  skip: (req) => req.user?.role === "admin", // Admins bypass
+  skip: (req) => req.user?.role === "ADMIN", // Admins bypass
   message: { error: "Trop de demandes. Veuillez attendre avant de relancer une conversation." }
 });
 

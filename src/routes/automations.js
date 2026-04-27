@@ -46,7 +46,7 @@ const router = Router();
 // ── Helpers ──────────────────────────────────────────────────────
 
 function canManage(req, automation) {
-  if (req.user.role === "admin") return true;
+  if (req.user.role === "ADMIN") return true;
   return automation.workspaceId === req.workspaceId;
 }
 
@@ -153,7 +153,7 @@ router.get("/metadata", requireAuth, requireWorkspaceContext, async (req, res) =
       pathSuggestions: [],
     };
 
-    if (req.user.role === "admin" && !workspaceId) {
+    if (req.user.role === "ADMIN" && !workspaceId) {
       vault = {
         rootHints: ["Global/", "Workspaces/"],
         pathSuggestions: ["Global/", "Workspaces/"],
@@ -161,11 +161,11 @@ router.get("/metadata", requireAuth, requireWorkspaceContext, async (req, res) =
     } else if (workspaceId) {
       await ensureWorkspaceBaseStructure(
         workspaceId,
-        req.user.role === "admin" ? null : req.user.sub
+        req.user.role === "ADMIN" ? null : req.user.sub
       );
 
       const tree = await listTree(workspaceId, "");
-      const visibleTree = req.user.role === "admin"
+      const visibleTree = req.user.role === "ADMIN"
         ? tree
         : filterTreeByPathPolicy(
           tree,
@@ -193,7 +193,7 @@ router.get("/", requireAuth, requireWorkspaceContext, async (req, res) => {
   try {
     const workspaceId = resolveWorkspaceIdFromRequest(req);
     // Admin without explicit ?workspaceId filter → return all automations
-    const where = (req.user.role === "admin" && !req.query.workspaceId) ? {} : { workspaceId };
+    const where = (req.user.role === "ADMIN" && !req.query.workspaceId) ? {} : { workspaceId };
     const automations = await prisma.automation.findMany({
       where,
       orderBy: { createdAt: "desc" },

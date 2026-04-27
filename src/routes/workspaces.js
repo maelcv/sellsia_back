@@ -79,7 +79,7 @@ async function cleanupWorkspaceVault(workspaceId) {
  * GET /api/workspaces
  * Liste tous les workspaces (admin seulement)
  */
-router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const workspaces = await prisma.workspace.findMany({
     where: { status: { not: "deleted" } },
     include: {
@@ -100,7 +100,7 @@ router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
 router.get(
   "/my-children",
   requireAuth,
-  requireRole("client", "sub_client"),
+  requireRole("GESTIONNAIRE", "USER"),
   requireWorkspaceContext,
   requireFeature("sub_clients"),
   async (req, res) => {
@@ -168,7 +168,7 @@ router.get("/me", requireAuth, requireWorkspaceContext, async (req, res) => {
     });
 
     // Return 400 for incomplete setup, 403 for admins
-    if (req.user.role === "admin") {
+    if (req.user.role === "ADMIN") {
       return res.status(403).json({
         error: "Admin users don't have a workspace. Use /api/workspaces instead."
       });
@@ -258,7 +258,7 @@ router.get("/me", requireAuth, requireWorkspaceContext, async (req, res) => {
  * GET /api/workspaces/:id
  * Détail d'un workspace (admin seulement)
  */
-router.get("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const workspace = await prisma.workspace.findUnique({
     where: { id: req.params.id },
     include: {
@@ -300,7 +300,7 @@ router.get("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  * Requiert auth mais PAS requireWorkspaceContext (l'user n'a pas encore de workspace).
  */
 router.post("/self-provision", requireAuth, async (req, res) => {
-  if (req.user.role === "admin") {
+  if (req.user.role === "ADMIN") {
     return res.status(403).json({ error: "Les admins ne peuvent pas auto-provisionner un workspace." });
   }
 
@@ -359,7 +359,7 @@ router.post("/self-provision", requireAuth, async (req, res) => {
  * POST /api/workspaces
  * Créer un workspace + user owner (admin seulement, transaction atomique)
  */
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = createWorkspaceSchema.safeParse(req.body);
   if (!parse.success) {
     console.error("[WORKSPACE_CREATE_ERROR]", parse.error.flatten());
@@ -432,7 +432,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
  * PATCH /api/workspaces/:id
  * Mettre à jour un workspace (admin seulement)
  */
-router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const parse = updateWorkspaceSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Données invalides", details: parse.error.flatten() });
@@ -499,7 +499,7 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  * DELETE /api/workspaces/:id
  * Soft-delete d'un workspace (admin seulement)
  */
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const workspace = await prisma.workspace.update({
       where: { id: req.params.id },
@@ -526,7 +526,7 @@ router.get("/:id/users", requireAuth, requireWorkspaceContext, async (req, res) 
   const workspaceId = req.params.id;
 
   // Admin voit tout ; client ne peut voir que son propre workspace
-  if (req.user.role !== "admin" && req.workspaceId !== workspaceId) {
+  if (req.user.role !== "ADMIN" && req.workspaceId !== workspaceId) {
     return res.status(403).json({ error: "Accès refusé" });
   }
 
@@ -545,11 +545,11 @@ router.get("/:id/users", requireAuth, requireWorkspaceContext, async (req, res) 
 router.post(
   "/:workspaceId/sub-clients",
   requireAuth,
-  requireRole("client", "admin"),
+  requireRole("GESTIONNAIRE", "ADMIN"),
   requireWorkspaceContext,
   requireFeature("sub_clients"),
   async (req, res) => {
-    const parentWorkspaceId = req.user.role === "admin" ? req.params.workspaceId : req.workspaceId;
+    const parentWorkspaceId = req.user.role === "ADMIN" ? req.params.workspaceId : req.workspaceId;
 
     const parse = createSubClientSchema.safeParse(req.body);
     if (!parse.success) {
@@ -559,7 +559,7 @@ router.post(
     const { name, slug, planId, ownerEmail, ownerPassword, ownerCompanyName } = parse.data;
 
     // Vérifier quota maxSubClients
-    if (req.user.role !== "admin" && req.workspacePlan) {
+    if (req.user.role !== "ADMIN" && req.workspacePlan) {
       const currentCount = await prisma.workspace.count({
         where: { parentWorkspaceId, status: { not: "deleted" } }
       });
@@ -615,7 +615,7 @@ router.post(
         data: {
           email: ownerEmail,
           passwordHash,
-          role: "client",
+          role: "GESTIONNAIRE",
           companyName: ownerCompanyName || name,
           workspaceId: newWorkspace.id
         }
@@ -650,7 +650,7 @@ router.post(
  * GET /api/workspaces/:id/tasks
  * Lister les tâches d'un workspace (admin seulement)
  */
-router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/:id/tasks", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const tasks = await prisma.taskAssignment.findMany({
       where: { workspaceId: req.params.id },
@@ -749,7 +749,7 @@ router.get("/:id/tasks", requireAuth, requireRole("admin"), async (req, res) => 
  * GET /api/workspaces/:id/events
  * Lister les événements calendrier d'un workspace (admin seulement)
  */
-router.get("/:id/events", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/:id/events", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const events = await prisma.calendarEvent.findMany({
       where: { workspaceId: req.params.id },
@@ -768,7 +768,7 @@ router.get("/:id/events", requireAuth, requireRole("admin"), async (req, res) =>
  * POST /api/workspaces/:workspaceId/user-agent-access
  * Manage user access to workspace agents (client/admin only)
  */
-router.post("/:workspaceId/user-agent-access", requireAuth, requireRole("client", "admin"), requireWorkspaceContext, async (req, res) => {
+router.post("/:workspaceId/user-agent-access", requireAuth, requireRole("GESTIONNAIRE", "ADMIN"), requireWorkspaceContext, async (req, res) => {
   const { userId, agentAccess } = z.object({
     userId: z.number().int().positive(),
     agentAccess: z.record(z.string(), z.boolean()),

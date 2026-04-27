@@ -240,7 +240,7 @@ function toSourceLabel(source) {
 }
 
 async function pickTavilySourceForRole({ actor, workspaceId, parsedSource }) {
-  const isAdmin = actor.role === "admin";
+  const isAdmin = actor.role === "ADMIN";
 
   if (parsedSource.type === "env") {
     if (!config.tavilyApiKey) {
@@ -365,7 +365,7 @@ export async function resolveSmtpTransportForAutomation({ workspaceId, userId, u
   }
 
   if (parsedSource.type === "user") {
-    if (actor.role !== "admin") {
+    if (actor.role !== "ADMIN") {
       throw new Error("Source SMTP personnelle reservee aux admins");
     }
     const source = await loadUserIntegrationById(actor.userId, parsedSource.id);
@@ -376,7 +376,7 @@ export async function resolveSmtpTransportForAutomation({ workspaceId, userId, u
   }
 
   if (parsedSource.type === "raw") {
-    if (actor.role === "admin") {
+    if (actor.role === "ADMIN") {
       const userSource = await loadUserIntegrationById(actor.userId, parsedSource.id);
       const userSmtp = userSource ? buildSmtpSourceRecord(userSource) : null;
       if (userSmtp) return userSmtp;
@@ -391,7 +391,7 @@ export async function resolveSmtpTransportForAutomation({ workspaceId, userId, u
 }
 
 async function listIaProviderCodes({ workspaceId, userId, userRole }) {
-  const isAdmin = userRole === "admin";
+  const isAdmin = userRole === "ADMIN" || userRole === "GESTIONNAIRE";
 
   const workspaceLinks = workspaceId
     ? await prisma.clientServiceLink.findMany({
@@ -459,8 +459,8 @@ function isSmtpLikeIntegration(integrationTypeName, category) {
 }
 
 export async function listAutomationMetadataOptions({ workspaceId, userId, userRole }) {
-  const role = userRole || (await getActor(userId)).role || "client";
-  const isAdmin = role === "admin";
+  const role = userRole || (await getActor(userId)).role || "GESTIONNAIRE";
+  const isAdmin = role === "ADMIN";
 
   const iaProviderCodes = await listIaProviderCodes({ workspaceId, userId, userRole: role });
   const aiModelOptions = uniqueStrings(

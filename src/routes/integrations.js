@@ -1277,7 +1277,7 @@ const updateOfficeConnectorSchema = z.object({
   redirectUri: z.string().url().optional().or(z.literal("")),
 });
 
-router.get("/platform-connectors", requireAuth, requireRole("admin"), async (_req, res) => {
+router.get("/platform-connectors", requireAuth, requireRole("ADMIN"), async (_req, res) => {
   try {
     const connectors = await loadPlatformOauthConnectors();
     return res.json({
@@ -1292,7 +1292,7 @@ router.get("/platform-connectors", requireAuth, requireRole("admin"), async (_re
   }
 });
 
-router.put("/platform-connectors/google", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/platform-connectors/google", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const payload = updateGoogleConnectorSchema.parse(req.body || {});
     const next = await updatePlatformOauthConnector("google", payload);
@@ -1312,7 +1312,7 @@ router.put("/platform-connectors/google", requireAuth, requireRole("admin"), asy
   }
 });
 
-router.put("/platform-connectors/office", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/platform-connectors/office", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const payload = updateOfficeConnectorSchema.parse(req.body || {});
     const next = await updatePlatformOauthConnector("office", payload);
@@ -1375,7 +1375,7 @@ const createIntegrationTypeSchema = z.object({
   isActive: z.boolean().optional().default(true),
 });
 
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const data = createIntegrationTypeSchema.parse(req.body);
     const normalizedSchema = normalizeIntegrationConfigSchema(data.configSchema, {
@@ -1416,7 +1416,7 @@ const updateIntegrationTypeSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { id } = req.params;
     const data = updateIntegrationTypeSchema.parse(req.body);
@@ -1468,7 +1468,7 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
  * DELETE /api/integrations/:id
  * Admin only: Soft delete (mark isActive = false)
  */
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -2265,7 +2265,7 @@ router.delete(
  * POST /api/integrations/seed
  * Admin only: Insert default integration types if they don't exist
  */
-router.post("/seed", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/seed", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const defaultTypes = [
       // CRM

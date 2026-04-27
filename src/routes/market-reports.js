@@ -60,7 +60,7 @@ function scope(req) {
 }
 
 function isReadOnly(req) {
-  return req.user?.role === "sub_client";
+  return req.user?.role === "USER";
 }
 
 // ─── SEED ────────────────────────────────────────────────────────────────────

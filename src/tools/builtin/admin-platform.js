@@ -49,7 +49,7 @@ Formate les données tabulaires en markdown (tableaux ou listes à puces).`;
         parameters: {
           type: "object",
           properties: {
-            role: { type: "string", enum: ["admin", "client", "sub_client"], description: "Filtrer par rôle" },
+            role: { type: "string", enum: ["admin", 'GESTIONNAIRE', 'USER'], description: "Filtrer par rôle" },
             workspaceId: { type: "string", description: "Filtrer par workspace" },
             limit: { type: "number", description: "Nombre max de résultats (défaut 50)" },
           },
@@ -240,7 +240,7 @@ Formate les données tabulaires en markdown (tableaux ou listes à puces).`;
 
     // Find the workspace owner (client role)
     const owner = await prisma.user.findFirst({
-      where: { workspaceId, role: "client" },
+      where: { workspaceId, role: "GESTIONNAIRE" },
       select: { email: true, firstName: true, lastName: true },
     });
 

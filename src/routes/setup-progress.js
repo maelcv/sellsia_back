@@ -16,7 +16,7 @@ const router = Router();
  * 5. At least 1 agent created (excluding 'admin' agent, only Commercial/Director/Technical)
  * 6. At least 1 client with workspace created (workspaces with parentWorkspaceId = null and != admin workspace)
  */
-router.get("/progress", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/progress", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const [
       emailConfigSetting,
@@ -27,7 +27,7 @@ router.get("/progress", requireAuth, requireRole("admin"), async (req, res) => {
       clientCount
     ] = await Promise.all([
       prisma.systemSetting.findUnique({ where: { key: "system_smtp_config" } }),
-      prisma.user.count({ where: { role: "admin" } }),
+      prisma.user.count({ where: { role: "ADMIN" } }),
       prisma.systemSetting.findUnique({ where: { key: "default_ai_provider" } }),
       // Count agents excluding the 'admin' agent (Commercial, Director, Technical only)
       prisma.agent.count({
@@ -46,7 +46,7 @@ router.get("/progress", requireAuth, requireRole("admin"), async (req, res) => {
       // Count client users (role = 'client')
       prisma.user.count({
         where: {
-          role: "client"
+          role: "GESTIONNAIRE"
         }
       })
     ]);
@@ -128,7 +128,7 @@ router.get("/progress", requireAuth, requireRole("admin"), async (req, res) => {
  * Debug endpoint to check actual data in database
  * Admin only
  */
-router.get("/debug", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/debug", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const [
       emailSettings,
@@ -142,8 +142,8 @@ router.get("/debug", requireAuth, requireRole("admin"), async (req, res) => {
     ] = await Promise.all([
       prisma.systemSetting.findMany({ where: { key: "system_smtp_config" } }),
       prisma.user.findMany({ select: { id: true, email: true, role: true } }),
-      prisma.user.findMany({ where: { role: "admin" }, select: { id: true, email: true } }),
-      prisma.user.findMany({ where: { role: "client" }, select: { id: true, email: true, workspaceId: true } }),
+      prisma.user.findMany({ where: { role: "ADMIN" }, select: { id: true, email: true } }),
+      prisma.user.findMany({ where: { role: "GESTIONNAIRE" }, select: { id: true, email: true, workspaceId: true } }),
       prisma.systemSetting.findMany({ where: { key: "default_ai_provider" } }),
       prisma.agent.findMany({ select: { id: true, name: true, isActive: true } }),
       prisma.workspace.findMany({ select: { id: true, name: true, status: true, parentWorkspaceId: true } }),

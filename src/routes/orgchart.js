@@ -38,7 +38,7 @@ Instructions:
  * POST /api/onboarding/orgchart/extract
  * Extract org chart from image using Mistral vision
  */
-router.post("/extract", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/extract", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
     const { imageBase64, mimeType } = z
       .object({

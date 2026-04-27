@@ -19,7 +19,7 @@ const router = express.Router();
 // GET /api/feedback — List negative feedback with context
 // ══════════════════════════════════════════════════════
 
-router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const { status, agent_id, limit = 100 } = req.query;
   const limitNum = Math.min(Number(limit) || 100, 500);
 
@@ -100,7 +100,7 @@ router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
 // PUT /api/feedback/:id/review — Mark as reviewed
 // ══════════════════════════════════════════════════════
 
-router.put("/:id/review", requireAuth, requireRole("admin"), async (req, res) => {
+router.put("/:id/review", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "Invalid id" });
 
@@ -123,7 +123,7 @@ router.put("/:id/review", requireAuth, requireRole("admin"), async (req, res) =>
 // POST /api/feedback/:id/to-knowledge — Convert to KB doc
 // ══════════════════════════════════════════════════════
 
-router.post("/:id/to-knowledge", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/:id/to-knowledge", requireAuth, requireRole("ADMIN"), async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ error: "Invalid id" });
 

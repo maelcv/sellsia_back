@@ -39,7 +39,7 @@ function shouldAnalyze(userId, messageCount) {
 async function extractInsights(provider, messages) {
   const conversationText = messages
     .filter(m => m.role === "user" || m.role === "assistant")
-    .slice(-20) // Max 20 messages
+    .slice(-20)
     .map(m => `${m.role === "user" ? "USER" : "ASSISTANT"}: ${m.content.slice(0, 400)}`)
     .join("\n\n");
 
@@ -56,19 +56,20 @@ Required JSON format:
   "responseStyle": "concise|balanced|detailed",
   "professionalContext": "Detected role/industry if any, else null",
   "styleObservation": "Observation about communication style/preferences, else null",
-  "personality": { "formal": true/false, "technical": true/false, "detail_oriented": true/false }
+  "personality": { "formal": true/false, "technical": true/false, "detail_oriented": true/false },
+  "inferredRole": "Job title or role inferred from questions/context, else null",
+  "inferredIndustry": "Industry sector inferred from topics, else null",
+  "preferredLanguage": "fr|en|es|de|other based on user messages",
+  "newInterests": ["interest1", "interest2"]
 }`;
 
   try {
-    let rawResponse = "";
-    for await (const chunk of provider.stream([
-      { role: "user", content: prompt }
-    ], { model: provider.config.defaultModel, temperature: 0.1, maxTokens: 400 })) {
-
-      if (chunk.type === "text") rawResponse += chunk.content;
-    }
-
-    // Clean and parse JSON
+    const result = await provider.chat({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
+      maxTokens: 500
+    });
+    const rawResponse = result?.content || "";
     const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return null;
     return JSON.parse(jsonMatch[0]);
